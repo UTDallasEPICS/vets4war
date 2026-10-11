@@ -1,174 +1,182 @@
-# Nuxt Template (Better Auth + Drizzle + SQLite)
+# Vets4Warriors staffing forecast
 
-A modern, production-ready Nuxt 4 template featuring a robust authentication system, ORM integration, and a clean UI foundation.
+Forecasts inbound call volume per hour for the Vets4Warriors peer-support line
+and turns it into "how many people to schedule" per hour and per shift. Reads
+the real call log from the shared Supabase Postgres database. Python, LightGBM,
+FastAPI, one static dashboard page.
 
-## Features
+This branch replaces the Nuxt template that the repository started from.
+Nothing here depends on it.
 
-- **Nuxt 4**: The latest and greatest from the Nuxt team.
-- **Better Auth**: Comprehensive authentication with **Email OTP** support.
-- **Drizzle**: Type-safe ORM for interacting with the database.
-- **SQLite**: Lightweight, zero-configuration database, ideal for development and small-to-medium projects.
-- **Nuxt UI v4**: Beautiful, accessible, and customizable UI components built with Tailwind CSS.
-- **Nodemailer**: Pre-configured for sending verification emails via Gmail.
-- **Vitest**: A ready-to-run testing baseline with an example component test. See [Testing](#testing).
+## What it does
 
-## Stack
+1. **Volume model.** LightGBM with a Poisson objective learns calls per hour
+   from five and a half years of hourly counts: hour of day, weekday, month,
+   week of year, a slow trend, holidays and distance to the nearest holiday.
+   No lag features, because the forecast runs weeks ahead and lagged actuals
+   would not exist yet.
+2. **Handle time.** A recency-weighted mean of agent seconds per (weekday,
+   hour) over answered calls. Calls recorded with zero agent time are left
+   out of this average only.
+3. **Caller patience.** Mean patience estimated from the abandoned calls in
+   the data (censored-exponential maximum likelihood).
+4. **Staffing.** Erlang A (default; callers hang up) or Erlang C (infinite
+   patience) gives the agents needed so a target share of callers (default
+   80%) is answered within a target time (default 30 s). Dividing by staff
+   efficiency (default 65%, the share of a shift a person is free for
+   inbound) gives the number to put on the schedule. Each shift is staffed
+   for its busiest hour. Numbers above the client's cap of 7 per shift are
+   flagged, never clamped.
 
-- **Framework**: [Nuxt](https://nuxt.com/)
-- **Auth**: [Better Auth](https://www.better-auth.com/)
-- **ORM**: [Drizzle](https://orm.drizzle.team/)
-- **Database**: [SQLite](https://sqlite.org/)
-- **UI Framework**: [Nuxt UI](https://ui.nuxt.com/)
-- **Email**: [Nodemailer](https://nodemailer.com/)
+## Accuracy on the real data
 
-## Getting Started
+Rolling-origin backtest over the last 12 complete months of data
+(2025-09 to 2026-08). Each month is predicted by a model trained only on the
+months before it. Pooled over all held-out hours:
 
-See the [Documentation](#documentation) section for topic guides. Otherwise, follow the setup steps below.
+| model | hourly MAE | hourly MAPE | daily-total MAE |
+|---|---|---|---|
+| LightGBM Poisson | 2.72 calls | 54% | 16.9 calls/day |
+| seasonal naive (same weekday-hour, last 8 weeks) | 2.85 | 54% | 18.7 |
+| flat mean of training window | 3.17 | 72% | 17.4 |
 
-### 1. Clone the repository
+The line takes about 180 calls a day, so the daily error is roughly 9%.
+Hourly MAPE is high because many hours have only a handful of calls; the
+dashboard treats any one cell as plus or minus one person. Exact numbers,
+per fold, are in `models/metadata.json` and in the banner on the dashboard.
+`make train` refuses to save a model that does not beat seasonal naive on
+daily-total MAE.
 
-```bash
-git clone <your-repo-url>
-cd nuxt-template
+## Layout
+
+```
+db/erlang.py     Erlang C and Erlang A, required_agents()        (pure math)
+db/features.py   the ONLY place feature logic lives; hourly aggregation SQL
+db/aht.py        handle time per (weekday, hour), recency-weighted
+db/patience.py   mean caller patience from abandoned calls
+db/train.py      LightGBM Poisson, rolling backtest, writes models/
+db/forecast.py   forecast_range(): hourly calls + handle time for a date range
+db/staffing.py   Erlang -> agents -> scheduled staff, shift roll-up
+api/main.py      FastAPI: /api/forecast, /api/staffing, /api/model, serves web/
+web/index.html   the dashboard (vanilla JS); web/erlang.js mirrors db/erlang.py
+models/          volume_lgbm.txt + metadata.json, written by `make train`
+tests/           pytest; test_features.py and test_api.py need the database
 ```
 
-### 2. Install dependencies
+## Setup
 
-This project uses `pnpm`, but you can use `npm` as well.
+Python 3.12. Versions are pinned in `requirements.txt`.
 
-```bash
-pnpm install
+macOS first: LightGBM links against OpenMP, which is not bundled.
+
+```
+brew install libomp
 ```
 
-### 3. Setup Environment Variables
+Then, with [uv](https://docs.astral.sh/uv/):
 
-Copy the example environment file and fill in your details.
+```
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -r requirements.txt
+```
 
-```bash
+or with plain Python:
+
+```
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Create `.env` in the repo root. It is gitignored and must never be committed:
+
+```
 cp .env.example .env
 ```
 
-Open `.env` and configure the following:
+Paste the connection string from the Supabase project (Connect button,
+"Session pooler" tab) as `V4W_DATABASE_URL`.
 
-- `DATABASE_URL`: The SQLite connection string (default: `file:./dev.db`).
-- `BETTER_AUTH_SECRET`: A secure random string for encryption. You can generate one using `openssl rand -hex 32`.
-- `BETTER_AUTH_URL`: The base URL of your application (default: `http://localhost:3000`).
-- `EMAIL_USER`: Your Gmail address (for OTP delivery).
-- `EMAIL_PASS`: Your Gmail App Password. [How to generate an App Password](https://support.google.com/accounts/answer/185833).
-
-### 4. Database Setup
-
-Initialize your SQLite database and run migrations. You will need to run this command anytime you need to change or create a database.
-
-```bash
-pnpm db:migrate
+```
+make db-check PYTHON=.venv/bin/python   # row counts and date range
+make test     PYTHON=.venv/bin/python   # 85 tests; 2 files need the database
+make serve    PYTHON=.venv/bin/python   # http://127.0.0.1:8000
 ```
 
-During development, if there are any database changes since the last migration, you will need to generate a new migration.
+`make` targets default to `python3`; pass `PYTHON=.venv/bin/python` to use
+the venv. `PORT=8001` changes the port.
 
-```bash
-pnpm db:generate
+## Environment variables
+
+| Name | Required | Meaning |
+|---|---|---|
+| `V4W_DATABASE_URL` | yes | Postgres connection string. The only data source. Loaded by `python-dotenv` from `.env` or the shell. |
+| `HOST`, `PORT` | no | Bind address for `make serve`, default `127.0.0.1:8000`. |
+
+## The data
+
+Tables are read as-is; this code adds no views, columns or constraints to
+the shared database.
+
+- `calls`: one row per inbound call. `start_ts` (naive timestamp),
+  `in_queue_sec`, `routing_sec`, `agent_sec`, `abandon_sec`, `abandoned`.
+  Weekday and hour are derived in SQL or pandas.
+- `holidays`: `holiday_date`, `holiday_name`. The multiplier columns are
+  all NULL and are not used; the model learns each holiday from the flag.
+  Holidays after the last row in the table are not reflected in the
+  forecast; the API and dashboard warn when a requested range runs past it.
+
+Timestamps are local Eastern wall-clock time with daylight saving: the
+02:00 hour is empty on every spring-forward Sunday and the 01:00 hour
+doubles on fall-back Sundays. Nothing is converted.
+
+## Retraining
+
+New calls land in the `calls` table (loaded outside this repo). Then:
+
+```
+make train PYTHON=.venv/bin/python
 ```
 
-### 5. Start the development server
+About 30 seconds. It rebuilds the full hourly grid, reruns the 12-month
+rolling backtest against the two baselines, prints the per-fold table, and
+only then writes `models/volume_lgbm.txt` and `models/metadata.json`. If
+LightGBM does not beat seasonal naive on daily-total MAE it prints `STOP`,
+exits non-zero and leaves `models/` untouched. The hold-out window moves
+forward automatically with the data: the last 12 complete months.
 
-```bash
-pnpm dev
+The running API reloads the model on the next request after a retrain.
+
+## API
+
+```
+GET /api/forecast?start=YYYY-MM-DD&end=YYYY-MM-DD
+    &efficiency=0.65&target_pct=0.80&target_sec=30
+    &queue_model=erlang_a|erlang_c&patience_sec=
+    hours: one row per hour with the whole chain (calls, handle time, load,
+           agents, people to schedule, service level, abandonment)
+    days:  per-date shift roll-up (Overnight / Day / Evening)
+    window: totals and the talk-time caveat
+
+GET /api/staffing?...same params
+    days only
+
+GET /api/model
+    models/metadata.json verbatim (training window, features, backtest)
 ```
 
-Your application will be available at `http://localhost:3000`.
+`start`/`end` default to today and today + 29 days; maximum range 366 days.
 
-### 6. How to Login
+## Dashboard
 
-Login requires an email address that already exists in the database.
+`make serve`, then open the URL. Pick a date range for the hour-by-hour
+matrix and the per-shift strip, or pick a single day and hour in the
+"Pick a day and hour" card to see that hour's forecast and the people to
+schedule. Sliders for efficiency, service-level target and answer time
+recompute in the browser without a round trip.
 
-- **Option A: Use the seeded user**
-  Go to `/auth` and log in with `email@example.com`.
-- **Option B: Use your own email**
-  Update `server/db/seed.ts` with your email, then run `pnpm db:seed` to re-seed.
+## What must never be committed
 
-**To get your OTP:**
-
-- Check your configured email inbox.
-- **Or**, run `pnpm db:studio` to open **Drizzle Studio** and look in the `verification` table.
-
-## Project Structure
-
-- `app/`: Frontend code (pages, components, assets, composables).
-- `server/`: Backend code (API routes, authentication logic, database utilities).
-- `server/db/`: Database schema and seed scripts.
-- `drizzle/`: Generated migrations.
-- `public/`: Static assets.
-- `tests/`: Automated tests (Vitest).
-- `docs/`: Topic guides (see [Documentation](#documentation)).
-
-## Documentation
-
-Topic guides live in the [`docs/`](docs/) directory:
-
-- [`docs/testing.md`](docs/testing.md) — Vitest testing guide (from-zero, for beginners).
-- [`docs/better_auth.md`](docs/better_auth.md) — Better Auth setup and usage.
-- [`docs/file_upload_and_serve.md`](docs/file_upload_and_serve.md) — Uploading and serving files.
-- [`docs/mcp.md`](docs/mcp.md) — Recommended MCP servers for AI coding assistants.
-
-## Testing
-
-This template ships with a small **Vitest** testing baseline and an example component test,
-so every project starts with a working `pnpm test` command and a reference to copy from.
-
-```bash
-pnpm test        # run all tests once
-pnpm test:watch  # re-run tests as you edit (Ctrl+C to stop)
-```
-
-The baseline is intentionally self-contained: it needs **no `.env` file, no database, no real
-email, no browser installation, no dev server, and no customer data**. Clone, `pnpm install`,
-and `pnpm test` works immediately.
-
-New to testing? The [**Testing guide**](docs/testing.md) walks a complete beginner through
-running, reading, writing, reviewing, and troubleshooting tests — and explains the expectation
-that merge requests include a meaningful test for changed behavior.
-
-CI runs `pnpm test` automatically on every pull request and on pushes to `dev`/`stage`/`prod`
-(see `.github/workflows/test.yml`), so a broken or missing test is visible before it merges.
-
-> Browser/end-to-end testing (Playwright) is intentionally kept separate from this template.
-
-## GitHub Actions Configuration
-
-**Important**: You must update the GitHub Actions workflow to point to your own repository and AWS configuration.
-
-### Update GitHub Actions
-
-Add the following Secrets and Variables to your repository:
-
-1. **ACTIONS_ROLE_ARN (Secret)**:
-
-   ```yaml
-   arn:aws:iam::YOUR-AWS-ACCOUNT-ID:role/YOUR-ROLE-NAME
-   ```
-
-2. **REPOSITORY (Variable)**:
-
-   ```yaml
-   your-repository-name
-   ```
-
-Optionally, you may update the AWS region.
-
-3. **AWS Region** (the `aws-region` in `.github/workflows/deploy.yml`):
-   ```yaml
-   aws-region: your-aws-region
-   ```
-
-### Required AWS Setup
-
-Before the GitHub Actions will work, you need:
-
-1. **AWS ECR Repository**: Create a repository in Amazon ECR
-2. **IAM Role**: Create a role with GitHub Actions OIDC provider and ECR permissions
-3. **GitHub Secrets**: Ensure your repository has the necessary AWS permissions
-
-## License
-
-MIT
+`.gitignore` blocks `.env`, `.venv/`, `data/`, and every `*.csv`, `*.xlsx`,
+`*.xls`, `*.parquet`. No call export, extract or caller-identifying data
+belongs in this repository. The database holds timing and outcome fields
+only.

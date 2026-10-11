@@ -25,3 +25,22 @@ logs
 
 /prisma/generated
 /dev.db
+
+# --- Vets4Warriors forecast (Python) ---
+# Secrets: the database URL carries the password. .env is already ignored above.
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+# Call data must never be committed: no exports, no extracts, no caller info.
+data/
+*.csv
+*.xlsx
+*.xls
+*.parquet
+# Local agent tooling
+.agents/
+.claude/
+skills-lock.json

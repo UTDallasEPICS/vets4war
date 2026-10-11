@@ -1,0 +1,1051 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vets4Warriors Staffing Forecast</title>
+<style>
+  /* ---- tokens: from DESIGN.md (Vercel-inspired). Light by default, dark via prefers-color-scheme ---- */
+  :root {
+    color-scheme: light;
+    --bg: #FAFAFA;              /* canvas-soft */
+    --surface: #FFFFFF;         /* canvas */
+    --surface-2: #F5F5F5;       /* canvas-soft-2 */
+    --border: #EBEBEB;          /* hairline: the 1px grid */
+    --border-strong: #A1A1A1;   /* hairline-strong */
+    --text: #171717;            /* ink */
+    --text-2: #4D4D4D;          /* body */
+    --text-3: #888888;          /* mute */
+    --accent: #0070F3;          /* link blue: the single accent */
+    --accent-ring: rgba(0, 112, 243, 0.28);
+    --highlight: #D3E5FF;       /* link-bg-soft */
+    --weekend: #F5F5F5;         /* date cell only */
+    --track: #EBEBEB;
+    --caution: #A1A1A1;         /* hatch under the 0 to 20% efficiency zone */
+    --heat-lo: #F5F8FD;         /* quiet end of the ramp */
+    --heat-hi: #0070F3;         /* busy end, mixed in at most 74% so the number stays legible */
+    --heat-max-mix: 74%;
+    --cap: #AB570A;             /* warning-deep: over the cap of 7 */
+    --amber: #F5A623;           /* warning: exactly at the cap */
+    --amber-text: #AB570A;
+    --amber-bg: #FFEFCF;        /* warning-soft */
+    --red: #EE0000;             /* error */
+    --red-bg: #F7D4D6;          /* error-soft */
+    --shadow: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 1px 1px rgba(0, 0, 0, 0.02), 0 2px 2px rgba(0, 0, 0, 0.04);      /* level 2 */
+    --shadow-float: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 2px 2px rgba(0, 0, 0, 0.04), 0 8px 16px -4px rgba(0, 0, 0, 0.06); /* level 4 */
+    --shadow-modal: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 8px 16px -4px rgba(0, 0, 0, 0.06), 0 24px 32px -8px rgba(0, 0, 0, 0.08);
+    --pin-shadow: rgba(0, 0, 0, 0.12);
+    --pop-bg: #FFFFFF;
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-6: 24px; --sp-8: 32px;
+    --r: 6px;                    /* --geist-radius, one radius everywhere */
+    --font: Inter, "Geist", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --t-cell: 120ms;
+    --t-fast: 150ms;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #0A0A0A;
+      --surface: #111111;
+      --surface-2: #171717;
+      --border: #262626;
+      --border-strong: #525252;
+      --text: #EDEDED;
+      --text-2: #A1A1A1;
+      --text-3: #7A7A7A;
+      --accent: #52A8FF;
+      --accent-ring: rgba(82, 168, 255, 0.35);
+      --highlight: #10233F;
+      --weekend: #161616;
+      --track: #262626;
+      --caution: #525252;
+      --heat-lo: #111111;
+      --heat-hi: #52A8FF;
+      --heat-max-mix: 66%;
+      --cap: #F5A623;
+      --amber: #F5A623;
+      --amber-text: #F5A623;
+      --amber-bg: #2E2005;
+      --red: #FF6166;
+      --red-bg: #3A1113;
+      --shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 1px 1px rgba(0, 0, 0, 0.3), 0 2px 2px rgba(0, 0, 0, 0.3);
+      --shadow-float: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 2px 2px rgba(0, 0, 0, 0.3), 0 8px 16px -4px rgba(0, 0, 0, 0.5);
+      --shadow-modal: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 8px 16px -4px rgba(0, 0, 0, 0.5), 0 24px 32px -8px rgba(0, 0, 0, 0.6);
+      --pin-shadow: rgba(0, 0, 0, 0.6);
+      --pop-bg: #171717;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); }
+  body {
+    margin: 0;
+    font: 14px/1.45 var(--font);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+  [hidden] { display: none !important; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button { font: inherit; }
+
+  /* ---- header ---- */
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 0 var(--sp-6); }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); }
+  header .wrap { display: flex; align-items: baseline; gap: var(--sp-3); height: 64px; flex-wrap: wrap; align-content: center; }
+  header .mark { font-size: 13px; font-weight: 500; color: var(--text-3); }
+  header h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.6px; color: var(--text); }
+  header .sub { color: var(--text-2); font-size: 13px; margin-left: auto; }
+
+  /* ---- callouts (text set by JS) ---- */
+  .banner {
+    margin-top: var(--sp-6); padding: var(--sp-3) var(--sp-4); border-radius: var(--r);
+    background: var(--surface); box-shadow: var(--shadow); border-left: 3px solid var(--accent);
+    font-size: 13px; line-height: 1.5; color: var(--text-2);
+  }
+  .banner strong { font-weight: 600; color: var(--text); }
+  .banner.error { background: var(--red-bg); border-left-color: var(--red); color: var(--text); }
+  .banner.notice { margin-top: var(--sp-3); background: var(--amber-bg); border-left-color: var(--amber); color: var(--text); }
+
+  /* ---- sticky control bar ---- */
+  .bar-sentinel { height: 1px; margin-top: var(--sp-6); }
+  .bar {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--surface); border-radius: var(--r); box-shadow: var(--shadow);
+    transition: box-shadow var(--t-fast) var(--ease-out), border-radius var(--t-fast) var(--ease-out);
+  }
+  .bar.stuck { box-shadow: var(--shadow-float); border-radius: 0 0 var(--r) var(--r); }
+  .bar-grid {
+    display: grid; grid-template-columns: auto 1fr 1fr; gap: var(--sp-4) var(--sp-8); align-items: start;
+    padding: var(--sp-3) var(--sp-6) var(--sp-4);
+  }
+  .dates { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); align-self: center; }
+  .dates label { display: block; font-size: 11px; font-weight: 500; color: var(--text-3); margin-bottom: 3px; }
+  .dates input[type=date] {
+    width: 148px; height: 32px; padding: 0 var(--sp-2); border: 1px solid var(--border); border-radius: var(--r);
+    font: inherit; font-size: 13px; color: var(--text); background: var(--surface);
+  }
+  .dates input[type=date]:hover { border-color: var(--border-strong); }
+
+  .ctl { min-width: 0; }
+  .ctl-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-3); }
+  .ctl-head label { font-size: 12px; font-weight: 500; color: var(--text-2); padding-bottom: 6px; }
+  .ctl-head .tsec { display: flex; align-items: baseline; gap: 6px; font-size: 12px; color: var(--text-2); padding-bottom: 4px; }
+  .ctl-head .tsec input {
+    width: 58px; height: 28px; padding: 0 var(--sp-2); border: 1px solid var(--border); border-radius: var(--r);
+    font: 500 13px var(--mono); color: var(--text); background: var(--surface); text-align: right;
+  }
+  .ctl-head .tsec input:hover { border-color: var(--border-strong); }
+  .big { text-align: right; line-height: 1; }
+  .big .num { font: 300 30px/1 var(--mono); letter-spacing: 0; color: var(--text); font-variant-numeric: tabular-nums; }
+  .big .unit { display: block; font-size: 11px; color: var(--text-3); margin-top: 3px; letter-spacing: 0; }
+
+  .track { position: relative; height: 36px; margin-top: 2px; }
+  /* caution zone: hatched band under the first 20% of the efficiency track */
+  .track.caution::before {
+    content: ""; position: absolute; left: 9px; width: calc(20% - 9px); top: 50%; height: 12px; transform: translateY(-50%);
+    border-radius: var(--r) 0 0 var(--r); pointer-events: none;
+    background: repeating-linear-gradient(135deg, transparent 0 3px, var(--caution) 3px 4px);
+    opacity: 0.5;
+  }
+  .track input[type=range] {
+    -webkit-appearance: none; appearance: none; position: relative; width: 100%; height: 36px; margin: 0; background: transparent; cursor: pointer;
+  }
+  .track input[type=range]:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: var(--r); }
+  .track input[type=range]::-webkit-slider-runnable-track {
+    height: 4px; border-radius: 2px;
+    background: linear-gradient(to right, var(--accent) 0 var(--fill, 0%), var(--track) var(--fill, 0%));
+  }
+  .track input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; background: var(--track); }
+  .track input[type=range]::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--accent); }
+  .track input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 18px; height: 18px; margin-top: -7px; border-radius: 50%;
+    background: var(--surface); border: 2px solid var(--accent); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+    transition: box-shadow var(--t-fast) var(--ease-out);
+  }
+  .track input[type=range]::-moz-range-thumb {
+    width: 14px; height: 14px; border-radius: 50%; background: var(--surface); border: 2px solid var(--accent);
+  }
+  .track input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--accent-ring); }
+  .track input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 4px var(--accent-ring); }
+  .feedback { font-size: 12px; color: var(--text-2); margin-top: 2px; min-height: 17px; display: flex; justify-content: space-between; gap: var(--sp-3); }
+  .feedback .warn { color: var(--amber-text); font-weight: 500; }
+  /* queue model row: spans the two slider columns under them */
+  .model { grid-column: 2 / -1; display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; font-size: 12px; color: var(--text-2); padding-top: var(--sp-2); border-top: 1px solid var(--border); }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
+  .seg label { display: inline-flex; align-items: baseline; gap: 6px; padding: 5px var(--sp-3); cursor: pointer; color: var(--text-2); border-right: 1px solid var(--border); }
+  .seg label:last-child { border-right: 0; }
+  .seg label small { font-size: 11px; color: var(--text-3); }
+  .seg input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .seg label:has(input:checked) { background: var(--highlight); color: var(--accent); font-weight: 500; }
+  .seg label:has(input:checked) small { color: var(--accent); }
+  .seg label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .model .tsec { display: inline-flex; align-items: baseline; gap: 6px; }
+  .model .tsec input { width: 70px; height: 26px; padding: 0 var(--sp-2); border: 1px solid var(--border); border-radius: var(--r); font: 500 12px var(--mono); color: var(--text); background: var(--surface); text-align: right; }
+  .model .fb { color: var(--text-3); }
+  .caution-tip { color: var(--text-3); border-bottom: 1px dotted var(--border-strong); cursor: help; white-space: nowrap; }
+
+  /* ---- cards ---- */
+  .card { background: var(--surface); border-radius: var(--r); box-shadow: var(--shadow); }
+  .card h2 { margin: 0; padding: var(--sp-4) var(--sp-6) var(--sp-3); font-size: 15px; font-weight: 600; letter-spacing: -0.3px; display: flex; align-items: baseline; gap: var(--sp-3); flex-wrap: wrap; }
+  .card h2 .cap { font-weight: 400; font-size: 12px; color: var(--text-3); letter-spacing: 0; }
+  /* minmax(0, 1fr): cards must not grow to the matrix's intrinsic width; the matrix scrolls inside its card. */
+  .stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-6); padding: var(--sp-6) 0 64px; }
+  .fade { transition: opacity var(--t-fast) var(--ease-out); }
+  .is-loading .fade { opacity: 0.55; transition-delay: 100ms; }
+
+  /* ---- summary bar ---- */
+  .summary { padding: var(--sp-4) var(--sp-6) var(--sp-3); }
+  .summary-head { display: flex; align-items: center; gap: var(--sp-3); min-height: 24px; margin-bottom: var(--sp-3); }
+  .summary-head .scope { font-size: 12px; color: var(--text-3); }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 var(--sp-2) 0 var(--sp-3);
+    border-radius: 999px; background: var(--highlight); color: var(--accent); font-size: 12px; font-weight: 500;
+  }
+  .badge button {
+    height: 20px; padding: 0 6px; border: 0; border-radius: 999px; background: transparent; color: inherit; cursor: pointer; font-size: 12px; font-weight: 500;
+  }
+  .badge button:hover { background: rgba(255, 255, 255, 0.5); }
+  .stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--sp-4) var(--sp-6); }
+  .stat .lbl { font-size: 11px; font-weight: 500; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.08em; }
+  .stat .val { font: 300 32px/1.15 var(--mono); letter-spacing: 0.01em; color: var(--text); margin-top: 6px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .stat .val small { font-size: 14px; color: var(--text-3); letter-spacing: 0; margin-left: 4px; }
+  .stat .sub { font-size: 12px; color: var(--text-3); margin-top: 4px; min-height: 16px; }
+  .gap { margin-top: var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--border); font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .gap b { font: 400 18px/1 var(--mono); color: var(--text); letter-spacing: 0.01em; }
+  .caveat { padding: var(--sp-2) var(--sp-6) var(--sp-4); font-size: 12px; color: var(--text-3); line-height: 1.5; }
+
+  /* ---- one hour: day + hour picker ---- */
+  .pick { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: var(--sp-4) var(--sp-6); align-items: start; padding: 0 var(--sp-6) var(--sp-4); }
+  .pick label { display: block; font-size: 11px; font-weight: 500; color: var(--text-3); margin-bottom: 3px; }
+  .pick input[type=date], .pick select {
+    height: 32px; padding: 0 var(--sp-2); border: 1px solid var(--border); border-radius: var(--r);
+    font: inherit; font-size: 13px; color: var(--text); background: var(--surface);
+  }
+  .pick input[type=date] { width: 148px; }
+  .pick select { width: 110px; font-family: var(--mono); }
+  .pick input[type=date]:hover, .pick select:hover { border-color: var(--border-strong); }
+  .one { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--sp-4) var(--sp-6); }
+  .one .stat .val.at-cap { color: var(--amber-text); }
+  .one .stat .val.over { color: var(--cap); }
+  .one-note { grid-column: 1 / -1; font-size: 12px; color: var(--text-2); line-height: 1.5; }
+  .one-note b { font-weight: 600; color: var(--text); }
+  .one-note .err { color: var(--red); font-weight: 500; }
+  .one-note .flag { color: var(--cap); font-weight: 500; }
+  .one-note .flag.amber { color: var(--amber-text); }
+
+  /* ---- matrix ---- */
+  .matrix-wrap { position: relative; }
+  .matrix-scroll { overflow: auto; max-height: 72vh; border-top: 1px solid var(--border); user-select: none; -webkit-user-select: none; }
+  table.matrix { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; }
+  .matrix th, .matrix td { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  .matrix th:last-child, .matrix td:last-child { border-right: 0; }
+  .matrix thead th {
+    position: sticky; top: 0; z-index: 2; background: var(--surface-2);
+    padding: var(--sp-2) 0; height: 40px; text-align: center;
+    font: 400 11px/1 var(--mono); color: var(--text-3); letter-spacing: 0;
+    transition: box-shadow var(--t-fast) var(--ease-out);
+  }
+  .matrix th.date, .matrix td.date {
+    position: sticky; left: 0; z-index: 1; background: var(--surface);
+    text-align: left; padding: var(--sp-2) var(--sp-4); min-width: 168px; width: 168px;
+    font-family: var(--font); transition: box-shadow var(--t-fast) var(--ease-out);
+  }
+  .matrix thead th.date { z-index: 3; background: var(--surface-2); }
+  .matrix td.date .d { font-size: 13px; font-weight: 600; letter-spacing: -0.2px; white-space: nowrap; }
+  .matrix td.date .d .dm { font-weight: 400; color: var(--text-2); margin-left: var(--sp-1); }
+  .matrix td.date .meta { font-size: 11px; color: var(--text-3); white-space: nowrap; margin-top: 1px; min-height: 14px; }
+  .matrix td.date .hol::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 5px; vertical-align: 1px; }
+  .matrix tr.weekend td.date { background: var(--weekend); }
+  .matrix tr.today td.date .d { color: var(--accent); }
+  .scrolled-x .matrix th.date, .scrolled-x .matrix td.date { box-shadow: 6px 0 8px -6px var(--pin-shadow); }
+  .scrolled-y .matrix thead th { box-shadow: 0 6px 8px -6px var(--pin-shadow); }
+  .scrolled-x.scrolled-y .matrix thead th.date { box-shadow: 6px 0 8px -6px var(--pin-shadow), 0 6px 8px -6px var(--pin-shadow); }
+
+  /* Heat cell. --lvl is 0..1 (quiet..busy over the loaded range); the ramp is one hue. */
+  .matrix td.h {
+    --lvl: 0;
+    width: 44px; min-width: 44px; height: 44px; padding: 0; text-align: center; cursor: default;
+    font: 500 13px/1 var(--mono); color: var(--text); letter-spacing: 0;
+    background: color-mix(in oklab, var(--heat-hi) calc(var(--lvl) * var(--heat-max-mix)), var(--heat-lo));
+    transition: background var(--t-cell) var(--ease-out), color var(--t-cell) var(--ease-out), box-shadow var(--t-cell) var(--ease-out);
+  }
+  .matrix td.h:hover, .matrix td.h.active { outline: 2px solid var(--text); outline-offset: -2px; }
+  .matrix td.h.at-cap { box-shadow: inset 0 0 0 2px var(--amber); }
+  .matrix td.h.over { box-shadow: inset 0 0 0 2px var(--cap); color: var(--cap); font-weight: 600; }
+  .matrix td.h.implausible { text-decoration: underline dotted; text-underline-offset: 3px; }
+  .matrix td.h.undef { color: var(--text-3); }
+  .matrix td.h.sel { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .matrix td.h.sel.over { outline-color: var(--accent); }
+  .matrix td.err { text-align: left; color: var(--red); font-weight: 500; padding: var(--sp-4); font-family: var(--font); }
+
+  /* ---- legend ---- */
+  .legend { display: flex; gap: var(--sp-2) var(--sp-6); font-size: 12px; color: var(--text-3); padding: var(--sp-3) var(--sp-6) var(--sp-4); flex-wrap: wrap; align-items: center; }
+  .legend .sw { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-right: 6px; border: 1px solid var(--border-strong); }
+  .legend .ramp { width: 96px; height: 12px; border-radius: 3px; vertical-align: -1px; margin: 0 6px; display: inline-block;
+    background: linear-gradient(to right, var(--heat-lo), color-mix(in oklab, var(--heat-hi) var(--heat-max-mix), var(--heat-lo))); border: 1px solid var(--border); }
+  .legend .sw.at-cap { box-shadow: inset 0 0 0 2px var(--amber); border-color: transparent; }
+  .legend .sw.over { box-shadow: inset 0 0 0 2px var(--cap); border-color: transparent; }
+  .legend .sw.weekend { background: var(--weekend); }
+  .legend .sw.sel { border: 2px solid var(--accent); }
+  .legend .dot::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 6px; vertical-align: 1px; }
+  .legend b { font-family: var(--mono); font-weight: 500; color: var(--text); }
+
+  /* ---- popover: the chain for one hour ---- */
+  .pop {
+    position: absolute; z-index: 5; width: 300px; padding: var(--sp-3) var(--sp-4);
+    background: var(--pop-bg); border-radius: var(--r); box-shadow: var(--shadow-modal);
+    font-size: 12px; line-height: 1.5; color: var(--text);
+    pointer-events: none;   /* hover popover never steals the pointer from the grid (no flicker) */
+  }
+  .pop.pinned { pointer-events: auto; }
+  .pop h3 { margin: 0 0 var(--sp-2); font-size: 13px; font-weight: 600; letter-spacing: -0.2px; display: flex; justify-content: space-between; gap: var(--sp-3); padding-right: 18px; }
+  .pop h3 .flag { font-size: 11px; font-weight: 500; color: var(--cap); }
+  .pop h3 .flag.amber { color: var(--amber-text); }
+  .pop table { width: 100%; border-collapse: collapse; }
+  .pop td { padding: 3px 0; vertical-align: top; border-top: 1px solid var(--border); }
+  .pop tr:first-child td { border-top: 0; }
+  .pop td.k { color: var(--text-2); padding-right: var(--sp-3); }
+  .pop td.v { text-align: right; font-family: var(--mono); white-space: nowrap; letter-spacing: 0; }
+  .pop td.f { color: var(--text-3); font-family: var(--mono); font-size: 11px; padding-top: 0; border-top: 0; padding-bottom: 5px; letter-spacing: 0; }
+  .pop tr.out td.v { font-weight: 600; }
+  .pop .reason { margin: var(--sp-2) 0 0; padding: var(--sp-2) var(--sp-3); background: var(--amber-bg); color: var(--amber-text); border-radius: var(--r); font-size: 11px; line-height: 1.4; }
+  .pop .close { position: absolute; top: 6px; right: 8px; border: 0; background: none; color: var(--text-3); font-size: 16px; line-height: 1; cursor: pointer; padding: 2px 4px; border-radius: var(--r); }
+
+  /* ---- shift strip ---- */
+  .strip-scroll { overflow-x: auto; border-top: 1px solid var(--border); }
+  .strip { display: flex; width: max-content; min-width: 100%; }
+  .strip .day { flex: 0 0 auto; width: 132px; padding: var(--sp-2) 0 var(--sp-3); border-right: 1px solid var(--border); text-align: center; }
+  .strip .day:last-child { border-right: 0; }
+  .strip .day.weekend { background: var(--weekend); }
+  .strip .dl { font-size: 11px; color: var(--text-3); white-space: nowrap; margin-bottom: 4px; }
+  .strip .dl b { color: var(--text); font-weight: 600; }
+  .strip .s { display: grid; grid-template-columns: 14px 1fr auto auto; align-items: baseline; gap: 6px; padding: 1px var(--sp-3); font-family: var(--mono); font-size: 12px; letter-spacing: 0; }
+  .strip .s small.ab { color: var(--cap); }
+  .strip .s em { font-style: normal; font-size: 10px; color: var(--text-3); text-align: left; }
+  .strip .s b { font-weight: 600; text-align: right; }
+  .strip .s small { font-size: 10px; color: var(--text-3); }
+  .strip .s.at-cap b { color: var(--amber-text); }
+  .strip .s.over b { color: var(--cap); text-decoration: underline; text-decoration-color: var(--cap); text-underline-offset: 3px; }
+  .strip-note { padding: var(--sp-3) var(--sp-6) var(--sp-4); font-size: 12px; color: var(--text-3); }
+
+  .status { font-size: 12px; color: var(--text-3); min-height: 18px; margin-left: auto; font-weight: 400; font-variant-numeric: tabular-nums; letter-spacing: 0; }
+
+  @media (max-width: 1100px) {
+    .bar-grid { grid-template-columns: 1fr 1fr; }
+    .dates { grid-column: 1 / -1; grid-template-columns: auto auto; justify-content: start; }
+    .model { grid-column: 1 / -1; }
+    .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+  @media (max-width: 900px) {
+    .wrap { padding: 0 var(--sp-4); }
+    .pick { grid-template-columns: auto auto; padding-left: var(--sp-4); padding-right: var(--sp-4); }
+    .one { grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .card h2, .legend, .strip-note, .summary, .caveat { padding-left: var(--sp-4); padding-right: var(--sp-4); }
+    .bar-grid { padding-left: var(--sp-4); padding-right: var(--sp-4); }
+    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .stat .val { font-size: 26px; }
+    .matrix td.h { width: 38px; min-width: 38px; height: 44px; font-size: 12px; }
+    .matrix th.date, .matrix td.date { min-width: 128px; width: 128px; padding-left: var(--sp-3); }
+    .matrix td.date .d { font-size: 12px; }
+  }
+  @media (max-width: 600px) {
+    .bar-grid { grid-template-columns: 1fr; }
+    .dates { grid-template-columns: 1fr 1fr; }
+    .dates input[type=date], .ctl-head .tsec input { font-size: 16px; width: 100%; }   /* 16px stops iOS zooming on focus */
+    .ctl-head .tsec input { width: 72px; }
+    header .wrap { height: auto; padding: var(--sp-3) var(--sp-4); }
+    header .sub { margin-left: 0; }
+    .pop { width: min(300px, calc(100vw - 2 * var(--sp-4))); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <span class="mark">Vets4Warriors</span>
+    <h1>Staffing forecast</h1>
+    <span class="sub">People to schedule for every hour, from an hourly call forecast and Erlang A (or C). At most 7 per shift.</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="banner" class="banner">Loading model info…</div>
+  <div id="holidayBanner" class="banner notice" hidden></div>
+
+  <div class="bar-sentinel" id="barSentinel"></div>
+  <section class="bar" id="bar" aria-label="Forecast controls">
+    <div class="bar-grid">
+      <div class="dates">
+        <div><label for="start">Start date</label><input type="date" id="start"></div>
+        <div><label for="end">End date</label><input type="date" id="end"></div>
+      </div>
+
+      <div class="ctl">
+        <div class="ctl-head">
+          <label for="eff">Staff efficiency</label>
+          <div class="big"><span class="num" id="effVal">65</span><span class="unit">percent of a shift on inbound</span></div>
+        </div>
+        <div class="track caution">
+          <input type="range" id="eff" min="0" max="100" step="1" value="65" aria-describedby="effFb cautionTip">
+        </div>
+        <div class="feedback">
+          <span id="effFb"></span>
+          <span class="caution-tip" id="cautionTip" tabindex="0" title="Efficiency from 0 to 20 percent is shown for completeness. Below 20 percent the schedule needs more people than this line could ever roster, so the numbers there are not actionable. At 0 the number is undefined.">0 to 20% is a caution zone</span>
+        </div>
+      </div>
+
+      <div class="ctl">
+        <div class="ctl-head">
+          <label for="sl">Service level target</label>
+          <span class="tsec"><label for="tsec">within</label><input type="number" id="tsec" min="0" max="3600" step="5" value="30" inputmode="numeric"><span>s</span></span>
+          <div class="big"><span class="num" id="slVal">80</span><span class="unit">percent of callers answered</span></div>
+        </div>
+        <div class="track">
+          <input type="range" id="sl" min="80" max="95" step="1" value="80" aria-describedby="slFb">
+        </div>
+        <div class="feedback"><span id="slFb"></span></div>
+      </div>
+
+      <div class="model">
+        <span class="seg" role="radiogroup" aria-label="Queue model">
+          <label><input type="radio" name="model" value="erlang_a" checked>Erlang A <small>callers hang up</small></label>
+          <label><input type="radio" name="model" value="erlang_c">Erlang C <small>infinite patience</small></label>
+        </span>
+        <span class="tsec" id="patienceWrap"><label for="patience">mean patience</label><input type="number" id="patience" min="1" max="86400" step="10" inputmode="numeric"><span>s</span></span>
+        <span class="fb" id="modelFb"></span>
+      </div>
+    </div>
+  </section>
+
+  <div class="stack" id="content">
+    <section class="card" aria-label="Window summary">
+      <div class="summary">
+        <div class="summary-head">
+          <span class="scope" id="scope"></span>
+          <span class="badge" id="selBadge" hidden><span id="selLabel"></span><button type="button" id="selClear" aria-label="Clear selection">Clear</button></span>
+        </div>
+        <div class="stats" id="stats"></div>
+        <div class="gap" id="gap"></div>
+      </div>
+      <div class="caveat" id="caveat"></div>
+    </section>
+
+    <section class="card" aria-label="One hour">
+      <h2>Pick a day and hour <span class="cap">the forecast and the people to schedule for that one hour, at the controls above. Any date; it need not be inside the window.</span></h2>
+      <div class="pick">
+        <div><label for="pickDate">Date</label><input type="date" id="pickDate"></div>
+        <div><label for="pickHour">Hour</label><select id="pickHour" aria-label="Hour of day"></select></div>
+        <div class="one" id="one" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Staff to schedule, by hour <span class="cap">one row per date, one column per hour. Hover or tap a cell to trace the number; drag across cells to total a selection.</span><span class="status" id="status"></span></h2>
+      <div class="matrix-wrap">
+        <div class="matrix-scroll fade" id="matrixScroll">
+          <table class="matrix" aria-label="Staff to schedule per hour">
+            <thead><tr id="hourHeader"></tr></thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <div class="pop" id="pop" role="dialog" aria-live="polite" hidden></div>
+      </div>
+      <div class="legend" id="legend"></div>
+    </section>
+
+    <section class="card">
+      <h2>Per shift <span class="cap">the number you schedule against: the busiest hour inside each shift, overlap hour included, its lowest service level, and its worst-hour abandonment</span></h2>
+      <div class="strip-scroll fade"><div class="strip" id="strip"></div></div>
+      <div class="strip-note">O = Overnight 00:00 to 08:30, D = Day 08:00 to 16:30, E = Evening 16:00 to 00:30. Amber is at the cap of 7, warm underline is over it. First small percentage: service level delivered in the shift's hardest hour. Second (warm): share of callers who hang up in that hour. Erlang C shows no hang-ups because it assumes infinite patience.</div>
+    </section>
+  </div>
+</main>
+
+<script src="erlang.js"></script>
+<script>
+(function () {
+  const HOURS = Array.from({ length: 24 }, (_, i) => i);
+  const SHIFTS = [
+    ["Overnight", "O", HOURS.slice(0, 8), { hour: 8, nextDay: false }],
+    ["Day", "D", HOURS.slice(8, 16), { hour: 16, nextDay: false }],
+    ["Evening", "E", HOURS.slice(16, 24), { hour: 0, nextDay: true }],
+  ];
+  const DEBOUNCE_MS = 60;
+  const DEFAULT_HORIZON_DAYS = 30;
+  const MAX_STAFF_PER_SHIFT = V4W.MAX_STAFF_PER_SHIFT;
+  const SECONDS_PER_HOUR = V4W.SECONDS_PER_HOUR;
+  const SECONDS_PER_MINUTE = 60;
+  const CAUTION_MAX_PCT = 20;
+  const POP_GAP = 6;
+  const UNDEFINED_GLYPH = "-";
+
+  const $ = (id) => document.getElementById(id);
+  const startEl = $("start"), endEl = $("end"), effEl = $("eff"), slEl = $("sl"), tsecEl = $("tsec");
+  const patienceEl = $("patience"), modelFbEl = $("modelFb");
+  const modelEls = [...document.querySelectorAll('input[name="model"]')];
+  const rowsEl = $("rows"), headerEl = $("hourHeader"), scrollEl = $("matrixScroll"), popEl = $("pop");
+  const stripEl = $("strip"), legendEl = $("legend"), statusEl = $("status");
+  const statsEl = $("stats"), gapEl = $("gap"), scopeEl = $("scope"), caveatEl = $("caveat");
+  const selBadgeEl = $("selBadge"), selLabelEl = $("selLabel");
+  const bannerEl = $("banner"), holidayBannerEl = $("holidayBanner"), contentEl = $("content");
+  const pickDateEl = $("pickDate"), pickHourEl = $("pickHour"), oneEl = $("one");
+
+  // The forecast (calls + AHT per hour) is fetched once per date range and
+  // cached; every slider or threshold change recomputes staffing from it in
+  // the browser with the same math as the server (web/erlang.js).
+  let cache = null;            // { key, hours: [{date, hour, predicted_calls, aht_sec}], days, window }
+  let computed = [];           // hours with staffing for the current controls
+  let hourIndex = new Map();   // "date:hour" -> computed hour row (for the popover)
+  let cellIndex = new Map();   // "date:hour" -> <td>
+  let pinnedCell = null;
+  let selection = null;        // { dates: [..], hours: [lo, hi] } rectangle, or null
+
+  // ---- helpers ----
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const key = (date, hour) => `${date}:${hour}`;
+  function isoDate(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+  function localDate(s) { return new Date(s + "T00:00:00"); }
+  function shortDate(s) { return localDate(s).toLocaleDateString(undefined, { day: "numeric", month: "short" }); }
+  // Mirrors api.main.format_duration: minutes round half up; "42h 18m" or "18m".
+  function formatDuration(sec) {
+    const minutes = Math.floor(sec / SECONDS_PER_MINUTE + 0.5);
+    const h = Math.floor(minutes / 60), m = minutes % 60;
+    return h ? `${h}h ${m}m` : `${m}m`;
+  }
+  function queueModel() { return (modelEls.find((el) => el.checked) || modelEls[0]).value; }
+  function patienceSec() {
+    if (queueModel() === "erlang_c") return null;
+    const v = Number(patienceEl.value);
+    if (Number.isFinite(v) && v > 0) return Math.min(v, Number(patienceEl.max));
+    return cache && cache.params.patience_sec ? cache.params.patience_sec : null;
+  }
+  function controls() {
+    return { efficiency: Number(effEl.value) / 100, targetPct: Number(slEl.value) / 100, targetSec: targetSec(), patienceSec: patienceSec() };
+  }
+  function renderModelFeedback() {
+    const est = cache && cache.params.patience_source && cache.params.patience_source.kind === "estimated" ? cache.params : null;
+    patienceEl.disabled = queueModel() === "erlang_c";
+    if (queueModel() === "erlang_c") { modelFbEl.textContent = "Erlang C assumes nobody hangs up, so abandonment reads n/a"; return; }
+    const p = patienceSec();
+    if (p === null) { modelFbEl.textContent = ""; return; }
+    const isEstimate = est && Math.round(p) === Math.round(est.patience_sec);
+    modelFbEl.textContent = isEstimate
+      ? `callers give up after ${Math.round(p)} s on average, estimated from ${est.patience_source.n_abandoned.toLocaleString()} abandoned calls`
+      : `callers give up after ${Math.round(p)} s on average (your override; data says ${est ? Math.round(est.patience_sec) : "?"} s)`;
+  }
+  function targetSec() {
+    const v = Number(tsecEl.value);
+    return Number.isFinite(v) && v >= 0 ? Math.min(v, Number(tsecEl.max)) : Number(tsecEl.defaultValue);
+  }
+  function setDefaults() {
+    const today = new Date();
+    const end = new Date(today); end.setDate(end.getDate() + DEFAULT_HORIZON_DAYS - 1);
+    startEl.value = isoDate(today);
+    endEl.value = isoDate(end);
+    updateControlLabels();
+  }
+  function setSliderFill(el) {
+    const pct = ((el.value - el.min) / (el.max - el.min)) * 100;
+    el.style.setProperty("--fill", pct.toFixed(1) + "%");
+  }
+  function updateControlLabels() {
+    const eff = Number(effEl.value), sl = Number(slEl.value), t = targetSec();
+    $("effVal").textContent = eff;
+    $("slVal").textContent = sl;
+    setSliderFill(effEl);
+    setSliderFill(slEl);
+    const effFb = $("effFb");
+    if (eff === 0) effFb.innerHTML = `<span class="warn">at 0% nobody is ever on inbound: people to schedule is undefined</span>`;
+    else if (eff <= CAUTION_MAX_PCT) effFb.innerHTML = `a scheduled person is free for inbound calls ${eff}% of the shift <span class="warn">(not actionable)</span>`;
+    else effFb.textContent = `a scheduled person is free for inbound calls ${eff}% of the shift`;
+    $("slFb").textContent = `answer ${sl}% of callers within ${t} seconds`;
+    renderModelFeedback();
+  }
+  function serverParams() {
+    const c = controls();
+    const params = new URLSearchParams({
+      start: startEl.value, end: endEl.value, queue_model: queueModel(),
+      efficiency: c.efficiency.toFixed(2), target_pct: c.targetPct.toFixed(2), target_sec: String(c.targetSec),
+    });
+    if (c.patienceSec !== null && patienceEl.value !== "") params.set("patience_sec", String(c.patienceSec));
+    return params;
+  }
+  async function fetchJson(url) {
+    const res = await fetch(url);
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const body = await res.json();
+        detail = Array.isArray(body.detail) ? body.detail.map((d) => d.msg).join("; ") : (body.detail || detail);
+      } catch (_) {}
+      throw new Error(`${res.status}: ${detail}`);
+    }
+    return res.json();
+  }
+  function capClass(staff) {
+    if (staff === null || staff === undefined) return "undef";
+    if (staff > MAX_STAFF_PER_SHIFT) return "over";
+    if (staff === MAX_STAFF_PER_SHIFT) return "at-cap";
+    return "";
+  }
+
+  // ---- staffing, computed in the browser from the cached forecast ----
+  function computeHours(baseHours, c) {
+    return baseHours.map((h) => ({
+      date: h.date, hour: h.hour,
+      ...V4W.staffForHour(h.predicted_calls, h.aht_sec, c.efficiency, c.targetPct, c.targetSec, c.patienceSec),
+    }));
+  }
+
+  // Mirrors db/staffing.rollup_shifts: staffing = max over core hours plus the
+  // overlap hour (Evening reaches into the next day's hour 0); calls = sum
+  // over core hours only; delivered SL = the lowest hour in the shift.
+  function rollupShifts(days, hours) {
+    const byKey = new Map(hours.map((h) => [key(h.date, h.hour), h]));
+    const dates = days.map((d) => d.date);
+    return days.map((day, i) => {
+      const next = dates[i + 1];
+      const shifts = {};
+      SHIFTS.forEach(([name, , core, boundary]) => {
+        const coreRows = core.map((h) => byKey.get(key(day.date, h))).filter(Boolean);
+        const bKey = boundary.nextDay ? (next ? key(next, boundary.hour) : null) : key(day.date, boundary.hour);
+        const rows = bKey && byKey.has(bKey) ? [...coreRows, byKey.get(bKey)] : coreRows;
+        const staff = rows.map((r) => r.staff_to_schedule);
+        const undefined_ = staff.some((s) => s === null);
+        const maxStaff = undefined_ ? null : Math.max(...staff);
+        const sl = undefined_ ? null : Math.min(...rows.map((r) => r.service_level_delivered));
+        const abandon = undefined_ || rows.some((r) => r.abandon_share === null) ? null : Math.max(...rows.map((r) => r.abandon_share));
+        shifts[name] = {
+          predicted_calls: coreRows.reduce((a, r) => a + r.predicted_calls, 0),
+          agents_required: Math.max(...rows.map((r) => r.agents_required)),
+          staff_needed: maxStaff,
+          capped: maxStaff === null ? null : maxStaff > MAX_STAFF_PER_SHIFT,
+          service_level_delivered: sl,
+          abandon_share: abandon,
+        };
+      });
+      return { ...day, shifts };
+    });
+  }
+
+  // ---- summary bar (whole window, or the dragged selection) ----
+  function inSelection(h) {
+    return !selection || (selection.dates.includes(h.date) && h.hour >= selection.hours[0] && h.hour <= selection.hours[1]);
+  }
+  function summarize(hours) {
+    const calls = hours.reduce((a, h) => a + h.predicted_calls, 0);
+    const talkSec = hours.reduce((a, h) => a + h.load_erlangs * SECONDS_PER_HOUR, 0);   // = calls * AHT, derived from load
+    const staffed = hours.map((h) => h.staff_to_schedule);
+    const personHours = staffed.some((s) => s === null) ? null : staffed.reduce((a, s) => a + s, 0);
+    const known = hours.filter((h) => h.abandon_share !== null);
+    const abandoned = known.length ? known.reduce((a, h) => a + h.predicted_calls * h.abandon_share, 0) : null;
+    return { n: hours.length, calls, talkSec, meanAht: calls > 0 ? talkSec / calls : null, personHours, abandoned };
+  }
+  function renderSummary() {
+    if (!cache) return;
+    const rows = computed.filter(inSelection);
+    const s = summarize(rows);
+    const stat = (lbl, val, unit, sub) => `<div class="stat"><div class="lbl">${lbl}</div><div class="val">${val}${unit ? `<small>${unit}</small>` : ""}</div><div class="sub">${sub || ""}</div></div>`;
+    const talkHours = s.talkSec / SECONDS_PER_HOUR;
+    statsEl.innerHTML =
+      stat("Predicted calls", s.calls.toFixed(0), "", `${s.n} hours in scope`) +
+      stat("Expected talk time", formatDuration(s.talkSec), "", `${s.calls.toFixed(0)} calls × ${s.meanAht === null ? "?" : (s.meanAht / SECONDS_PER_MINUTE).toFixed(1)} min`) +
+      stat("Average handle time", s.meanAht === null ? UNDEFINED_GLYPH : (s.meanAht / SECONDS_PER_MINUTE).toFixed(1), s.meanAht === null ? "" : "min", "call-weighted across the scope") +
+      stat("Scheduled person-hours", s.personHours === null ? UNDEFINED_GLYPH : s.personHours.toLocaleString(), s.personHours === null ? "" : "h", s.personHours === null ? "undefined at 0% efficiency" : "sum of people to schedule, every hour") +
+      (queueModel() === "erlang_c"
+        ? stat("Expected abandoned calls", "n/a", "", "Erlang C assumes nobody hangs up")
+        : s.abandoned === null
+          ? stat("Expected abandoned calls", UNDEFINED_GLYPH, "", "undefined at 0% efficiency")
+          : stat("Expected abandoned calls", s.abandoned.toFixed(0), s.calls > 0 ? `= ${(100 * s.abandoned / s.calls).toFixed(1)}% of calls` : "", "callers who hang up before an agent answers, at the scheduled staffing"));
+    if (s.personHours === null) {
+      gapEl.innerHTML = `Scheduled person-hours are undefined at 0% efficiency, so the gap to talk time cannot be shown.`;
+    } else {
+      const gap = s.personHours - talkHours;
+      const ratio = talkHours > 0 ? s.personHours / talkHours : null;
+      gapEl.innerHTML = `Scheduled person-hours exceed expected talk time by <b>${formatDuration(Math.max(0, gap) * SECONDS_PER_HOUR)}</b>` +
+        (ratio ? ` (${ratio.toFixed(1)}× the talk time)` : "") +
+        `. That gap is the efficiency assumption (${effEl.value}% of a shift on inbound) plus the queue slack ${queueModel() === "erlang_a" ? "Erlang A" : "Erlang C"} adds to hit ${slEl.value}% within ${targetSec()} s.`;
+    }
+    scopeEl.textContent = selection
+      ? `Selection: ${selection.dates.length} date${selection.dates.length === 1 ? "" : "s"}, ${pad2(selection.hours[0])}:00 to ${pad2(selection.hours[1])}:59`
+      : `Whole window: ${shortDate(cache.window.start)} to ${shortDate(cache.window.end)}`;
+    selBadgeEl.hidden = !selection;
+    if (selection) selLabelEl.textContent = `selection, ${rows.length} cells`;
+  }
+
+  // ---- matrix ----
+  function renderHeader() {
+    headerEl.innerHTML = `<th class="date">Date</th>` + HOURS.map((h) => `<th>${pad2(h)}</th>`).join("");
+  }
+
+  function dateCell(day, dt, today) {
+    const dow = dt.toLocaleDateString(undefined, { weekday: "short" });
+    const dm = dt.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+    const meta = day.holiday ? `<span class="hol">${esc(day.holiday)}</span>` : (day.date === today ? "Today" : "");
+    return `<td class="date" title="${day.date}, ${day.expected_talk} expected talk time"><div class="d">${dow}<span class="dm">${dm}</span></div><div class="meta">${meta}</div></td>`;
+  }
+
+  // Builds the table skeleton once per date range; cells are patched in place afterwards.
+  function buildMatrix(days) {
+    const today = isoDate(new Date());
+    rowsEl.innerHTML = days.map((day) => {
+      const dt = localDate(day.date);
+      const cls = [day.is_weekend ? "weekend" : "", day.date === today ? "today" : ""].join(" ").trim();
+      const cells = HOURS.map((h) => `<td class="h" data-k="${key(day.date, h)}" data-d="${day.date}" data-h="${h}" tabindex="0"></td>`).join("");
+      return `<tr class="${cls}">${dateCell(day, dt, today)}${cells}</tr>`;
+    }).join("");
+    cellIndex = new Map([...rowsEl.querySelectorAll("td.h[data-k]")].map((td) => [td.dataset.k, td]));
+  }
+
+  function patchMatrix(hours) {
+    const defined = hours.map((h) => h.staff_to_schedule).filter((s) => s !== null);
+    const lo = defined.length ? Math.min(...defined) : 0, hi = defined.length ? Math.max(...defined) : 0, span = hi - lo;
+    hourIndex = new Map(hours.map((h) => [key(h.date, h.hour), h]));
+    hours.forEach((h) => {
+      const td = cellIndex.get(key(h.date, h.hour));
+      if (!td) return;
+      const staff = h.staff_to_schedule;
+      const lvl = staff === null || span === 0 ? 0 : (staff - lo) / span;
+      td.style.setProperty("--lvl", lvl.toFixed(3));
+      td.className = ["h", capClass(staff), h.implausible ? "implausible" : "", inSelection(h) && selection ? "sel" : ""].join(" ").trim();
+      td.textContent = staff === null ? UNDEFINED_GLYPH : staff;
+    });
+    renderLegend(lo, hi, defined.length === 0);
+  }
+
+  function renderLegend(lo, hi, allUndefined) {
+    legendEl.innerHTML =
+      (allUndefined
+        ? `<span>people to schedule is undefined at 0% efficiency; cells show "${UNDEFINED_GLYPH}"</span>`
+        : `<span>quiet <b>${lo}</b><span class="ramp"></span><b>${hi}</b> busy, people to schedule that hour</span>`) +
+      `<span><span class="sw at-cap"></span>exactly at the cap of 7</span>` +
+      `<span><span class="sw over"></span>over the cap, needs more than 7 (never clamped)</span>` +
+      `<span><span class="sw sel"></span>selected</span>` +
+      `<span><span class="sw weekend"></span>weekend</span>` +
+      `<span class="dot">holiday</span>`;
+  }
+
+  // ---- popover: the chain, written out ----
+  function popContent(h) {
+    const c = controls();
+    const fmt = (v, d) => Number(v).toFixed(d);
+    const flag = h.over_cap ? `<span class="flag">over cap</span>` : (h.staff_to_schedule === MAX_STAFF_PER_SHIFT ? `<span class="flag amber">at cap</span>` : "");
+    const row = (k, v, f, out) => `<tr class="${out ? "out" : ""}"><td class="k">${k}</td><td class="v">${v}</td></tr>` + (f ? `<tr><td class="f" colspan="2">${f}</td></tr>` : "");
+    const head = `<button class="close" aria-label="Close">×</button>` +
+      `<h3><span>${esc(h.date)} ${pad2(h.hour)}:00 to ${pad2(h.hour)}:59</span>${flag}</h3><table>` +
+      row("predicted calls", fmt(h.predicted_calls, 2), "LightGBM Poisson, this hour") +
+      row("handle time", `${fmt(h.aht_sec, 0)} s`, "recency-weighted mean for this weekday and hour") +
+      row("expected talk time", formatDuration(h.load_erlangs * SECONDS_PER_HOUR), `${fmt(h.predicted_calls, 2)} × ${fmt(h.aht_sec, 0)} s`) +
+      row("load", `${fmt(h.load_erlangs, 3)} erlangs`, `talk time ÷ ${SECONDS_PER_HOUR}`) +
+      row("agents required", h.agents_required, h.queue_model === "erlang_a"
+        ? `smallest N with Erlang A service level ≥ ${slEl.value}% in ${c.targetSec} s, callers giving up after ${Math.round(h.patience_sec)} s on average`
+        : `smallest N with Erlang C service level ≥ ${slEl.value}% in ${c.targetSec} s`);
+    if (h.staff_to_schedule === null) {
+      return head + row("÷ efficiency", `${h.agents_required} ÷ 0`, "undefined", true) + `</table>` +
+        `<p class="reason">${esc(h.reason)}</p>`;
+    }
+    return head +
+      row("÷ efficiency", `${h.agents_required} ÷ ${fmt(c.efficiency, 2)} = ${fmt(h.agents_required / c.efficiency, 2)}`, "share of a shift actually on inbound") +
+      row("staff to schedule", h.staff_to_schedule, `ceil(${fmt(h.agents_required / c.efficiency, 2)})`, true) +
+      row("effective agents", h.effective_agents, `floor(${h.staff_to_schedule} × ${fmt(c.efficiency, 2)})`) +
+      row("service level delivered", `${fmt(h.service_level_delivered * 100, 1)}%`, `with ${h.effective_agents} on inbound; target ${slEl.value}% in ${c.targetSec} s`) +
+      (h.queue_model === "erlang_a"
+        ? row("abandonment", `${fmt(h.abandon_share * 100, 1)}%`, `callers who hang up before answer with ${h.effective_agents} on inbound`)
+        : row("abandonment", "n/a", "Erlang C assumes nobody hangs up")) +
+      `</table>` + (h.reason ? `<p class="reason">${esc(h.reason)}</p>` : "");
+  }
+
+  // Positioned in viewport space so it is never under the sticky bar or off
+  // the bottom of the screen; then converted to the matrix box's coordinates.
+  function placePop(cell) {
+    const host = scrollEl.parentElement.getBoundingClientRect();
+    const r = cell.getBoundingClientRect();
+    popEl.hidden = false;
+    const w = popEl.offsetWidth, hgt = popEl.offsetHeight;
+    const barBottom = $("bar").getBoundingClientRect().bottom;
+    const minTop = Math.max(barBottom, 0) + POP_GAP;
+    const maxBottom = window.innerHeight - POP_GAP;
+
+    let left = r.left + r.width / 2 - w / 2;
+    left = Math.max(POP_GAP, Math.min(left, window.innerWidth - w - POP_GAP));
+
+    const below = r.bottom + POP_GAP, above = r.top - hgt - POP_GAP;
+    let top;
+    if (below + hgt <= maxBottom) top = below;
+    else if (above >= minTop) top = above;
+    else top = Math.max(minTop, Math.min(below, maxBottom - hgt));   // clamp into the visible band
+    popEl.style.left = (left - host.left) + "px";
+    popEl.style.top = (top - host.top) + "px";
+  }
+  function showPop(cell) {
+    const h = hourIndex.get(cell.dataset.k);
+    if (!h) return;
+    popEl.innerHTML = popContent(h);
+    placePop(cell);
+  }
+  function hidePop() {
+    if (pinnedCell) { pinnedCell.classList.remove("active"); pinnedCell = null; }
+    popEl.classList.remove("pinned");
+    popEl.hidden = true;
+  }
+  function cellOf(e) { return e.target.closest && e.target.closest("td.h[data-k]"); }
+
+  // ---- drag selection (rectangle over dates x hours) ----
+  let drag = null;   // { anchor: td, moved: bool }
+  function rectFrom(a, b) {
+    const dates = cache.days.map((d) => d.date);
+    const [i0, i1] = [dates.indexOf(a.dataset.d), dates.indexOf(b.dataset.d)].sort((x, y) => x - y);
+    const [h0, h1] = [Number(a.dataset.h), Number(b.dataset.h)].sort((x, y) => x - y);
+    return { dates: dates.slice(i0, i1 + 1), hours: [h0, h1] };
+  }
+  function applySelection(sel) {
+    selection = sel;
+    cellIndex.forEach((td) => {
+      const on = !!sel && sel.dates.includes(td.dataset.d) && Number(td.dataset.h) >= sel.hours[0] && Number(td.dataset.h) <= sel.hours[1];
+      td.classList.toggle("sel", on);
+    });
+    renderSummary();
+  }
+  function clearSelection() { if (selection) applySelection(null); }
+  rowsEl.addEventListener("pointerdown", (e) => {
+    const c = cellOf(e);
+    if (!c || e.button !== 0) return;
+    drag = { anchor: c, moved: false };
+    rowsEl.setPointerCapture && rowsEl.setPointerCapture(e.pointerId);
+  });
+  rowsEl.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const c = el && el.closest && el.closest("td.h[data-k]");
+    if (!c || c === drag.anchor && !drag.moved) return;
+    if (!drag.moved) { drag.moved = true; hidePop(); }
+    applySelection(rectFrom(drag.anchor, c));
+  });
+  const endDrag = () => { if (drag && drag.moved) { /* selection stays */ } drag = null; };
+  rowsEl.addEventListener("pointerup", endDrag);
+  rowsEl.addEventListener("pointercancel", endDrag);
+  $("selClear").addEventListener("click", clearSelection);
+
+  rowsEl.addEventListener("mouseover", (e) => { const c = cellOf(e); if (c && !pinnedCell && !drag) showPop(c); });
+  rowsEl.addEventListener("mouseleave", (e) => {
+    if (pinnedCell) return;
+    if (e.relatedTarget && popEl.contains(e.relatedTarget)) return;   // moved onto the popover itself
+    popEl.hidden = true;
+  });
+  rowsEl.addEventListener("focusin", (e) => { const c = cellOf(e); if (c && !pinnedCell) showPop(c); });
+  rowsEl.addEventListener("click", (e) => {
+    const c = cellOf(e);
+    if (!c) return;
+    if (drag && drag.moved) return;  // a drag just ended on this cell; not a tap
+    if (pinnedCell === c) { hidePop(); return; }
+    if (pinnedCell) pinnedCell.classList.remove("active");
+    pinnedCell = c; c.classList.add("active"); showPop(c);
+    popEl.classList.add("pinned");
+  });
+  popEl.addEventListener("click", (e) => { if (e.target.closest(".close")) hidePop(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { hidePop(); clearSelection(); } });
+  document.addEventListener("click", (e) => { if (pinnedCell && !e.target.closest("td.h") && !e.target.closest(".pop")) hidePop(); });
+  scrollEl.addEventListener("scroll", () => {
+    scrollEl.parentElement.classList.toggle("scrolled-x", scrollEl.scrollLeft > 0);
+    scrollEl.parentElement.classList.toggle("scrolled-y", scrollEl.scrollTop > 0);
+    if (pinnedCell) placePop(pinnedCell); else popEl.hidden = true;
+  }, { passive: true });
+
+  // Sticky bar: shadow only once it is actually pinned (sentinel scrolled out of view).
+  new IntersectionObserver(([entry]) => { $("bar").classList.toggle("stuck", !entry.isIntersecting); }, { threshold: 0 })
+    .observe($("barSentinel"));
+
+  // ---- shift strip ----
+  function renderStrip(days) {
+    stripEl.innerHTML = days.map((day) => {
+      const dt = localDate(day.date);
+      const label = `<div class="dl"><b>${dt.toLocaleDateString(undefined, { weekday: "short" })}</b> ${dt.toLocaleDateString(undefined, { day: "numeric", month: "short" })}</div>`;
+      const shifts = SHIFTS.map(([name, short]) => {
+        const s = day.shifts[name];
+        if (!s || s.staff_needed === null) return `<div class="s undef" title="${name}: undefined at 0% efficiency"><em>${short}</em><b>${UNDEFINED_GLYPH}</b><small></small><small></small></div>`;
+        const sl = s.service_level_delivered === null ? "" : `${(s.service_level_delivered * 100).toFixed(0)}%`;
+        const ab = s.abandon_share === null || s.abandon_share === undefined ? "" : `${(s.abandon_share * 100).toFixed(1)}%`;
+        return `<div class="s ${capClass(s.staff_needed)}" title="${name}: ${s.staff_needed} people, ${s.predicted_calls.toFixed(1)} calls, lowest hour delivers ${sl}${ab ? `, worst hour loses ${ab} of callers` : ""}"><em>${short}</em><b>${s.staff_needed}</b><small>${sl}</small><small class="ab">${ab}</small></div>`;
+      }).join("");
+      return `<div class="day${day.is_weekend ? " weekend" : ""}">${label}${shifts}</div>`;
+    }).join("");
+  }
+
+  // ---- one hour: day + hour picker ----
+  // The picked date may be outside the loaded window, so its forecast is
+  // fetched on its own (one request per date, cached). Staffing is then
+  // computed in the browser from the current controls, like the matrix.
+  const dayCache = new Map();   // date -> { hours: [{hour, predicted_calls, aht_sec}], holiday }
+  let pickInflight = 0;
+  function shiftOf(hour) {
+    const found = SHIFTS.find(([, , core]) => core.includes(hour));
+    return found ? found[0] : "";
+  }
+  async function dayForecast(date) {
+    if (dayCache.has(date)) return dayCache.get(date);
+    if (cache && cache.days.some((d) => d.date === date)) {
+      const day = cache.days.find((d) => d.date === date);
+      const entry = { hours: cache.hours.filter((h) => h.date === date), holiday: day.holiday, coverageMessage: null };
+      dayCache.set(date, entry);
+      return entry;
+    }
+    const data = await fetchJson("/api/forecast?" + new URLSearchParams({ start: date, end: date }));
+    const entry = {
+      hours: data.hours.map((h) => ({ hour: h.hour, predicted_calls: h.predicted_calls, aht_sec: h.aht_sec })),
+      holiday: data.days.length ? data.days[0].holiday : null,
+      coverageMessage: data.holiday_coverage && data.holiday_coverage.message,
+    };
+    dayCache.set(date, entry);
+    return entry;
+  }
+  function renderOne(date, hour, base, holiday, coverageMessage) {
+    const c = controls();
+    const h = V4W.staffForHour(base.predicted_calls, base.aht_sec, c.efficiency, c.targetPct, c.targetSec, c.patienceSec);
+    const stat = (lbl, val, unit, sub, cls) => `<div class="stat"><div class="lbl">${lbl}</div><div class="val ${cls || ""}">${val}${unit ? `<small>${unit}</small>` : ""}</div><div class="sub">${sub || ""}</div></div>`;
+    const staff = h.staff_to_schedule;
+    const when = `${localDate(date).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "short", year: "numeric" })}, ${pad2(hour)}:00 to ${pad2(hour)}:59`;
+    const flag = staff === null ? "" : (h.over_cap ? ` <span class="flag">over the cap of ${MAX_STAFF_PER_SHIFT}</span>` : (staff === MAX_STAFF_PER_SHIFT ? ` <span class="flag amber">at the cap of ${MAX_STAFF_PER_SHIFT}</span>` : ""));
+    oneEl.innerHTML =
+      stat("Predicted calls", base.predicted_calls.toFixed(1), "", "LightGBM Poisson, this hour") +
+      stat("Handle time", (base.aht_sec / SECONDS_PER_MINUTE).toFixed(1), "min", "recency-weighted mean, this weekday and hour") +
+      stat("People to schedule", staff === null ? UNDEFINED_GLYPH : staff, "", staff === null ? "undefined at 0% efficiency" : `${h.agents_required} on inbound ÷ ${c.efficiency.toFixed(2)} efficiency`, capClass(staff)) +
+      (staff === null
+        ? stat("Service level", UNDEFINED_GLYPH, "", "")
+        : stat("Service level", (h.service_level_delivered * 100).toFixed(0), "%", `within ${c.targetSec} s` + (h.abandon_share === null ? "; Erlang C, no hang-ups" : `; ${(h.abandon_share * 100).toFixed(1)}% hang up`))) +
+      `<div class="one-note"><b>${esc(when)}</b>${holiday ? ` · ${esc(holiday)}` : ""} · ${shiftOf(hour)} shift${flag}` +
+      (h.reason ? ` · <span class="flag amber">${esc(h.reason)}</span>` : "") +
+      (coverageMessage ? ` · <span class="flag amber">${esc(coverageMessage)}</span>` : "") + `</div>`;
+  }
+  async function renderPick() {
+    const date = pickDateEl.value, hour = Number(pickHourEl.value);
+    if (!date || !Number.isInteger(hour)) return;
+    const id = ++pickInflight;
+    try {
+      const day = await dayForecast(date);
+      if (id !== pickInflight) return;
+      const base = day.hours.find((h) => h.hour === hour);
+      if (!base) throw new Error(`no forecast for ${date} ${pad2(hour)}:00`);
+      renderOne(date, hour, base, day.holiday, day.coverageMessage);
+    } catch (err) {
+      if (id !== pickInflight) return;
+      oneEl.innerHTML = `<div class="one-note"><span class="err">${esc(err.message)}</span></div>`;
+    }
+  }
+  function setPickDefaults() {
+    pickHourEl.innerHTML = HOURS.map((h) => `<option value="${h}">${pad2(h)}:00</option>`).join("");
+    const now = new Date();
+    pickDateEl.value = isoDate(now);
+    pickHourEl.value = String(now.getHours());
+  }
+
+  // ---- recompute (no network) ----
+  function recompute() {
+    if (!cache) return;
+    const t0 = performance.now();
+    computed = computeHours(cache.hours, controls());
+    patchMatrix(computed);
+    renderStrip(rollupShifts(cache.days, computed));
+    renderSummary();
+    renderPick();
+    if (pinnedCell) showPop(pinnedCell);
+    const ms = performance.now() - t0;
+    statusEl.textContent = `${cache.days.length} days, ${computed.length} hours, recomputed in ${ms.toFixed(0)} ms`;
+  }
+
+  // ---- fetch (date range changes only) ----
+  let inflight = 0;
+  async function refresh() {
+    const rangeKey = `${startEl.value}|${endEl.value}`;
+    if (cache && cache.key === rangeKey) { recompute(); return; }
+    const id = ++inflight;
+    statusEl.textContent = "Loading forecast…";
+    contentEl.classList.add("is-loading");
+    try {
+      const data = await fetchJson("/api/forecast?" + serverParams());
+      if (id !== inflight) return;
+      contentEl.classList.remove("is-loading");
+      hidePop();
+      selection = null;
+      cache = {
+        key: rangeKey,
+        hours: data.hours.map((h) => ({ date: h.date, hour: h.hour, predicted_calls: h.predicted_calls, aht_sec: h.aht_sec })),
+        days: data.days,
+        window: data.window,
+        params: data.params,
+      };
+      if (patienceEl.value === "" && data.params.patience_sec) patienceEl.placeholder = String(Math.round(data.params.patience_sec));
+      renderModelFeedback();
+      caveatEl.textContent = data.window.caveat;
+      buildMatrix(data.days);
+      renderHolidayBanner(data.holiday_coverage);
+      recompute();
+    } catch (err) {
+      if (id !== inflight) return;
+      contentEl.classList.remove("is-loading");
+      hidePop();
+      cache = null;
+      statusEl.textContent = "";
+      rowsEl.innerHTML = `<tr><td colspan="25" class="err">${esc(err.message)}</td></tr>`;
+      stripEl.innerHTML = "";
+      legendEl.innerHTML = "";
+      statsEl.innerHTML = "";
+      gapEl.textContent = "";
+      scopeEl.textContent = "";
+    }
+  }
+
+  function renderHolidayBanner(coverage) {
+    const message = coverage && coverage.message;
+    holidayBannerEl.hidden = !message;
+    holidayBannerEl.textContent = message || "";
+  }
+
+  async function loadModelBanner() {
+    try {
+      const m = await fetchJson("/api/model");
+      const overall = (m.backtest && m.backtest.overall) || [];
+      const byModel = Object.fromEntries(overall.map((r) => [r.model, r]));
+      const lgbm = byModel.lgbm_poisson, naive = byModel.seasonal_naive;
+      if (!lgbm) throw new Error("metadata has no backtest.overall");
+      bannerEl.innerHTML =
+        `<strong>Model error, not magic.</strong> LightGBM (Poisson) backtested on ${m.backtest.first_test_month.slice(0, 7)} to ${m.backtest.last_test_month.slice(0, 7)}, ` +
+        `predicting each month with no access to it. Daily-total MAE <strong>${lgbm.daily_mae.toFixed(1)} calls/day</strong>` +
+        (naive ? ` vs ${naive.daily_mae.toFixed(1)} for seasonal naive` : "") +
+        `; hourly MAE ${lgbm.mae.toFixed(2)} calls/hour. ` +
+        `Trained on ${m.train_start.slice(0, 10)} to ${m.train_end.slice(0, 10)}. Treat any single cell as plus or minus one person.`;
+      bannerEl.classList.remove("error");
+    } catch (err) {
+      bannerEl.textContent = "Model metadata unavailable: " + err.message;
+      bannerEl.classList.add("error");
+    }
+  }
+
+  let timer = null;
+  function debounced(fn) { clearTimeout(timer); timer = setTimeout(fn, DEBOUNCE_MS); }
+  const onControl = () => { updateControlLabels(); debounced(recompute); };
+  effEl.addEventListener("input", onControl);
+  slEl.addEventListener("input", onControl);
+  tsecEl.addEventListener("input", onControl);
+  patienceEl.addEventListener("input", onControl);
+  modelEls.forEach((el) => el.addEventListener("change", onControl));
+  startEl.addEventListener("change", () => debounced(refresh));
+  endEl.addEventListener("change", () => debounced(refresh));
+  pickDateEl.addEventListener("change", () => debounced(renderPick));
+  pickHourEl.addEventListener("change", () => debounced(renderPick));
+
+  renderHeader();
+  setDefaults();
+  setPickDefaults();
+  loadModelBanner();
+  refresh();
+})();
+</script>
+</body>
+</html>

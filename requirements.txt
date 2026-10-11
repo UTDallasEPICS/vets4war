@@ -1,0 +1,14 @@
+# Pinned to the versions the MVP was built and backtested with (Python 3.12).
+# Install:  pip install -r requirements.txt
+# macOS also needs:  brew install libomp   (LightGBM runtime dependency)
+psycopg==3.3.5
+psycopg-binary==3.3.5
+python-dotenv==1.2.3
+pandas==3.0.5
+numpy==2.5.3
+lightgbm==4.7.0
+fastapi==0.141.1
+uvicorn==0.52.4
+pytest==9.1.1
+# TestClient in tests/test_api.py needs httpx (starlette does not install it).
+httpx==0.28.1
