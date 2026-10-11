@@ -15,6 +15,17 @@
     rollup_shifts(hourly)
         -> one row per (shift_date, shift): Day / Evening / Overnight
 
+    service_level_at(agents, load, aht_sec, target_sec, patience_sec)
+    abandon_share_at(agents, load, aht_sec, target_sec, patience_sec)
+        -> the Erlang outputs at ANY agent count, for "what if we staffed
+           N instead" questions (planned roster, one-fewer-person)
+
+    verdict(planned, recommended)
+        -> "understaffed" | "on target" | "overstaffed" | "exceeds capacity"
+    planned_outcome(shift_hours, planned, efficiency, target_sec, patience_sec)
+        -> effective agents, worst-hour service level and abandonment when
+           `planned` people are scheduled for every hour of a shift
+
 Shift staffing is the MAX of the hourly requirement inside the shift, not
 the mean. You staff for the peak or you miss the SLA at the peak.
 
@@ -38,6 +49,7 @@ import math
 
 import pandas as pd
 
+from db.aht import DEFAULT_RECENCY
 from db.erlang import erlang_a, erlang_c, required_agents
 from db.forecast import forecast_range
 from db.patience import cached_patience
@@ -72,6 +84,8 @@ SHIFTS = (
 )
 SHIFT_ORDER = tuple(s["shift"] for s in SHIFTS)
 
+VERDICTS = ("understaffed", "on target", "overstaffed", "exceeds capacity")
+
 
 # =============================================================================
 # One hour
@@ -98,6 +112,60 @@ def _abandon_share(agents: int, load: float, aht_sec: float, target_sec: float,
     if agents <= 0:
         return 1.0 if load > 0 else 0.0
     return erlang_a(agents, load, aht_sec, patience_sec, target_sec)["abandon_prob"]
+
+
+def service_level_at(agents: int, load: float, aht_sec: float, target_sec: float,
+                     patience_sec: float | None = None) -> float:
+    """Public name for _service_level: what `agents` on inbound deliver."""
+    return _service_level(agents, load, aht_sec, target_sec, patience_sec)
+
+
+def abandon_share_at(agents: int, load: float, aht_sec: float, target_sec: float,
+                     patience_sec: float | None = None) -> float | None:
+    """Public name for _abandon_share: hang-ups with `agents` on inbound."""
+    return _abandon_share(agents, load, aht_sec, target_sec, patience_sec)
+
+
+def verdict(planned: int, recommended: int) -> str:
+    """The partner's literal question: over or under staffed? Capacity wins
+    over every other reading because it is the one the roster cannot do."""
+    if planned > MAX_STAFF_PER_SHIFT:
+        return "exceeds capacity"
+    if planned < recommended:
+        return "understaffed"
+    if planned > recommended:
+        return "overstaffed"
+    return "on target"
+
+
+def planned_outcome(shift_hours: pd.DataFrame, planned: int, efficiency: float,
+                    target_sec: float, patience_sec: float | None) -> dict:
+    """Schedule `planned` people for every hour in `shift_hours` (rows of a
+    staff_for_range frame) and report the worst hour: effective agents =
+    floor(planned * efficiency), lowest service level, highest abandonment.
+    Same arithmetic as staff_for_hour, evaluated at the supervisor's number
+    instead of the recommendation."""
+    if planned < 0:
+        raise ValueError(f"planned must be >= 0, got {planned}")
+    if not 0 <= efficiency <= 1:
+        raise ValueError(f"efficiency must be in [0, 1], got {efficiency}")
+    if shift_hours.empty:
+        raise ValueError("shift has no hours in the forecast window")
+    effective = math.floor(planned * efficiency)
+    levels = [
+        _service_level(effective, row.offered_load_erlangs, row.predicted_aht_sec, target_sec, patience_sec)
+        for row in shift_hours.itertuples(index=False)
+    ]
+    abandons = [
+        _abandon_share(effective, row.offered_load_erlangs, row.predicted_aht_sec, target_sec, patience_sec)
+        for row in shift_hours.itertuples(index=False)
+    ]
+    known = [a for a in abandons if a is not None]
+    return {
+        "effective_agents": effective,
+        "service_level_at_planned": min(levels),
+        "abandon_share_at_planned": max(known) if known else None,
+    }
 
 
 def schedule_people(agents_required: int, efficiency: float) -> tuple[int | None, int | None]:
@@ -192,15 +260,18 @@ def staff_for_range(
     target_sec: float = DEFAULT_TARGET_SEC,
     queue_model: str = DEFAULT_QUEUE_MODEL,
     patience_sec: float | None = None,
+    recency: str = DEFAULT_RECENCY,
+    include_holidays: bool = True,
 ) -> pd.DataFrame:
     """Forecast every hour in the range and attach staffing numbers.
 
     queue_model erlang_a uses `patience_sec`, or the estimate from the calls
-    table when it is None. queue_model erlang_c ignores patience."""
+    table when it is None. queue_model erlang_c ignores patience. `recency`
+    and `include_holidays` go straight to forecast_range."""
     if queue_model not in QUEUE_MODELS:
         raise ValueError(f"queue_model must be one of {QUEUE_MODELS}, got {queue_model!r}")
     patience = resolve_patience(conn, queue_model, patience_sec)
-    forecast = forecast_range(conn, start_date, end_date)
+    forecast = forecast_range(conn, start_date, end_date, recency, include_holidays)
     staffing = pd.DataFrame([
         staff_for_hour(row.predicted_offered, row.predicted_aht_sec,
                        efficiency, target_pct, target_sec, patience)
@@ -225,8 +296,9 @@ def resolve_patience(conn, queue_model: str, patience_sec: float | None) -> floa
 # Shift roll-up
 # =============================================================================
 
-def _shift_memberships(hourly: pd.DataFrame) -> pd.DataFrame:
-    """Long frame: one row per (hour, shift it belongs to), with is_core."""
+def shift_memberships(hourly: pd.DataFrame) -> pd.DataFrame:
+    """Long frame: one row per (hour, shift it belongs to), with is_core.
+    The overlap hour appears twice, once per adjacent shift."""
     day = hourly["hour_start"].dt.normalize()
     hour = hourly["hour_start"].dt.hour
     pieces = []
@@ -249,7 +321,7 @@ def rollup_shifts(hourly: pd.DataFrame) -> pd.DataFrame:
     """One row per (shift_date, shift). Staffing = max over the shift's
     hours including the overlap hour; calls = sum over core hours only.
     Shifts with no core hours in the range (edge of the window) are dropped."""
-    long = _shift_memberships(hourly)
+    long = shift_memberships(hourly)
     long["core_calls"] = long["predicted_offered"].where(long["is_core"], 0.0)
 
     grouped = long.groupby(["shift_date", "shift"]).agg(

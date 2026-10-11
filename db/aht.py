@@ -6,6 +6,7 @@ information and would pull the mean down. They still count as calls
 everywhere else (volume, service level, patience).
 
     estimate_aht(conn, halflife_days=365) -> {(dow, hour): agent_sec}
+    RECENCY_HALFLIFE_DAYS                  -> the three presets the UI offers
 
 Exponentially weighted mean: a call `age` days before the newest call in
 the table gets weight 0.5 ** (age / halflife_days), so last year's calls
@@ -32,6 +33,17 @@ except ImportError:
     sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
 
 DEFAULT_HALFLIFE_DAYS = 365
+
+# The partner asked (2026-09-02) to choose how much recent calls count.
+# "equal" weights every call the same (halflife None); "weighted" is the
+# default one-year halflife; "recent" at 90 days makes last quarter dominate.
+RECENCY_HALFLIFE_DAYS: dict[str, float | None] = {
+    "equal": None,
+    "weighted": DEFAULT_HALFLIFE_DAYS,
+    "recent": 90,
+}
+DEFAULT_RECENCY = "weighted"
+RECENCY_OPTIONS = tuple(RECENCY_HALFLIFE_DAYS)
 
 # Below this many answered calls a cell's own mean is too noisy to trust.
 MIN_CELL_CALLS = 30
@@ -65,15 +77,19 @@ def _load_answered(conn) -> pd.DataFrame:
     return df
 
 
-def _recency_weights(call_date: pd.Series, halflife_days: float) -> np.ndarray:
+def _recency_weights(call_date: pd.Series, halflife_days: float | None) -> np.ndarray:
+    """halflife None = every call weighs 1.0 (equal weighting)."""
+    if halflife_days is None:
+        return np.ones(len(call_date))
     age_days = (call_date.max() - call_date).dt.days.to_numpy()
     return np.power(0.5, age_days / halflife_days)
 
 
-def estimate_aht(conn, halflife_days: float = DEFAULT_HALFLIFE_DAYS) -> dict[tuple[int, int], float]:
-    """Exponentially weighted mean agent_sec per (dow, hour) over answered calls."""
-    if halflife_days <= 0:
-        raise ValueError(f"halflife_days must be > 0, got {halflife_days}")
+def estimate_aht(conn, halflife_days: float | None = DEFAULT_HALFLIFE_DAYS) -> dict[tuple[int, int], float]:
+    """Exponentially weighted mean agent_sec per (dow, hour) over answered
+    calls. halflife_days None = unweighted mean."""
+    if halflife_days is not None and halflife_days <= 0:
+        raise ValueError(f"halflife_days must be > 0 or None, got {halflife_days}")
 
     calls = _load_answered(conn)
     weights = _recency_weights(calls["call_date"], halflife_days)

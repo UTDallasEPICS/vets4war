@@ -34,7 +34,11 @@ HOUR_KEYS = {
 }
 DAY_KEYS = {"date", "is_weekend", "holiday", "predicted_calls", "shifts", "expected_talk_sec", "expected_talk"}
 WINDOW_KEYS = {"start", "end", "expected_calls", "expected_talk_sec", "expected_talk", "mean_aht_sec",
-               "expected_abandoned_calls", "abandon_share", "caveat"}
+               "expected_abandoned_calls", "abandon_share", "expected_abandoned_one_fewer",
+               "recency", "recency_effect_pct", "caveat"}
+SOURCE_KEYS = {"kind", "label", "start", "end"}
+PLANNED_KEYS = {"date", "shift", "planned", "recommended", "delta", "verdict", "effective_agents",
+                "service_level_at_planned", "abandon_share_at_planned"}
 PATIENCE_RANGE_SEC = (60, 3600)   # sanity bounds; the exact value is checked against db.patience below
 TALK_TOLERANCE = 1e-6
 SHIFT_KEYS = {"predicted_calls", "agents_required", "staff_needed", "capped", "service_level_delivered", "abandon_share"}
@@ -327,3 +331,90 @@ def test_patience_override_changes_abandonment(client, forecast):
 @pytest.mark.parametrize("bad", [{"queue_model": "erlang_x"}, {"patience_sec": 0}, {"patience_sec": -5}])
 def test_bad_queue_params_are_422(client, bad):
     assert client.get("/api/forecast", params={**THREE_DAYS, **bad}).status_code == 422
+
+
+# ---- [API] additions for the operations console ----
+
+def test_every_response_names_its_data_source(client, forecast):
+    for body in (forecast, client.get("/api/staffing", params=THREE_DAYS).json(), client.get("/api/model").json()):
+        source = body["data_source"]
+        assert set(source) == SOURCE_KEYS
+        assert source["kind"] in ("partner", "synthetic", "unlabeled")
+        assert source["start"] <= source["end"]
+        assert source["label"]
+
+
+def test_recency_changes_handle_time_not_volume(client):
+    params = {**THREE_DAYS, "efficiency": EFFICIENCY, "target_pct": TARGET_PCT}
+    equal = client.get("/api/forecast", params={**params, "recency": "equal"}).json()
+    weighted = client.get("/api/forecast", params={**params, "recency": "weighted"}).json()
+    recent = client.get("/api/forecast", params={**params, "recency": "recent"}).json()
+    assert [h["predicted_calls"] for h in equal["hours"]] == [h["predicted_calls"] for h in weighted["hours"]]
+    assert equal["window"]["recency_effect_pct"] == 0.0
+    for body in (weighted, recent):
+        expected = (body["window"]["expected_talk_sec"] / equal["window"]["expected_talk_sec"] - 1) * 100
+        assert math.isclose(body["window"]["recency_effect_pct"], expected, rel_tol=1e-9)
+        assert body["window"]["recency"] == body["params"]["recency"]
+    assert any(a["aht_sec"] != b["aht_sec"] for a, b in zip(equal["hours"], recent["hours"]))
+
+
+def test_bad_recency_is_422(client):
+    assert client.get("/api/forecast", params={**THREE_DAYS, "recency": "latest"}).status_code == 422
+
+
+def test_excluding_holidays_changes_a_holiday_and_marks_it_still(client):
+    # 2026-12-25 is in the holidays table
+    params = {"start": "2026-12-25", "end": "2026-12-25"}
+    with_h = client.get("/api/forecast", params=params).json()
+    without = client.get("/api/forecast", params={**params, "include_holidays": "false"}).json()
+    assert with_h["days"][0]["holiday"] and without["days"][0]["holiday"]
+    assert without["params"]["include_holidays"] is False
+    assert with_h["window"]["expected_calls"] != without["window"]["expected_calls"]
+
+
+def test_one_fewer_person_raises_abandonment(forecast):
+    window = forecast["window"]
+    assert window["expected_abandoned_one_fewer"] > window["expected_abandoned_calls"]
+
+
+def test_one_fewer_is_none_under_erlang_c(client):
+    body = client.get("/api/forecast", params={**THREE_DAYS, "queue_model": "erlang_c"}).json()
+    assert body["window"]["expected_abandoned_one_fewer"] is None
+
+
+def test_planned_roster_verdicts_and_consequences(client, forecast):
+    day = forecast["days"][0]
+    rec = {name: day["shifts"][name]["staff_needed"] for name in SHIFT_ORDER}
+    body = {
+        **THREE_DAYS, "efficiency": EFFICIENCY, "target_pct": TARGET_PCT,
+        "planned": [
+            {"date": day["date"], "shift": "Day", "planned": rec["Day"]},
+            {"date": day["date"], "shift": "Evening", "planned": max(rec["Evening"] - 1, 0)},
+            {"date": day["date"], "shift": "Overnight", "planned": rec["Overnight"] + 1},
+            {"date": day["date"], "shift": "Day", "planned": MAX_STAFF_PER_SHIFT + 1},
+        ],
+    }
+    response = client.post("/api/planned", json=body)
+    assert response.status_code == 200, response.text
+    shifts = response.json()["shifts"]
+    assert [set(s) for s in shifts] == [PLANNED_KEYS] * 4
+    on, under, over, beyond = shifts
+    assert on["verdict"] == "on target" and on["delta"] == 0
+    assert under["verdict"] == "understaffed" and under["delta"] == -1
+    assert over["verdict"] == "overstaffed" and over["delta"] == 1
+    assert beyond["verdict"] == "exceeds capacity"
+    # the consequence: fewer people, lower service level, more hang-ups
+    assert under["service_level_at_planned"] <= on["service_level_at_planned"] or under["shift"] != on["shift"]
+    assert over["effective_agents"] == math.floor((rec["Overnight"] + 1) * EFFICIENCY)
+    assert on["service_level_at_planned"] >= TARGET_PCT - 1e-9
+    assert 0 <= on["abandon_share_at_planned"] <= 1
+
+
+def test_planned_outside_window_is_400(client):
+    body = {**THREE_DAYS, "planned": [{"date": "2026-11-01", "shift": "Day", "planned": 5}]}
+    assert client.post("/api/planned", json=body).status_code == 400
+
+
+def test_planned_bad_shift_is_422(client):
+    body = {**THREE_DAYS, "planned": [{"date": THREE_DAYS["start"], "shift": "Night", "planned": 5}]}
+    assert client.post("/api/planned", json=body).status_code == 422

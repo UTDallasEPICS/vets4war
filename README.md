@@ -57,10 +57,15 @@ db/patience.py   mean caller patience from abandoned calls
 db/train.py      LightGBM Poisson, rolling backtest, writes models/
 db/forecast.py   forecast_range(): hourly calls + handle time for a date range
 db/staffing.py   Erlang -> agents -> scheduled staff, shift roll-up
-api/main.py      FastAPI: /api/forecast, /api/staffing, /api/model, serves web/
-web/index.html   the dashboard (vanilla JS); web/erlang.js mirrors db/erlang.py
+db/source.py     data-source badge: partner / synthetic label + date range
+api/main.py      FastAPI: /api/forecast, /api/staffing, /api/planned, /api/model
+web/index.html   the console: markup + stylesheet
+web/logic.js     every number the page shows is derived here (pure, node-testable)
+web/app.js       DOM wiring, fetch, exports; no arithmetic of its own
+web/erlang.js    mirror of db/erlang.py + staff_for_hour, parity-tested
 models/          volume_lgbm.txt + metadata.json, written by `make train`
-tests/           pytest; test_features.py and test_api.py need the database
+tests/           pytest; test_features.py and test_api.py need the database,
+                 test_erlang_js.py and test_web.py need node
 ```
 
 ## Setup
@@ -98,7 +103,7 @@ Paste the connection string from the Supabase project (Connect button,
 
 ```
 make db-check PYTHON=.venv/bin/python   # row counts and date range
-make test     PYTHON=.venv/bin/python   # 85 tests; 2 files need the database
+make test     PYTHON=.venv/bin/python   # 101 tests; 2 files need the database, 2 need node
 make serve    PYTHON=.venv/bin/python   # http://127.0.0.1:8000
 ```
 
@@ -140,6 +145,7 @@ port 8000 using the same local environment. These requests all returned
 | Name | Required | Meaning |
 |---|---|---|
 | `V4W_DATABASE_URL` | yes | Postgres connection string. The only data source. Loaded by `python-dotenv` from `.env` or the shell. |
+| `V4W_DATA_SOURCE` | yes, for the badge | `partner` or `synthetic`. Shown in the header on every page load with the data's date range. Unset = the badge says the source is not labeled, so synthetic numbers are never mistaken for real ones. |
 | `HOST`, `PORT` | no | Bind address for `make serve`, default `127.0.0.1:8000`. |
 
 ## The data
@@ -182,27 +188,62 @@ The running API reloads the model on the next request after a retrain.
 GET /api/forecast?start=YYYY-MM-DD&end=YYYY-MM-DD
     &efficiency=0.65&target_pct=0.80&target_sec=30
     &queue_model=erlang_a|erlang_c&patience_sec=
+    &recency=equal|weighted|recent&include_holidays=true|false
     hours: one row per hour with the whole chain (calls, handle time, load,
            agents, people to schedule, service level, abandonment)
     days:  per-date shift roll-up (Overnight / Day / Evening)
-    window: totals and the talk-time caveat
+    window: totals, the talk-time caveat, recency_effect_pct (how far the
+            chosen handle-time weighting moves expected talk time from equal
+            weighting) and expected_abandoned_one_fewer (hang-ups if every
+            hour scheduled one person fewer than recommended)
 
 GET /api/staffing?...same params
     days only
 
+POST /api/planned
+    body: the same params plus planned: [{date, shift, planned}]
+    per entry: recommended, delta, verdict (understaffed / on target /
+    overstaffed / exceeds capacity), effective_agents, and the Erlang
+    service level and abandonment at the PLANNED staffing
+
 GET /api/model
-    models/metadata.json verbatim (training window, features, backtest)
+    models/metadata.json plus data_source
 ```
 
+Every response carries `data_source` (`kind`, `label`, `start`, `end`).
 `start`/`end` default to today and today + 29 days; maximum range 366 days.
 
-## Dashboard
+## The console
 
-`make serve`, then open the URL. Pick a date range for the hour-by-hour
-matrix and the per-shift strip, or pick a single day and hour in the
-"Pick a day and hour" card to see that hour's forecast and the people to
-schedule. Sliders for efficiency, service-level target and answer time
-recompute in the browser without a round trip.
+`make serve`, then open the URL. Top to bottom: a one-line header with the
+data-source badge and exports, a sticky control bar, the grid, the summary
+strip, and the model-credibility footer. The detail panel docks to the
+right of the grid (below it under 1100px).
+
+- **Grid.** One row per date, one column per hour, grouped into the three
+  tours. Cell colour is a discrete scale, one shade per person, across the
+  under-cap range. Three cap states: under (blue), at the cap of 7 (amber
+  edge and numeral), over the cap (red fill, white numeral, corner wedge,
+  plus the service level you would get if you could only staff 7). The
+  recommendation itself is never clamped. After each tour: its peak (the
+  number to roster against) and person-hours; at the end: the day's total.
+- **Planned roster.** Type your own number per tour per day; empty follows
+  the recommendation. The badge gives the verdict and the service level at
+  your number. Your entries persist in this browser's localStorage.
+- **Detail panel.** Hover a cell for its full trace (calls, handle time,
+  talk time, erlangs, agents, ÷ efficiency, ceil, effective agents,
+  delivered service level, hang-ups); click to pin it while you move the
+  sliders. Drag across cells for a selection total. Pick a date for a day
+  summary.
+- **Controls.** Efficiency, service-level target (with the 80 to 85% band
+  where the line operates and the 90% industry mark), answer time, Erlang
+  A or C, caller patience (defaults to the measured value; "reset to data"
+  appears after an override), handle-time weighting (equal / weighted /
+  recent), and the holiday toggle. Everything except the window, weighting
+  and holiday toggle recomputes in the browser with no round trip; the bar
+  reports how many cells changed.
+- **Exports.** PNG of the grid (redrawn on a canvas from the computed
+  values) and CSV of every hour including planned staff and verdicts.
 
 ## What must never be committed
 

@@ -1,7 +1,13 @@
 """Hourly call-volume and handle-time forecast for a future date range.
 
-    forecast_range(conn, start_date, end_date) -> DataFrame
+    forecast_range(conn, start_date, end_date, recency, include_holidays) -> DataFrame
         hour_start, predicted_offered, predicted_aht_sec  (one row per hour)
+
+    recency: "equal" | "weighted" | "recent" picks the handle-time weighting
+        (db.aht.RECENCY_HALFLIFE_DAYS). Call volume is unaffected.
+    include_holidays: False neutralises the holiday features so the volume
+        model predicts the day as an ordinary weekday. The model itself is
+        untouched; only its inputs change.
 
     holiday_coverage(holidays, end_date) -> dict
         last_known_holiday, covered, message  (message is None when covered)
@@ -11,9 +17,10 @@ metadata (train_start, feature list). Features come from
 db.features.build_features, the same function training used, anchored to
 the training epoch so the trend index lines up. AHT comes from db.aht.
 
-The booster, its metadata, and the AHT table are cached in this module,
-keyed on the model file's mtime. A retrain (new mtime) refreshes all three
-on the next call; slider drags between retrains reuse them.
+The booster, its metadata, and one AHT table per recency preset are cached
+in this module, keyed on the model file's mtime. A retrain (new mtime)
+refreshes all of them on the next call; slider drags between retrains reuse
+them.
 
 No fallback forecaster: a missing model file raises.
 Connection comes from $V4W_DATABASE_URL via python-dotenv.
@@ -37,16 +44,17 @@ try:
 except ImportError:
     sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
 
-from db.aht import estimate_aht  # noqa: E402
-from db.features import build_features, load_holidays  # noqa: E402
+from db.aht import DEFAULT_RECENCY, RECENCY_HALFLIFE_DAYS, estimate_aht  # noqa: E402
+from db.features import HOLIDAY_WINDOW_DAYS, build_features, load_holidays  # noqa: E402
 from db.train import METADATA_PATH, MODEL_PATH  # noqa: E402
 
 OUTPUT_COLUMNS = ("hour_start", "predicted_offered", "predicted_aht_sec")
 LAST_HOUR_OF_DAY = 23
 
 # Process-wide cache. Replaced wholesale (never mutated in place) when the
-# model file's mtime changes.
-_cache: dict = {"mtime": None, "booster": None, "metadata": None, "aht": None}
+# model file's mtime changes. `aht` maps recency preset -> table, filled on
+# first use of each preset.
+_cache: dict = {"mtime": None, "booster": None, "metadata": None, "aht": {}}
 
 # The holiday-coverage warning goes to stderr once per process; every
 # request still gets it as a field via holiday_coverage().
@@ -65,10 +73,12 @@ def _read_metadata() -> dict:
     return metadata
 
 
-def _load_cached(conn) -> tuple[lgb.Booster, dict, dict]:
-    """Booster, metadata, and AHT table, reloaded only when the model file
-    changes on disk."""
+def _load_cached(conn, recency: str = DEFAULT_RECENCY) -> tuple[lgb.Booster, dict, dict]:
+    """Booster, metadata, and the AHT table for `recency`, reloaded only
+    when the model file changes on disk."""
     global _cache
+    if recency not in RECENCY_HALFLIFE_DAYS:
+        raise ValueError(f"recency must be one of {tuple(RECENCY_HALFLIFE_DAYS)}, got {recency!r}")
     if not MODEL_PATH.exists():
         raise FileNotFoundError(
             f"{MODEL_PATH} not found. Run `python -m db.train` first."
@@ -84,9 +94,12 @@ def _load_cached(conn) -> tuple[lgb.Booster, dict, dict]:
             "mtime": mtime,
             "booster": lgb.Booster(model_file=str(MODEL_PATH)),
             "metadata": _read_metadata(),
-            "aht": estimate_aht(conn),
+            "aht": {},
         }
-    return _cache["booster"], _cache["metadata"], _cache["aht"]
+    if recency not in _cache["aht"]:
+        tables = {**_cache["aht"], recency: estimate_aht(conn, RECENCY_HALFLIFE_DAYS[recency])}
+        _cache = {**_cache, "aht": tables}
+    return _cache["booster"], _cache["metadata"], _cache["aht"][recency]
 
 
 # =============================================================================
@@ -132,10 +145,23 @@ def _hourly_grid(start_date, end_date) -> pd.DataFrame:
     return pd.DataFrame({"hour_start": hours})
 
 
-def forecast_range(conn, start_date: date | str, end_date: date | str) -> pd.DataFrame:
+def aht_table(conn, recency: str = DEFAULT_RECENCY) -> dict:
+    """The cached {(dow, hour): agent_sec} table for a recency preset."""
+    return _load_cached(conn, recency)[2]
+
+
+def _without_holidays(featured: pd.DataFrame) -> pd.DataFrame:
+    """The same rows with holiday features set to their 'no holiday nearby'
+    values: flag 0, and distance at the clip limit, which is what the model
+    saw for every ordinary hour more than two weeks from a holiday."""
+    return featured.assign(is_holiday=0, days_to_nearest_holiday=HOLIDAY_WINDOW_DAYS)
+
+
+def forecast_range(conn, start_date: date | str, end_date: date | str,
+                   recency: str = DEFAULT_RECENCY, include_holidays: bool = True) -> pd.DataFrame:
     """Predicted offered calls and AHT for every hour from start_date 00:00
     through end_date 23:00 (both dates inclusive)."""
-    booster, metadata, aht_by_cell = _load_cached(conn)
+    booster, metadata, aht_by_cell = _load_cached(conn, recency)
     holidays = load_holidays(conn)
 
     coverage = holiday_coverage(holidays, end_date)
@@ -144,6 +170,8 @@ def forecast_range(conn, start_date: date | str, end_date: date | str) -> pd.Dat
 
     grid = _hourly_grid(start_date, end_date)
     featured = build_features(grid, holidays, epoch=metadata["train_start"])
+    if not include_holidays:
+        featured = _without_holidays(featured)
 
     features = metadata["features"]
     missing = [f for f in features if f not in featured.columns]

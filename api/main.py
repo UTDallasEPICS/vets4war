@@ -11,8 +11,19 @@
                   or erlang_c (infinite patience, abandon_share is null);
     patience_sec = mean caller patience override; default is the estimate
                    from the calls table (params.patience_source says which).
+    recency = equal | weighted (default) | recent: handle-time weighting
+                   (db.aht.RECENCY_HALFLIFE_DAYS); window.recency_effect_pct says
+                   how much it moves expected talk time vs equal weighting.
+    include_holidays = false predicts every day as an ordinary weekday.
+    POST /api/planned                                       the supervisor's roster
+        body: the same params plus planned: [{date, shift, planned}]; returns
+        the recommendation, the verdict (under / on target / over / exceeds
+        capacity) and the Erlang service level at the PLANNED number.
     GET /api/model                                          models/metadata.json
     GET /                                                   web/index.html (static)
+
+    Every response carries data_source: which data (partner / synthetic,
+    from $V4W_DATA_SOURCE) and its date range, so the page can say so.
 
 Every request opens its own database connection from $V4W_DATABASE_URL and
 runs the same db.staffing code the CLI uses. No numbers are computed here.
@@ -23,6 +34,7 @@ Run from the repo root:  uvicorn api.main:app --reload
 from __future__ import annotations
 
 import json
+import math
 import logging
 import os
 import sys
@@ -33,6 +45,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -41,18 +54,24 @@ try:
 except ImportError:
     sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
 
+from db.aht import DEFAULT_RECENCY, RECENCY_OPTIONS  # noqa: E402
 from db.features import SATURDAY_ISODOW, load_holidays  # noqa: E402
-from db.forecast import holiday_coverage  # noqa: E402
+from db.forecast import aht_table, holiday_coverage  # noqa: E402
 from db.patience import cached_patience  # noqa: E402
+from db.source import describe_source  # noqa: E402
 from db.staffing import (  # noqa: E402
     DEFAULT_EFFICIENCY,
     DEFAULT_QUEUE_MODEL,
     DEFAULT_TARGET_PCT,
     DEFAULT_TARGET_SEC,
     SHIFT_ORDER,
+    abandon_share_at,
+    planned_outcome,
     resolve_patience,
     rollup_shifts,
+    shift_memberships,
     staff_for_range,
+    verdict,
 )
 from db.train import METADATA_PATH  # noqa: E402
 
@@ -63,6 +82,8 @@ MAX_RANGE_DAYS = 366
 MAX_TARGET_SEC = 3600
 MAX_PATIENCE_SEC = 86400
 QUEUE_MODEL_PATTERN = "^(erlang_a|erlang_c)$"
+RECENCY_PATTERN = "^(" + "|".join(RECENCY_OPTIONS) + ")$"
+MAX_PLANNED = 1000
 SECONDS_PER_HOUR = 3600
 SECONDS_PER_MINUTE = 60
 MINUTES_PER_HOUR = 60
@@ -126,11 +147,27 @@ def _queue_params(conn, queue_model: str, patience_sec: float | None) -> dict:
     return {"queue_model": queue_model, "patience_sec": resolved, "patience_source": source}
 
 
+def _equal_weight_talk_sec(conn, start: date, end: date, recency: str, include_holidays: bool,
+                           hourly: pd.DataFrame) -> float:
+    """Expected talk time over the window under EQUAL handle-time weighting,
+    the reference the recency control is compared against. Volume does not
+    depend on recency, so the forecast is not rerun: the same predicted
+    calls are multiplied by the equal-weight AHT for each weekday and hour."""
+    if recency == "equal":
+        return _talk_seconds(hourly["offered_load_erlangs"].sum())
+    equal = aht_table(conn, "equal")
+    dow = hourly["hour_start"].dt.isocalendar().day.astype(int)
+    hour = hourly["hour_start"].dt.hour
+    aht = [equal[(int(d), int(h))] for d, h in zip(dow, hour)]
+    return float((hourly["predicted_offered"].to_numpy() * aht).sum())
+
+
 def _hourly_staffing(start: date, end: date, efficiency: float, target_pct: float,
                      target_sec: float, queue_model: str, patience_sec: float | None,
-                     ) -> tuple[pd.DataFrame, dict, pd.DataFrame, dict]:
-    """Hourly staffing frame, holiday-coverage status, the holidays table,
-    and the queue-model parameters actually used.
+                     recency: str = DEFAULT_RECENCY, include_holidays: bool = True) -> dict:
+    """Everything one request needs, computed on one connection:
+    hourly (staffing frame), coverage, holidays, queue (params used),
+    source (data-source badge), equal_talk_sec (recency reference).
 
     staff_for_range -> forecast_range builds the whole hourly grid once and
     runs the shared build_features on it once with the trained epoch. This
@@ -139,9 +176,16 @@ def _hourly_staffing(start: date, end: date, efficiency: float, target_pct: floa
         with _connection() as conn:
             queue = _queue_params(conn, queue_model, patience_sec)
             hourly = staff_for_range(conn, start, end, efficiency, target_pct, target_sec,
-                                     queue_model, queue["patience_sec"])
+                                     queue_model, queue["patience_sec"], recency, include_holidays)
             holidays = load_holidays(conn)
-            return hourly, holiday_coverage(holidays, end), holidays, queue
+            return {
+                "hourly": hourly,
+                "coverage": holiday_coverage(holidays, end),
+                "holidays": holidays,
+                "queue": queue,
+                "source": describe_source(conn),
+                "equal_talk_sec": _equal_weight_talk_sec(conn, start, end, recency, include_holidays, hourly),
+            }
     except FileNotFoundError as exc:
         raise HTTPException(503, str(exc)) from exc
     except ValueError as exc:
@@ -199,7 +243,25 @@ def _talk_by_date(hourly: pd.DataFrame) -> dict[str, float]:
     return {day.strftime("%Y-%m-%d"): _talk_seconds(load) for day, load in per_day.items()}
 
 
-def _window_summary(hourly: pd.DataFrame, start: date, end: date) -> dict:
+def _abandoned_one_fewer(hourly: pd.DataFrame, efficiency: float, target_sec: float,
+                         patience_sec: float | None) -> float | None:
+    """Expected abandoned calls if every hour scheduled ONE FEWER person than
+    recommended. Same chain as staff_for_hour, evaluated at scheduled - 1:
+    effective = floor((scheduled - 1) * efficiency). This is what the slack
+    buys. None under Erlang C (no abandonment) or at efficiency 0."""
+    if patience_sec is None or efficiency == 0 or hourly["scheduled_needed"].isna().any():
+        return None
+    total = 0.0
+    for row in hourly.itertuples(index=False):
+        fewer = max(int(row.scheduled_needed) - 1, 0)
+        effective = math.floor(fewer * efficiency)
+        share = abandon_share_at(effective, row.offered_load_erlangs, row.predicted_aht_sec, target_sec, patience_sec)
+        total += float(row.predicted_offered) * float(share)
+    return total
+
+
+def _window_summary(hourly: pd.DataFrame, start: date, end: date, efficiency: float,
+                    target_sec: float, queue: dict, recency: str, equal_talk_sec: float) -> dict:
     """Totals over the whole requested window, in seconds and as text, next to
     the call total they came from. Carries the caveat so the number never
     travels without it."""
@@ -207,6 +269,10 @@ def _window_summary(hourly: pd.DataFrame, start: date, end: date) -> dict:
     talk_sec = _talk_seconds(hourly["offered_load_erlangs"].sum())
     known = hourly["abandon_share"].notna()
     abandoned = float((hourly["predicted_offered"] * hourly["abandon_share"])[known].sum()) if known.any() else None
+    # recency_effect_pct: how far the chosen weighting moves expected talk
+    # time from equal weighting. Volume is unaffected by recency, so this is
+    # purely the handle-time effect.
+    effect_pct = (talk_sec / equal_talk_sec - 1.0) * 100.0 if equal_talk_sec > 0 else 0.0
     return {
         "start": str(start),
         "end": str(end),
@@ -216,6 +282,9 @@ def _window_summary(hourly: pd.DataFrame, start: date, end: date) -> dict:
         "mean_aht_sec": talk_sec / calls if calls > 0 else None,
         "expected_abandoned_calls": abandoned,
         "abandon_share": (abandoned / calls) if abandoned is not None and calls > 0 else None,
+        "expected_abandoned_one_fewer": _abandoned_one_fewer(hourly, efficiency, target_sec, queue["patience_sec"]),
+        "recency": recency,
+        "recency_effect_pct": effect_pct,
         "caveat": TALK_TIME_CAVEAT,
     }
 
@@ -280,6 +349,13 @@ def _days_with_shifts(shifts: pd.DataFrame) -> list[dict]:
 # Routes
 # =============================================================================
 
+def _params(start: date, end: date, efficiency: float, target_pct: float, target_sec: float,
+            queue: dict, recency: str, include_holidays: bool) -> dict:
+    return {"start": str(start), "end": str(end), "efficiency": efficiency,
+            "target_pct": target_pct, "target_sec": target_sec, **queue,
+            "recency": recency, "include_holidays": include_holidays}
+
+
 @app.get("/api/forecast")
 def api_forecast(
     start: date | None = None,
@@ -289,17 +365,21 @@ def api_forecast(
     target_sec: float = Query(DEFAULT_TARGET_SEC, ge=0, le=MAX_TARGET_SEC),
     queue_model: str = Query(DEFAULT_QUEUE_MODEL, pattern=QUEUE_MODEL_PATTERN),
     patience_sec: float | None = Query(None, gt=0, le=MAX_PATIENCE_SEC),
+    recency: str = Query(DEFAULT_RECENCY, pattern=RECENCY_PATTERN),
+    include_holidays: bool = True,
 ):
     start, end = _validate_range(start, end)
-    hourly, coverage, holidays, queue = _hourly_staffing(
-        start, end, efficiency, target_pct, target_sec, queue_model, patience_sec)
+    run = _hourly_staffing(start, end, efficiency, target_pct, target_sec, queue_model, patience_sec,
+                           recency, include_holidays)
+    hourly = run["hourly"]
     return {
-        "params": {"start": str(start), "end": str(end), "efficiency": efficiency,
-                   "target_pct": target_pct, "target_sec": target_sec, **queue},
-        "holiday_coverage": coverage,
+        "params": _params(start, end, efficiency, target_pct, target_sec, run["queue"], recency, include_holidays),
+        "data_source": run["source"],
+        "holiday_coverage": run["coverage"],
         "hours": _hour_rows(hourly),
-        "days": _days_with_calendar(rollup_shifts(hourly), holidays, _talk_by_date(hourly)),
-        "window": _window_summary(hourly, start, end),
+        "days": _days_with_calendar(rollup_shifts(hourly), run["holidays"], _talk_by_date(hourly)),
+        "window": _window_summary(hourly, start, end, efficiency, target_sec, run["queue"],
+                                  recency, run["equal_talk_sec"]),
     }
 
 
@@ -312,16 +392,76 @@ def api_staffing(
     target_sec: float = Query(DEFAULT_TARGET_SEC, ge=0, le=MAX_TARGET_SEC),
     queue_model: str = Query(DEFAULT_QUEUE_MODEL, pattern=QUEUE_MODEL_PATTERN),
     patience_sec: float | None = Query(None, gt=0, le=MAX_PATIENCE_SEC),
+    recency: str = Query(DEFAULT_RECENCY, pattern=RECENCY_PATTERN),
+    include_holidays: bool = True,
 ):
     start, end = _validate_range(start, end)
-    hourly, coverage, _, queue = _hourly_staffing(
-        start, end, efficiency, target_pct, target_sec, queue_model, patience_sec)
-    shifts = rollup_shifts(hourly)
+    run = _hourly_staffing(start, end, efficiency, target_pct, target_sec, queue_model, patience_sec,
+                           recency, include_holidays)
     return {
-        "params": {"start": str(start), "end": str(end), "efficiency": efficiency,
-                   "target_pct": target_pct, "target_sec": target_sec, **queue},
-        "holiday_coverage": coverage,
-        "days": _days_with_shifts(shifts),
+        "params": _params(start, end, efficiency, target_pct, target_sec, run["queue"], recency, include_holidays),
+        "data_source": run["source"],
+        "holiday_coverage": run["coverage"],
+        "days": _days_with_shifts(rollup_shifts(run["hourly"])),
+    }
+
+
+class PlannedShift(BaseModel):
+    date: date
+    shift: str = Field(pattern="^(" + "|".join(SHIFT_ORDER) + ")$")
+    planned: int = Field(ge=0, le=MAX_PLANNED)
+
+
+class PlannedRequest(BaseModel):
+    start: date
+    end: date
+    efficiency: float = Field(DEFAULT_EFFICIENCY, ge=0, le=1)
+    target_pct: float = Field(DEFAULT_TARGET_PCT, gt=0, lt=1)
+    target_sec: float = Field(DEFAULT_TARGET_SEC, ge=0, le=MAX_TARGET_SEC)
+    queue_model: str = Field(DEFAULT_QUEUE_MODEL, pattern=QUEUE_MODEL_PATTERN)
+    patience_sec: float | None = Field(None, gt=0, le=MAX_PATIENCE_SEC)
+    recency: str = Field(DEFAULT_RECENCY, pattern=RECENCY_PATTERN)
+    include_holidays: bool = True
+    planned: list[PlannedShift] = Field(max_length=MAX_RANGE_DAYS * len(SHIFT_ORDER))
+
+
+@app.post("/api/planned")
+def api_planned(body: PlannedRequest):
+    """The supervisor's roster against the forecast: for each (date, shift)
+    the recommendation, the verdict, and what the planned number delivers.
+    Service level and abandonment at the planned staffing come from the same
+    Erlang code as the recommendation; nothing is recomputed differently."""
+    start, end = _validate_range(body.start, body.end)
+    run = _hourly_staffing(start, end, body.efficiency, body.target_pct, body.target_sec,
+                           body.queue_model, body.patience_sec, body.recency, body.include_holidays)
+    hourly, queue = run["hourly"], run["queue"]
+    recommended = rollup_shifts(hourly).set_index(["shift_date", "shift"])["staff_needed"]
+    memberships = shift_memberships(hourly)
+    if body.efficiency == 0:
+        raise HTTPException(400, "efficiency is 0: people to schedule is undefined, so there is no roster to judge")
+
+    results = []
+    for item in body.planned:
+        key = (pd.Timestamp(item.date), item.shift)
+        if key not in recommended.index:
+            raise HTTPException(400, f"{item.date} {item.shift} is not inside the forecast window")
+        shift_hours = memberships[(memberships["shift_date"] == key[0]) & (memberships["shift"] == item.shift)]
+        rec = int(recommended[key])
+        outcome = planned_outcome(shift_hours, item.planned, body.efficiency, body.target_sec, queue["patience_sec"])
+        results.append({
+            "date": str(item.date),
+            "shift": item.shift,
+            "planned": item.planned,
+            "recommended": rec,
+            "delta": item.planned - rec,
+            "verdict": verdict(item.planned, rec),
+            **outcome,
+        })
+    return {
+        "params": _params(start, end, body.efficiency, body.target_pct, body.target_sec, queue,
+                          body.recency, body.include_holidays),
+        "data_source": run["source"],
+        "shifts": results,
     }
 
 
@@ -330,9 +470,16 @@ def api_model():
     if not METADATA_PATH.exists():
         raise HTTPException(404, f"{METADATA_PATH} not found; run `make train`")
     try:
-        return json.loads(METADATA_PATH.read_text())
+        metadata = json.loads(METADATA_PATH.read_text())
     except json.JSONDecodeError as exc:
         raise HTTPException(500, f"{METADATA_PATH} is not valid JSON: {exc}") from exc
+    try:
+        with _connection() as conn:
+            source = describe_source(conn)
+    except (psycopg.Error, ValueError) as exc:
+        log.exception("data source lookup failed")
+        raise HTTPException(503, f"data source lookup failed: {exc}") from exc
+    return {**metadata, "data_source": source}
 
 
 # Static site last so /api/* routes win.
