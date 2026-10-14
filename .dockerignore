@@ -1,0 +1,55 @@
+# Version control and editor metadata
+.git
+.gitignore
+.github
+.vscode
+.idea
+.fleet
+.DS_Store
+
+# Secrets and local configuration
+.env
+.env.*
+
+# Python environments, bytecode, caches, and test output
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Test, documentation, and coursework files are not needed at runtime
+tests
+docs
+wpr
+Makefile
+README.md
+requirements.md
+
+# Local data and exports must never enter the build context
+data
+*.csv
+*.tsv
+*.xls
+*.xlsx
+*.parquet
+
+# Logs and local tooling
+*.log
+logs
+.agents
+.claude
+skills-lock.json
+
+# Legacy frontend artifacts
+node_modules
+.nuxt
+.nitro
+.output
+.data
+.cache
+dist

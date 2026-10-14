@@ -105,6 +105,36 @@ make serve    PYTHON=.venv/bin/python   # http://127.0.0.1:8000
 `make` targets default to `python3`; pass `PYTHON=.venv/bin/python` to use
 the venv. `PORT=8001` changes the port.
 
+## Container verification
+
+The application image listens on port 8000 and requires the database settings
+from the local `.env` file. After Docker Desktop is healthy, run this sequence
+from PowerShell at the repository root:
+
+```powershell
+docker build -t app-test .
+docker run -d --env-file .env -p 8000:8000 --name test-container app-test
+docker logs test-container
+curl.exe -I http://localhost:8000
+docker rm -f test-container
+```
+
+### Verification record (2026-10-14)
+
+Automated container verification was blocked by the Windows host runtime, not
+by an application build error. Docker Desktop 4.48.0 crashed at
+`dockerInference` and `docker-secrets-engine\engine.sock`, leaving the Linux
+engine socket unavailable. Repeat the container verification sequence above
+after Docker Desktop is repaired.
+
+As a fallback verification, the application was run directly with Uvicorn on
+port 8000 using the same local environment. These requests all returned
+`200 OK`:
+
+- `GET /`
+- `GET /api/model`
+- `GET /api/staffing`
+
 ## Environment variables
 
 | Name | Required | Meaning |
