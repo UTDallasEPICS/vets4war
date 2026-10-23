@@ -5,6 +5,8 @@ psycopg==3.3.5
 psycopg-binary==3.3.5
 python-dotenv==1.2.3
 pandas==3.0.5
+# Read monthly .xlsx call exports (validation only).
+openpyxl==3.1.5
 numpy==2.5.3
 lightgbm==4.7.0
 fastapi==0.141.1

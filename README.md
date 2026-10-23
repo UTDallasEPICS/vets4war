@@ -167,6 +167,10 @@ doubles on fall-back Sundays. Nothing is converted.
 
 ## Retraining
 
+For local Excel validation before any database import, see
+[Monthly call-file validation](docs/ingestion.md). This validator does not write
+to Supabase or retrain the model.
+
 New calls land in the `calls` table (loaded outside this repo). Then:
 
 ```
