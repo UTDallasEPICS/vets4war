@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 import db.forecast as forecast_module  # noqa: E402
 from api.main import app, format_duration  # noqa: E402
 from db.patience import estimate_patience  # noqa: E402
-from db.staffing import MAX_STAFF_PER_SHIFT, SHIFT_ORDER, staff_for_hour  # noqa: E402
+from db.staffing import MAX_STAFF_PER_SHIFT, SHIFT_ORDER, cap_for_hour, staff_for_hour  # noqa: E402
 from db.train import METADATA_PATH  # noqa: E402
 
 HOURS_PER_DAY = 24
@@ -37,7 +37,7 @@ WINDOW_KEYS = {"start", "end", "expected_calls", "expected_talk_sec", "expected_
                "expected_abandoned_calls", "abandon_share", "expected_abandoned_one_fewer",
                "recency", "recency_effect_pct", "caveat"}
 SOURCE_KEYS = {"kind", "label", "start", "end"}
-PLANNED_KEYS = {"date", "shift", "planned", "recommended", "delta", "verdict", "effective_agents",
+PLANNED_KEYS = {"date", "shift", "planned", "recommended", "delta", "verdict", "effective_agents", "cap",
                 "service_level_at_planned", "abandon_share_at_planned"}
 PATIENCE_RANGE_SEC = (60, 3600)   # sanity bounds; the exact value is checked against db.patience below
 TALK_TOLERANCE = 1e-6
@@ -103,14 +103,15 @@ def test_hour_rows_have_exactly_the_documented_keys_and_types(forecast):
 
 def test_hour_rows_are_traceable_by_hand(forecast):
     """load = calls * AHT / 3600; effective = floor(staff * efficiency);
-    over_cap = staff > 7. The chain the popover shows must hold exactly."""
+    over_cap = staff > the hour's shift cap (7; Evening 6). The chain the
+    popover shows must hold exactly."""
     for row in forecast["hours"]:
         expected_load = row["predicted_calls"] * row["aht_sec"] / SECONDS_PER_HOUR
         assert math.isclose(row["load_erlangs"], expected_load, abs_tol=LOAD_TOLERANCE)
         assert row["staff_to_schedule"] == math.ceil(row["agents_required"] / EFFICIENCY)
         assert row["effective_agents"] == math.floor(row["staff_to_schedule"] * EFFICIENCY)
         assert row["effective_agents"] >= row["agents_required"]
-        assert row["over_cap"] == (row["staff_to_schedule"] > MAX_STAFF_PER_SHIFT)
+        assert row["over_cap"] == (row["staff_to_schedule"] > cap_for_hour(row["hour"]))
         assert row["service_level_delivered"] >= TARGET_PCT
 
 

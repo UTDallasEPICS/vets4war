@@ -58,6 +58,7 @@ from db.aht import DEFAULT_RECENCY, RECENCY_OPTIONS  # noqa: E402
 from db.features import SATURDAY_ISODOW, load_holidays  # noqa: E402
 from db.forecast import aht_table, holiday_coverage  # noqa: E402
 from db.patience import cached_patience  # noqa: E402
+from db.quick_abandon import quick_hangups  # noqa: E402
 from db.source import describe_source  # noqa: E402
 from db.staffing import (  # noqa: E402
     DEFAULT_EFFICIENCY,
@@ -66,6 +67,7 @@ from db.staffing import (  # noqa: E402
     DEFAULT_TARGET_SEC,
     SHIFT_ORDER,
     abandon_share_at,
+    cap_for_shift,
     planned_outcome,
     resolve_patience,
     rollup_shifts,
@@ -99,6 +101,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = REPO_ROOT / "web"
 
 app = FastAPI(title="Vets4Warriors staffing forecast", version="0.1.0")
+
+
+@app.middleware("http")
+async def revalidate_page_files(request, call_next):
+    """Browsers must re-check the page's HTML/JS/CSS on every load (a cheap
+    304 when unchanged). Without this a browser can run a cached old script
+    against new HTML, which breaks the page silently."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 # =============================================================================
@@ -185,6 +198,7 @@ def _hourly_staffing(start: date, end: date, efficiency: float, target_pct: floa
                 "queue": queue,
                 "source": describe_source(conn),
                 "equal_talk_sec": _equal_weight_talk_sec(conn, start, end, recency, include_holidays, hourly),
+                "quick_hangups": quick_hangups(conn),
             }
     except FileNotFoundError as exc:
         raise HTTPException(503, str(exc)) from exc
@@ -380,6 +394,8 @@ def api_forecast(
         "days": _days_with_calendar(rollup_shifts(hourly), run["holidays"], _talk_by_date(hourly)),
         "window": _window_summary(hourly, start, end, efficiency, target_sec, run["queue"],
                                   recency, run["equal_talk_sec"]),
+        # Context for the hang-up numbers (db.quick_abandon). Not added to them.
+        "quick_hangups": run["quick_hangups"],
     }
 
 
@@ -454,7 +470,8 @@ def api_planned(body: PlannedRequest):
             "planned": item.planned,
             "recommended": rec,
             "delta": item.planned - rec,
-            "verdict": verdict(item.planned, rec),
+            "cap": cap_for_shift(item.shift),
+            "verdict": verdict(item.planned, rec, cap_for_shift(item.shift)),
             **outcome,
         })
     return {

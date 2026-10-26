@@ -13,7 +13,8 @@
         last_known_holiday, covered, message  (message is None when covered)
 
 Loads the trained LightGBM booster from models/volume_lgbm.txt and its
-metadata (train_start, feature list). Features come from
+metadata (train_start, feature list, level_factor). Predicted calls are
+multiplied by level_factor (1.0 when absent). Features come from
 db.features.build_features, the same function training used, anchored to
 the training epoch so the trend index lines up. AHT comes from db.aht.
 
@@ -178,7 +179,9 @@ def forecast_range(conn, start_date: date | str, end_date: date | str,
     if missing:
         raise ValueError(f"build_features did not produce trained features: {missing}")
 
-    predicted_offered = booster.predict(featured[features])
+    # Capped recent level correction chosen at training time (db.calibration).
+    # Older metadata without the key means no correction.
+    predicted_offered = booster.predict(featured[features]) * float(metadata.get("level_factor", 1.0))
     predicted_aht = [
         aht_by_cell[(int(dow), int(hour))]
         for dow, hour in zip(featured["dow"], featured["hour"])
