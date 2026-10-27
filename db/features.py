@@ -124,6 +124,7 @@ def _calendar_features(hour_start: pd.Series, epoch: pd.Timestamp) -> pd.DataFra
     """dow, hour, month, week_of_year, trend index, cyclic encodings, weekend."""
     dow = hour_start.dt.isocalendar().day.astype("int64")       # 1=Mon..7=Sun
     hour = hour_start.dt.hour.astype("int64")
+    day = hour_start.dt.day.astype("int64")
 
     return pd.DataFrame({
         "dow": dow,
@@ -136,6 +137,10 @@ def _calendar_features(hour_start: pd.Series, epoch: pd.Timestamp) -> pd.DataFra
         "dow_sin": np.sin(2 * np.pi * (dow - 1) / DAYS_PER_WEEK),
         "dow_cos": np.cos(2 * np.pi * (dow - 1) / DAYS_PER_WEEK),
         "is_weekend": (dow >= SATURDAY_ISODOW).astype("int64"),
+        "is_sunday": (dow == 7).astype("int64"),
+        "is_evening_peak": ((hour >= 16) & (hour <= 20)).astype("int64"),
+        "sunday_evening": ((dow == 7) & (hour >= 16) & (hour <= 20)).astype("int64"),
+        "is_payday_window": day.isin([1, 2, 3, 14, 15, 16]).astype("int64"),
     }, index=hour_start.index)
 
 
