@@ -65,10 +65,10 @@ NAIVE_WINDOW_DAYS = 8 * 7
 # Fixed. Not tuned: the gate below decides whether this is good enough.
 LGBM_PARAMS = {
     "objective": "poisson",
-    "learning_rate": 0.05,
-    "num_leaves": 31,
-    "min_data_in_leaf": 20,
-    "feature_fraction": 0.9,
+    "learning_rate": 0.03,
+    "num_leaves": 28,
+    "min_data_in_leaf": 30,
+    "feature_fraction": 0.85,
     "seed": 42,
     "verbose": -1,
 }
