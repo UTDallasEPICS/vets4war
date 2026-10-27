@@ -46,6 +46,8 @@ def _actual_hourly(calls: pd.DataFrame) -> pd.DataFrame:
 
 
 def _weighted(frame: pd.DataFrame, column: str) -> float:
+    # Weight hour-level rates by predicted arrivals so low-volume hours do not
+    # contribute as much as high-volume hours to a call-level estimate.
     return float((frame["predicted_calls"] * frame[column]).sum() / frame["predicted_calls"].sum())
 
 
@@ -53,12 +55,16 @@ def score_week(calls: pd.DataFrame, snapshot: pd.DataFrame, target_sec: float = 
     """calls: db.load_week.parse_call_records output. snapshot: db.snapshot CSV."""
     _validate_snapshot(snapshot)
     snap = snapshot.assign(date=snapshot["date"].astype(str))
+    # Score only dates available on both sides; a partial overlap is explicit
+    # and preserves the no-lookahead frozen-forecast comparison.
     shared = sorted(set(snap["date"]) & set(calls["start_ts"].dt.strftime("%Y-%m-%d")))
     if not shared:
         raise ValueError("the forecast and the actuals share no dates")
     snap = snap[snap["date"].isin(shared)]
     calls = calls[calls["start_ts"].dt.strftime("%Y-%m-%d").isin(shared)]
 
+    # A forecast hour with no actual call rows is a real zero-call hour, so the
+    # left join retains it and fills only that missing count.
     hourly = snap.merge(_actual_hourly(calls), on=["date", "hour"], how="left").fillna({"actual_calls": 0})
     # Daily actuals straight from the calls, so no call is lost if the
     # snapshot were ever missing an hour.
@@ -112,3 +118,14 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# This module compares a frozen forecast CSV with validated call records on
+# their shared dates. It reports daily-total accuracy and bias, hourly call
+# MAE, actual and predicted AHT, abandonment, and service level at the roster
+# recorded in the snapshot; pure scoring logic is separate from CLI file I/O.
+#
+# It joins db.snapshot's pre-outcome predictions to db.load_week's normalized
+# actual calls, producing a reproducible evaluation after the forecast window.
+# Those metrics let the project assess volume accuracy and the operational
+# quality of staffing outcomes without retraining against the same test data.

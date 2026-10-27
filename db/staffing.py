@@ -119,6 +119,8 @@ def _service_level(agents: int, load: float, aht_sec: float, target_sec: float,
                    patience_sec: float | None = None) -> float:
     """Share of all arriving calls answered within target_sec with `agents`
     on inbound. Erlang C when patience_sec is None, else Erlang A."""
+    # No productive agents means no arriving calls can be answered within
+    # the threshold; otherwise choose the queue model from patience availability.
     if agents <= 0:
         return 0.0
     if patience_sec is not None:
@@ -206,6 +208,8 @@ def schedule_people(agents_required: int, efficiency: float) -> tuple[int | None
         raise ValueError(f"efficiency must be in [0, 1], got {efficiency}")
     if efficiency == 0:
         return None, None
+    # Round scheduled headcount up to ensure enough productive agents, then
+    # report the actual whole-agent count after applying the efficiency floor.
     scheduled = math.ceil(agents_required / efficiency)
     return scheduled, math.floor(scheduled * efficiency)
 
@@ -235,6 +239,8 @@ def staff_for_hour(
     if predicted_offered < 0:
         raise ValueError(f"predicted_offered must be >= 0, got {predicted_offered}")
 
+    # Erlang formulas operate on offered load, i.e. expected busy agents, not
+    # raw calls; convert calls/hour times seconds/call into erlangs.
     load = predicted_offered * aht_sec / SECONDS_PER_HOUR
     agents = required_agents(predicted_offered, aht_sec, target_pct, target_sec, patience_sec)
     scheduled, effective_agents = schedule_people(agents, efficiency)
@@ -296,6 +302,8 @@ def staff_for_range(
     and `include_holidays` go straight to forecast_range."""
     if queue_model not in QUEUE_MODELS:
         raise ValueError(f"queue_model must be one of {QUEUE_MODELS}, got {queue_model!r}")
+    # Resolve caller patience once, then use it consistently for every hour
+    # in the requested forecast window.
     patience = resolve_patience(conn, queue_model, patience_sec)
     forecast = forecast_range(conn, start_date, end_date, recency, include_holidays)
     staffing = pd.DataFrame([
@@ -329,6 +337,8 @@ def shift_memberships(hourly: pd.DataFrame) -> pd.DataFrame:
     day = hourly["hour_start"].dt.normalize()
     hour = hourly["hour_start"].dt.hour
     pieces = []
+    # Add core hours once and boundary hours to both adjacent shifts; shift
+    # dates account for the Evening shift crossing midnight.
     for spec in SHIFTS:
         core_mask = hour.isin(spec["core_hours"])
         core = hourly[core_mask].assign(
@@ -351,6 +361,8 @@ def rollup_shifts(hourly: pd.DataFrame) -> pd.DataFrame:
     long = shift_memberships(hourly)
     long["core_calls"] = long["predicted_offered"].where(long["is_core"], 0.0)
 
+    # Staffing is based on the worst hour, while calls are counted only in
+    # core hours so adjacent shift overlaps never double-count volume.
     grouped = long.groupby(["shift_date", "shift"]).agg(
         predicted_calls=("core_calls", "sum"),
         agents_required=("agents_required", "max"),
@@ -368,3 +380,16 @@ def rollup_shifts(hourly: pd.DataFrame) -> pd.DataFrame:
     )
     complete["shift"] = pd.Categorical(complete["shift"], categories=SHIFT_ORDER, ordered=True)
     return complete.sort_values(["shift_date", "shift"]).reset_index(drop=True)
+
+
+# This module is the business-logic layer that transforms hourly call-volume
+# and AHT predictions into offered load, required productive agents, scheduled
+# headcount, target service level, abandonment and shift summaries. It also
+# handles efficiency conversion, capacity flags, planned-roster comparisons,
+# shift boundaries, and missing/undefined outputs with explicit semantics.
+#
+# Both api.main and the command-line snapshot workflow call these functions,
+# keeping recommendations and roster outcomes consistent across interfaces.
+# Inputs come from db.forecast, caller patience from db.patience, and queue
+# probabilities from db.erlang; the resulting hourly frame is the shared
+# contract consumed by API response shaping and forecast snapshots.

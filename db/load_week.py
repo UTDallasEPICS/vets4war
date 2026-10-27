@@ -74,6 +74,8 @@ def _validate_columns(raw: pd.DataFrame) -> None:
 
 def _start_timestamps(raw: pd.DataFrame) -> pd.Series:
     """Start_Date (a date) + start_time (HH:MM:SS) -> naive local timestamp."""
+    # Parse the two source columns independently, then combine them as a naive
+    # local wall-clock timestamp to match the existing database convention.
     day = pd.to_datetime(raw["Start_Date"], errors="coerce").dt.normalize()
     clock = pd.to_timedelta(raw["start_time"].astype(str), errors="coerce")
     stamps = day + clock
@@ -105,6 +107,8 @@ def parse_call_records(raw: pd.DataFrame) -> pd.DataFrame:
     """Return a NEW DataFrame in `calls` column order, sorted by start_ts.
     Raises ValueError with the reason on any malformed input."""
     _validate_columns(raw)
+    # Construct only the database fields needed downstream, applying strict
+    # validation before any rows can reach the persistence layer.
     parsed = pd.DataFrame({
         "start_ts": _start_timestamps(raw),
         **{dest: _seconds(raw, src) for src, dest in SECONDS_COLUMNS.items()},
@@ -130,6 +134,8 @@ def insert_calls(conn, rows: pd.DataFrame, commit: bool = False) -> dict:
     first_day = rows["start_ts"].min().normalize()
     end_exclusive = rows["start_ts"].max().normalize() + pd.Timedelta(days=1)
     last_day = end_exclusive - pd.Timedelta(days=1)
+    # Keep duplicate detection and optional insertion in one transaction
+    # while the table lock prevents a concurrent loader racing the check.
     with conn.transaction():
         with conn.cursor() as cur:
             cur.execute("LOCK TABLE calls IN SHARE ROW EXCLUSIVE MODE")
@@ -146,7 +152,11 @@ def insert_calls(conn, rows: pd.DataFrame, commit: bool = False) -> dict:
                 "committed": commit,
             }
             if not commit:
+                # Returning from the transaction without INSERT makes the
+                # default command a genuine dry run.
                 return summary
+            # Convert validated rows to native Python values expected by
+            # psycopg's parameter binding, while leaving identity IDs to SQL.
             records = [
                 (r.start_ts.to_pydatetime(), r.in_queue_sec, r.agent_sec,
                  r.abandon_sec, r.routing_sec, bool(r.abandoned))
@@ -191,3 +201,15 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# This module is the controlled ingestion path for partner call-record
+# spreadsheets. It verifies the expected layout, parses local timestamps and
+# duration fields, normalizes abandonment flags, and produces only the shared
+# calls-table columns in chronological order.
+#
+# Database writes are opt-in: the default transaction reports a dry-run
+# summary, while commit mode locks the table, rejects any overlap in the
+# spreadsheet's date range, and inserts the validated batch without changing
+# schema. The loaded calls feed hourly features and model training, plus the
+# AHT and caller-patience estimates used by live staffing forecasts.

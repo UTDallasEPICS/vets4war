@@ -42,10 +42,14 @@ _cache: dict | None = None
 
 
 def _share(part: int, whole: int) -> float | None:
+    # An empty denominator has no meaningful share; preserve that as null
+    # instead of inventing a zero rate.
     return part / whole if whole else None
 
 
 def measure_quick_hangups(conn, threshold_sec: int = QUICK_HANGUP_SEC, window_days: int = WINDOW_DAYS) -> dict:
+    # Anchor the SQL window on the newest call rather than wall-clock today,
+    # which keeps the metric useful when the dataset ends in the past.
     with conn.cursor() as cur:
         cur.execute(QUICK_SQL, {"threshold": threshold_sec, "days": window_days})
         first_day, last_day, n_calls, n_abandoned, n_quick = cur.fetchone()
@@ -67,5 +71,19 @@ def measure_quick_hangups(conn, threshold_sec: int = QUICK_HANGUP_SEC, window_da
 def quick_hangups(conn) -> dict:
     global _cache
     if _cache is None:
+        # Like patience, this metric is cached for the process lifetime because
+        # ingestion is an explicit operation followed by a server restart.
         _cache = measure_quick_hangups(conn)
     return _cache
+
+
+# This module measures the frequency and share of abandoned calls that end
+# before a configurable short-wait threshold, using a trailing window anchored
+# on the newest recorded call rather than today's date. This keeps the metric
+# meaningful when the source data has a reporting gap or is not current.
+#
+# api.main exposes the cached measurement as context alongside the model's
+# expected abandonment at the selected roster. It is not added to Erlang A's
+# predicted abandonment: quick hang-ups are already among the abandoned-call
+# observations used to estimate caller patience, so adding them again would
+# double-count the same behavior.

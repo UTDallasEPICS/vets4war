@@ -130,6 +130,8 @@ def complete_hourly_grid(hourly: pd.DataFrame) -> pd.DataFrame:
     24/7 and has never had a zero-call day. Such days (e.g. Sep 1 - Oct 13
     2026, not yet reported by the partner) are left out, so a reporting gap
     is never learned as silence."""
+    # Only expand dates that appear in the source. A date absent altogether
+    # represents a reporting gap, not evidence that the line received zero calls.
     days = np.sort(hourly["hour_start"].dt.normalize().unique())
     offsets = pd.to_timedelta(np.arange(HOURS_PER_DAY), unit="h")
     grid = pd.DatetimeIndex(
@@ -152,6 +154,8 @@ def feature_columns(featured: pd.DataFrame, drop: tuple[str, ...] = ()) -> list[
 def complete_months(hour_start: pd.Series) -> pd.DatetimeIndex:
     """Month starts of every month in which EVERY calendar day has data."""
     days = pd.Series(hour_start.dt.normalize().unique())
+    # Since `days` contains unique dates, a month is complete when its distinct
+    # date count matches the actual number of calendar days in that month.
     per_month = days.groupby(days.dt.to_period("M")).size()
     full = [p for p, n in per_month.items() if n == p.days_in_month]
     return pd.DatetimeIndex([p.to_timestamp() for p in sorted(full)])
@@ -196,11 +200,15 @@ def recency_weights(hour_start: pd.Series, halflife_days: float | None) -> np.nd
     hour. None (no weighting) when halflife_days is None."""
     if halflife_days is None:
         return None
+    # Measure age relative to this training fold's newest observation, not
+    # today's date, so historical folds remain reproducible and leakage-free.
     age_days = (hour_start.max() - hour_start).dt.total_seconds().to_numpy() / 86_400
     return np.power(0.5, age_days / halflife_days)
 
 
 def fit_lgbm(train: pd.DataFrame, features: list[str], halflife_days: float | None = None) -> lgb.Booster:
+    # LightGBM receives only the selected feature columns and the hourly call
+    # target; optional recency weights are aligned row-for-row with that data.
     dataset = lgb.Dataset(train[features], label=train[TARGET],
                           weight=recency_weights(train["hour_start"], halflife_days))
     return lgb.train(LGBM_PARAMS, dataset, num_boost_round=NUM_BOOST_ROUNDS)
@@ -212,6 +220,8 @@ def fit_level_factor(train: pd.DataFrame, features: list[str], config: TrainConf
     1.0 when the config does not calibrate."""
     if not config.calibrate:
         return 1.0
+    # Estimate the correction on a tail window excluded from this calibration
+    # fit, then apply it to a separately fitted final model.
     window_start = recent_window_start(train["hour_start"])
     before = train[train["hour_start"] < window_start]
     window = train[train["hour_start"] >= window_start]
@@ -232,6 +242,8 @@ def predict_lgbm(booster: lgb.Booster, test: pd.DataFrame, features: list[str]) 
 
 def predict_seasonal_naive(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
     """Median `offered` per (dow, hour) over the trailing 8 weeks of train."""
+    # The trailing window ends immediately before the test period, preserving
+    # the same information boundary as the machine-learning model.
     window_start = test["hour_start"].min() - pd.Timedelta(days=NAIVE_WINDOW_DAYS)
     window = train[train["hour_start"] >= window_start]
     medians = window.groupby(["dow", "hour"])[TARGET].median()
@@ -254,6 +266,8 @@ def predict_overall_mean(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
 def score(hour_start: pd.Series, actual: np.ndarray, predicted: np.ndarray) -> dict:
     """MAE, RMSE, MAPE (hours with offered > 0), daily-total MAE."""
     error = predicted - actual
+    # MAPE is undefined for zero-call hours; retain all hours in MAE/RMSE and
+    # daily totals, but use only positive actuals for percentage error.
     positive = actual > 0
 
     daily = (
@@ -275,6 +289,8 @@ def score(hour_start: pd.Series, actual: np.ndarray, predicted: np.ndarray) -> d
 # =============================================================================
 
 def split_fold(featured: pd.DataFrame, month_start: pd.Timestamp):
+    # Each fold is a strict forward-in-time split: no row from the test month
+    # is allowed to contribute to training or feature-derived fit parameters.
     month_end = month_start + pd.offsets.MonthBegin(1)
     is_test = (featured["hour_start"] >= month_start) & (featured["hour_start"] < month_end)
     train = featured[featured["hour_start"] < month_start]
@@ -309,6 +325,8 @@ def score_recent(featured: pd.DataFrame, config: TrainConfig) -> dict | None:
     daily = (pd.DataFrame({"day": test["hour_start"].dt.normalize().to_numpy(),
                            "actual": actual, "predicted": predicted})
              .groupby("day")[["actual", "predicted"]].sum())
+    # The partner-facing daily accuracy is computed on daily totals, not by
+    # averaging hourly percentages, so high-volume and quiet days each count once.
     daily_ape = (daily["predicted"] - daily["actual"]).abs() / daily["actual"]
     return {
         "first_day": str(first.date()),
@@ -327,6 +345,8 @@ def run_backtest(featured: pd.DataFrame, config: TrainConfig, months: pd.Datetim
     pooled_hours = []
     pooled_actual = []
 
+    # Accumulate predictions across all folds before computing overall scores;
+    # this weights each held-out hour equally instead of each month equally.
     for month_start in months:
         train, test = split_fold(featured, month_start)
         predictions = predict_fold(train, test, config)
@@ -364,6 +384,8 @@ def markdown_table(df: pd.DataFrame) -> str:
 
 
 def passes_gate(overall: pd.DataFrame) -> bool:
+    # The model is persisted only if it beats the simple seasonal baseline on
+    # the pre-agreed daily-total error metric.
     by_model = overall.set_index("model")["daily_mae"]
     return by_model["lgbm_poisson"] < by_model["seasonal_naive"]
 
@@ -376,6 +398,8 @@ def save_model(booster: lgb.Booster, featured: pd.DataFrame, features: list[str]
                factor: float, per_fold: pd.DataFrame, overall: pd.DataFrame,
                months: pd.DatetimeIndex, recent: dict | None) -> None:
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    # Save the model and its exact inference contract together: forecast code
+    # reads the feature order, training epoch, calibration and backtest report.
     booster.save_model(str(MODEL_PATH))
 
     metadata = {
@@ -469,3 +493,18 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# This module owns the full training lifecycle: loading and completing the
+# hourly target, constructing shared features, fitting LightGBM candidates,
+# evaluating forward-in-time monthly folds, scoring the recent validation
+# period, applying the baseline gate, and persisting the accepted artifacts.
+# Training configuration and scoring definitions live here to keep one
+# authoritative implementation of the deployed procedure.
+#
+# db.tune reuses the configuration, fold, metric and fitting helpers to compare
+# candidate settings without introducing a second training implementation.
+# A passing model is saved with metadata describing its feature order, epoch,
+# parameters, calibration and backtest results; db.forecast consumes those
+# artifacts, and db.staffing plus api.main turn its hourly calls and AHT into
+# the staffing outputs presented by the application.

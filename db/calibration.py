@@ -36,6 +36,8 @@ def recent_window_start(hour_start: pd.Series, window_days: int = LEVEL_WINDOW_D
     nothing would be left to fit on)."""
     if window_days < 1:
         raise ValueError(f"window_days must be >= 1, got {window_days}")
+    # Use distinct observed dates, so missing reporting days do not consume
+    # slots in the calibration window.
     days = pd.Series(pd.to_datetime(hour_start).dt.normalize().unique()).sort_values()
     if len(days) <= window_days:
         raise ValueError(f"only {len(days)} days of data; need more than {window_days} for a level window")
@@ -50,4 +52,18 @@ def level_factor(actual: np.ndarray, predicted: np.ndarray, cap: float = LEVEL_C
     predicted_total = float(np.sum(predicted))
     if predicted_total <= 0:
         raise ValueError("predicted total is not positive; level factor is undefined")
+    # Compare pooled totals rather than averaging hourly ratios, then bound
+    # the result so one unusual recent period cannot dominate the forecast.
     return float(np.clip(actual_total / predicted_total, 1 - cap, 1 + cap))
+
+
+# This module provides a bounded multiplicative correction for systematic
+# recent under- or over-forecasting in the volume model. It selects a window
+# from the latest distinct observed dates, computes actual-to-predicted pooled
+# totals, validates the denominator and cap, and clips the resulting factor.
+#
+# db.train estimates the factor out of sample, records it with the model
+# metadata, and includes it in each backtest fold when calibration is enabled.
+# db.tune therefore compares the corrected procedure fairly with uncorrected
+# candidates; db.forecast applies the saved factor to each future hourly
+# prediction so training, evaluation and production share one formula.

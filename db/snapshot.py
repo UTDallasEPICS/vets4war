@@ -70,6 +70,8 @@ def at_roster(hourly: pd.DataFrame, roster: dict[str, int], efficiency: float,
     """Hourly frame -> NEW frame with the roster number and what it delivers."""
     shifts = hourly["hour_start"].dt.hour.map(core_shift)
     staff = shifts.map(roster)
+    # Convert scheduled headcount to productive inbound agents using the same
+    # floor rule as the live staffing recommendation path.
     effective = [math.floor(n * efficiency) for n in staff]
     loads, ahts = hourly["offered_load_erlangs"], hourly["predicted_aht_sec"]
     return pd.DataFrame({
@@ -112,6 +114,8 @@ def main() -> int:
     frame = at_roster(hourly, roster, args.efficiency, args.target_sec, patience).assign(model_label=model_label())
 
     FORECAST_DIR.mkdir(exist_ok=True)
+    # A UTC timestamp makes each result immutable and distinguishable even
+    # when multiple forecasts use the same date range.
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = FORECAST_DIR / f"forecast_{args.start}_to_{args.end}_{stamp}.csv"
     frame.to_csv(path, index=False)
@@ -128,3 +132,12 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# This command freezes model predictions, staffing recommendations and
+# expected outcomes at a specified real-world roster into a timestamped CSV.
+#
+# db.score_week later compares this immutable, pre-outcome artifact with
+# partner actuals. Recording the model configuration, real roster outcomes and
+# a UTC creation stamp makes the comparison auditable and helps establish that
+# the predictions were frozen before the actual calls were available.

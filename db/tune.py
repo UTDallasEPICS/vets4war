@@ -41,11 +41,15 @@ CALIBRATE = (False, True)
 
 
 def grid() -> list[TrainConfig]:
+    # The Cartesian product makes every combination explicit and reproducible;
+    # no candidate is selected by a result-dependent or hidden heuristic.
     return [TrainConfig(halflife_days=h, drop_features=d, calibrate=c)
             for h, d, c in itertools.product(HALFLIVES, FEATURE_SETS, CALIBRATE)]
 
 
 def evaluate(featured: pd.DataFrame, config: TrainConfig, months: pd.DatetimeIndex) -> dict:
+    # Use the same backtest path as training so tuning evaluates the procedure
+    # that would actually be deployed, including any optional calibration.
     _, overall = run_backtest(featured, config, months)
     by_model = overall.set_index("model")
     lgbm = by_model.loc["lgbm_poisson"]
@@ -61,6 +65,8 @@ def evaluate(featured: pd.DataFrame, config: TrainConfig, months: pd.DatetimeInd
 
 
 def train_command(config: TrainConfig) -> str:
+    # Emit only non-default flags so the winner can be copied into the training
+    # command line without changing the model configuration.
     parts = ["python -m db.train"]
     if config.halflife_days is not None:
         parts.append(f"--halflife {int(config.halflife_days)}")
@@ -75,14 +81,20 @@ def main() -> int:
     dsn = os.environ.get("V4W_DATABASE_URL")
     if not dsn:
         sys.exit("no connection string. set V4W_DATABASE_URL")
+    # Load and feature the data once; all candidates and folds reuse this frame
+    # so differences in scores come from configuration rather than input drift.
     featured = load_featured(dsn)
     months = backtest_months(featured["hour_start"])
     configs = grid()
     rows = []
+    # Report progress to stderr so stdout remains usable as a clean results
+    # table when redirected or captured by another tool.
     for i, config in enumerate(configs, 1):
         print(f"[{i}/{len(configs)}] {config.label()}", file=sys.stderr, flush=True)
         rows.append({**evaluate(featured, config, months), "_config": config})
 
+    # The declared selection objective is pooled daily-total MAE over complete
+    # months; the recent validation week is deliberately report-only.
     table = pd.DataFrame(rows).sort_values("daily_mae_12mo").reset_index(drop=True)
     print(f"\n## Configs, best first (12 months {months[0]:%Y-%m} to {months[-1]:%Y-%m} + recent week)\n")
     print(markdown_table(table.drop(columns="_config")))
@@ -93,3 +105,15 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# This script evaluates a predeclared grid of recency weighting, feature
+# subsets, and optional level calibration. Every candidate uses db.train's
+# same rolling-origin folds and recent-period scoring path, while the ranking
+# is based only on pooled daily-total MAE across the complete holdout months.
+#
+# Tuning is intentionally a report-only operation: it loads the training data,
+# prints comparable metrics, and emits the command that reproduces the winner,
+# but does not modify model files or make an unreviewed deployment decision.
+# Operators then invoke db.train with that command, where the normal baseline
+# gate and artifact-writing logic still apply.
