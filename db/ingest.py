@@ -158,6 +158,7 @@ def validate_rows(
     column_map: dict[str, str] | None = None,
     identifier_column: str | None = None,
     timestamp_format: str | None = None,
+    max_rows: int | None = None,
 ) -> ValidationResult:
     """Validate rows following a header on Excel row 1; retain every data row.
 
@@ -171,6 +172,18 @@ def validate_rows(
 
     def file_error(code, message, name=None):
         result.file_errors.append(ValidationIssue(name, code, message))
+
+    if max_rows is not None:
+        original_rows = rows
+
+        def bounded_rows():
+            for index, values in enumerate(original_rows):
+                if index >= max_rows:
+                    file_error("too_many_rows", "The workbook exceeds the supported row limit; no records were accepted.")
+                    break
+                yield values
+
+        rows = bounded_rows()
 
     def structural_failure():
         # Keep counts and row references meaningful even when headers/config

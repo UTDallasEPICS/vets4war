@@ -12,15 +12,15 @@
     holiday_coverage(holidays, end_date) -> dict
         last_known_holiday, covered, message  (message is None when covered)
 
-Loads the trained LightGBM booster from models/volume_lgbm.txt and its
-metadata (train_start, feature list). Features come from
+Loads the active versioned LightGBM model/metadata pair (or the seeded pair
+before the first activation). Features come from
 db.features.build_features, the same function training used, anchored to
 the training epoch so the trend index lines up. AHT comes from db.aht.
 
 The booster, its metadata, and one AHT table per recency preset are cached
-in this module, keyed on the model file's mtime. A retrain (new mtime)
-refreshes all of them on the next call; slider drags between retrains reuse
-them.
+in this module, keyed on the model path and mtime. Model activation refreshes
+them on the next call; committed imports also invalidate cached data estimates
+through db.freshness. Slider drags between updates reuse them.
 
 No fallback forecaster: a missing model file raises.
 Connection comes from $V4W_DATABASE_URL via python-dotenv.
@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import sys
 import warnings
+from threading import RLock
 from datetime import date
 
 import lightgbm as lgb
@@ -45,8 +46,8 @@ except ImportError:
     sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
 
 from db.aht import DEFAULT_RECENCY, RECENCY_HALFLIFE_DAYS, estimate_aht  # noqa: E402
+from db.artifacts import active_paths
 from db.features import HOLIDAY_WINDOW_DAYS, build_features, load_holidays  # noqa: E402
-from db.train import METADATA_PATH, MODEL_PATH  # noqa: E402
 
 OUTPUT_COLUMNS = ("hour_start", "predicted_offered", "predicted_aht_sec")
 LAST_HOUR_OF_DAY = 23
@@ -55,6 +56,7 @@ LAST_HOUR_OF_DAY = 23
 # model file's mtime changes. `aht` maps recency preset -> table, filled on
 # first use of each preset.
 _cache: dict = {"mtime": None, "booster": None, "metadata": None, "aht": {}}
+_cache_lock = RLock()
 
 # The holiday-coverage warning goes to stderr once per process; every
 # request still gets it as a field via holiday_coverage().
@@ -65,35 +67,42 @@ _holiday_warned = False
 # Model + AHT loading (cached)
 # =============================================================================
 
-def _read_metadata() -> dict:
-    metadata = json.loads(METADATA_PATH.read_text())
+def _read_metadata(path=None) -> dict:
+    path = path or active_paths()[1]
+    metadata = json.loads(path.read_text())
     for key in ("train_start", "features"):
         if key not in metadata:
-            raise ValueError(f"{METADATA_PATH} is missing `{key}`")
+            raise ValueError(f"Model metadata is missing `{key}`")
     return metadata
 
 
 def _load_cached(conn, recency: str = DEFAULT_RECENCY) -> tuple[lgb.Booster, dict, dict]:
+    with _cache_lock:
+        return _load_cached_unlocked(conn, recency)
+
+
+def _load_cached_unlocked(conn, recency: str = DEFAULT_RECENCY) -> tuple[lgb.Booster, dict, dict]:
     """Booster, metadata, and the AHT table for `recency`, reloaded only
     when the model file changes on disk."""
     global _cache
     if recency not in RECENCY_HALFLIFE_DAYS:
         raise ValueError(f"recency must be one of {tuple(RECENCY_HALFLIFE_DAYS)}, got {recency!r}")
-    if not MODEL_PATH.exists():
+    model_path, metadata_path = active_paths()
+    if not model_path.exists():
         raise FileNotFoundError(
-            f"{MODEL_PATH} not found. Run `python -m db.train` first."
+            "The active model was not found. Run training first."
         )
-    if not METADATA_PATH.exists():
+    if not metadata_path.exists():
         raise FileNotFoundError(
-            f"{METADATA_PATH} not found. Run `python -m db.train` first."
+            "The active model metadata was not found. Run training first."
         )
 
-    mtime = MODEL_PATH.stat().st_mtime
+    mtime = (str(model_path), model_path.stat().st_mtime_ns)
     if _cache["mtime"] != mtime:
         _cache = {
             "mtime": mtime,
-            "booster": lgb.Booster(model_file=str(MODEL_PATH)),
-            "metadata": _read_metadata(),
+            "booster": lgb.Booster(model_file=str(model_path)),
+            "metadata": _read_metadata(metadata_path),
             "aht": {},
         }
     if recency not in _cache["aht"]:

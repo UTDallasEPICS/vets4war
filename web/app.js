@@ -107,6 +107,7 @@
   // ---- fetch ----
   async function fetchJson(url, init) {
     const res = await fetch(url, init);
+    if (res.status === 401) { location.assign("/login"); throw new Error("Please sign in again."); }
     if (!res.ok) {
       let detail = res.statusText;
       try { const body = await res.json(); detail = Array.isArray(body.detail) ? body.detail.map((d) => d.msg).join("; ") : (body.detail || detail); } catch (_) {}
@@ -114,6 +115,23 @@
     }
     return res.json();
   }
+  // Invalidate browser results after imports or model activation, including
+  // while the user keeps the same date range open.
+  let dataVersion = null;
+  async function checkFreshness() {
+    if (document.hidden) return;
+    try {
+      const status = await fetchJson("/api/status");
+      const next = `${status.revision}:${status.active_model_version}`;
+      const badge = document.getElementById("dataFreshness");
+      if (badge) badge.textContent = status.latest_imported_month ? `Imported ${status.latest_imported_month} · Training ${status.training_status || "pending"}` : "";
+      if (dataVersion !== null && next !== dataVersion) { cache = null; await refresh(); }
+      dataVersion = next;
+    } catch (_) { /* Forecast errors are displayed by the existing refresh flow. */ }
+  }
+  checkFreshness();
+  setInterval(checkFreshness, 15000);
+  document.addEventListener("visibilitychange", checkFreshness);
   function serverParams() {
     const c = controls();
     return new URLSearchParams({ start: el.start.value, end: el.end.value, queue_model: QUEUE_MODEL, recency: RECENCY,

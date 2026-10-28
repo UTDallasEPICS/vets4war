@@ -24,7 +24,7 @@ import db.forecast as forecast_module  # noqa: E402
 from api.main import app, format_duration  # noqa: E402
 from db.patience import estimate_patience  # noqa: E402
 from db.staffing import MAX_STAFF_PER_SHIFT, SHIFT_ORDER, staff_for_hour  # noqa: E402
-from db.train import METADATA_PATH  # noqa: E402
+from db.artifacts import active_paths  # noqa: E402
 
 HOURS_PER_DAY = 24
 HOUR_KEYS = {
@@ -63,7 +63,12 @@ SHIFT_HOURS = {
 def client():
     if not os.environ.get("V4W_DATABASE_URL"):
         pytest.skip("V4W_DATABASE_URL is not set; API tests need the database")
-    return TestClient(app)
+    # These tests exercise forecast behavior; test_auth.py covers the shared
+    # authentication boundary independently with a mock OIDC provider.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("V4W_REQUIRE_AUTH", "false")
+        with TestClient(app) as test_client:
+            yield test_client
 
 
 @pytest.fixture(scope="module")
@@ -159,7 +164,7 @@ def test_features_built_once_for_the_whole_grid_with_metadata_epoch(client, monk
         return real(df, holidays, epoch=epoch)
 
     monkeypatch.setattr(forecast_module, "build_features", counting)
-    train_start = json.loads(METADATA_PATH.read_text())["train_start"]
+    train_start = json.loads(active_paths()[1].read_text())["train_start"]
 
     # Act
     response = client.get("/api/forecast", params=THIRTY_ONE_DAYS)

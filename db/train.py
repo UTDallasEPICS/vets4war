@@ -249,9 +249,11 @@ def passes_gate(overall: pd.DataFrame) -> bool:
 # =============================================================================
 
 def save_model(booster: lgb.Booster, featured: pd.DataFrame, features: list[str],
-               per_fold: pd.DataFrame, overall: pd.DataFrame, months: pd.DatetimeIndex) -> None:
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    booster.save_model(str(MODEL_PATH))
+               per_fold: pd.DataFrame, overall: pd.DataFrame, months: pd.DatetimeIndex,
+               output_dir: Path | None = None) -> None:
+    output_dir = output_dir or MODEL_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+    booster.save_model(str(output_dir / "volume_lgbm.txt"))
 
     metadata = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -270,7 +272,23 @@ def save_model(booster: lgb.Booster, featured: pd.DataFrame, features: list[str]
             "per_fold": per_fold.to_dict(orient="records"),
         },
     }
-    METADATA_PATH.write_text(json.dumps(metadata, indent=2))
+    (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
+
+
+def train_candidate(conn, output_dir):
+    """Train an isolated candidate; the caller decides when to activate it."""
+    hourly = load_hourly(conn)
+    holidays = load_holidays(conn)
+    featured = build_features(complete_hourly_grid(hourly), holidays)
+    features = feature_columns(featured)
+    months = backtest_months(featured["hour_start"])
+    per_fold, overall = run_backtest(featured, features, months)
+    metrics = {"overall": overall.to_dict(orient="records"), "per_fold": per_fold.to_dict(orient="records")}
+    if not passes_gate(overall):
+        return {"status": "rejected", "backtest": metrics}
+    booster = fit_lgbm(featured, features)
+    save_model(booster, featured, features, per_fold, overall, months, output_dir=output_dir)
+    return {"status": "passed", "backtest": metrics}
 
 
 # =============================================================================
@@ -281,35 +299,28 @@ def main() -> int:
     dsn = os.environ.get("V4W_DATABASE_URL")
     if not dsn:
         sys.exit("no connection string. set V4W_DATABASE_URL")
+    import uuid
+    from db.artifacts import activate, model_root
+    from db.pipeline import LOCK_ID
 
-    with psycopg.connect(dsn) as conn:
-        hourly = load_hourly(conn)
-        holidays = load_holidays(conn)
-
-    grid = complete_hourly_grid(hourly)
-    featured = build_features(grid, holidays)
-    features = feature_columns(featured)
-    print(f"grid rows {len(grid):,}  (view rows {len(hourly):,}, "
-          f"zero-filled {len(grid) - len(hourly):,})  features {len(features)}")
-
-    months = backtest_months(featured["hour_start"])
-    print(f"hold-out: {len(months)} months, {months[0]:%Y-%m} to {months[-1]:%Y-%m}")
-
-    per_fold, overall = run_backtest(featured, features, months)
-
-    print("\n## Per fold\n")
-    print(markdown_table(per_fold))
-    print("\n## Overall (pooled over all test hours)\n")
-    print(markdown_table(overall))
-
-    if not passes_gate(overall):
-        print("\nSTOP: LightGBM did not beat seasonal naive on daily-total MAE. "
-              "Nothing saved.")
-        return 1
-
-    booster = fit_lgbm(featured, features)
-    save_model(booster, featured, features, per_fold, overall, months)
-    print(f"\nsaved {MODEL_PATH} and {METADATA_PATH}")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        if not conn.execute("SELECT pg_try_advisory_lock(%s)", (LOCK_ID,)).fetchone()[0]:
+            print("Monthly processing is already running. Try again later.")
+            return 1
+        version = uuid.uuid4().hex
+        output = model_root() / "versions" / version
+        outcome = train_candidate(conn, output)
+        print("\n## Per fold\n")
+        print(markdown_table(pd.DataFrame(outcome["backtest"]["per_fold"])))
+        print("\n## Overall (pooled over all test hours)\n")
+        print(markdown_table(pd.DataFrame(outcome["backtest"]["overall"])))
+        if outcome["status"] != "passed":
+            print("\nSTOP: LightGBM did not beat seasonal naive on daily-total MAE. Nothing activated.")
+            return 1
+        activate(version)
+        if os.getenv("V4W_PIPELINE_ENABLED", "false").lower() == "true":
+            conn.execute("UPDATE pipeline_state SET revision=revision+1")
+        print(f"\nactivated model version {version} in {output}")
     return 0
 
 

@@ -1,0 +1,27 @@
+# Local/self-hosted reference. Supply .env and a confirmed data/export-contract.json.
+# The existing deployment workflows need equivalent worker, secret and shared
+# volume configuration; this file does not change AWS resources automatically.
+services:
+  api:
+    build: .
+    env_file: .env
+    environment:
+      V4W_MODEL_DIR: /app/models
+      V4W_EXPORT_CONTRACT: /app/data/export-contract.json
+    ports:
+      - "8000:8000"
+    volumes:
+      - pipeline_models:/app/models
+      - ./data/export-contract.json:/app/data/export-contract.json:ro
+    restart: unless-stopped
+  worker:
+    build: .
+    command: ["python", "-m", "db.worker"]
+    env_file: .env
+    environment:
+      V4W_MODEL_DIR: /app/models
+    volumes:
+      - pipeline_models:/app/models
+    restart: unless-stopped
+volumes:
+  pipeline_models:

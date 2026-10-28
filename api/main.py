@@ -19,7 +19,7 @@
         body: the same params plus planned: [{date, shift, planned}]; returns
         the recommendation, the verdict (under / on target / over / exceeds
         capacity) and the Erlang service level at the PLANNED number.
-    GET /api/model                                          models/metadata.json
+    GET /api/model                                          active model metadata
     GET /                                                   web/index.html (static)
 
     Every response carries data_source: which data (partner / synthetic,
@@ -73,7 +73,10 @@ from db.staffing import (  # noqa: E402
     staff_for_range,
     verdict,
 )
-from db.train import METADATA_PATH  # noqa: E402
+from db.artifacts import active_paths, active_version
+from db.freshness import refresh as refresh_data_caches
+from api.auth import install_auth
+from api.admin import router as admin_router
 
 log = logging.getLogger("v4w.api")
 
@@ -99,6 +102,32 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = REPO_ROOT / "web"
 
 app = FastAPI(title="Vets4Warriors staffing forecast", version="0.1.0")
+install_auth(app)
+app.include_router(admin_router)
+
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+
+@app.get("/api/status")
+def data_status():
+    from db.pipeline import revision
+    data_revision = 0
+    latest_month = None
+    training_status = None
+    if os.getenv("V4W_PIPELINE_ENABLED", "false").lower() == "true":
+        from api.admin import database
+        with database() as conn:
+            data_revision = revision(conn)
+            latest = conn.execute("SELECT max(month) AS month FROM pipeline_batches WHERE status='imported'").fetchone()
+            latest_month = latest["month"].strftime("%Y-%m") if latest["month"] else None
+            job = conn.execute("""SELECT j.training_status FROM pipeline_jobs j JOIN pipeline_batches b ON b.id=j.batch_id
+                WHERE b.status='imported' ORDER BY j.created_at DESC LIMIT 1""").fetchone()
+            training_status = job["training_status"] if job else None
+    return {"revision": data_revision, "active_model_version": active_version(),
+            "latest_imported_month": latest_month, "training_status": training_status}
 
 
 # =============================================================================
@@ -129,8 +158,8 @@ def _connection():
     try:
         return psycopg.connect(dsn)
     except psycopg.Error as exc:
-        log.exception("database connection failed")
-        raise HTTPException(503, f"database connection failed: {exc}") from exc
+        log.error("database connection failed")
+        raise HTTPException(503, "Database unavailable. Please try again later.") from exc
 
 
 def _queue_params(conn, queue_model: str, patience_sec: float | None) -> dict:
@@ -174,6 +203,7 @@ def _hourly_staffing(start: date, end: date, efficiency: float, target_pct: floa
     is the only feature path; nothing here recomputes features."""
     try:
         with _connection() as conn:
+            refresh_data_caches(conn)
             queue = _queue_params(conn, queue_model, patience_sec)
             hourly = staff_for_range(conn, start, end, efficiency, target_pct, target_sec,
                                      queue_model, queue["patience_sec"], recency, include_holidays)
@@ -191,8 +221,8 @@ def _hourly_staffing(start: date, end: date, efficiency: float, target_pct: floa
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except psycopg.Error as exc:
-        log.exception("query failed")
-        raise HTTPException(500, f"query failed: {exc}") from exc
+        log.error("query failed")
+        raise HTTPException(500, "The forecast could not be loaded. Please try again later.") from exc
 
 
 def format_duration(seconds: float) -> str:
@@ -467,18 +497,20 @@ def api_planned(body: PlannedRequest):
 
 @app.get("/api/model")
 def api_model():
-    if not METADATA_PATH.exists():
-        raise HTTPException(404, f"{METADATA_PATH} not found; run `make train`")
+    metadata_path = active_paths()[1]
+    if not metadata_path.exists():
+        raise HTTPException(404, "Model metadata not found; run training first.")
     try:
-        metadata = json.loads(METADATA_PATH.read_text())
+        metadata = json.loads(metadata_path.read_text())
     except json.JSONDecodeError as exc:
-        raise HTTPException(500, f"{METADATA_PATH} is not valid JSON: {exc}") from exc
+        raise HTTPException(500, "Model metadata could not be loaded.") from exc
     try:
         with _connection() as conn:
+            refresh_data_caches(conn)
             source = describe_source(conn)
     except (psycopg.Error, ValueError) as exc:
-        log.exception("data source lookup failed")
-        raise HTTPException(503, f"data source lookup failed: {exc}") from exc
+        log.error("data source lookup failed")
+        raise HTTPException(503, "Data source information is unavailable.") from exc
     return {**metadata, "data_source": source}
 
 

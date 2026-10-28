@@ -54,8 +54,7 @@ def estimate_patience(conn) -> dict:
     }
 
 
-# Process-wide cache, replaced wholesale on first use. The calls table only
-# changes on a reload, which also restarts the server.
+# Process-wide cache. db.freshness clears it after committed monthly imports.
 _cache: dict | None = None
 
 

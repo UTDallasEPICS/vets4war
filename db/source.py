@@ -7,8 +7,8 @@ rows, so it comes from $V4W_DATA_SOURCE ("partner" or "synthetic"). When it
 is not set the badge says so instead of guessing: demoing synthetic numbers
 while believing they are real is the failure this exists to prevent.
 
-The date range is read once per process from `calls`; the table only
-changes on a reload, which also restarts the server.
+The date range is cached per process. db.freshness invalidates it when the
+admin pipeline's committed data revision changes.
 """
 
 from __future__ import annotations

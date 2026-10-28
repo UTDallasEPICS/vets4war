@@ -14,3 +14,6 @@ uvicorn==0.52.4
 pytest==9.1.1
 # TestClient in tests/test_api.py needs httpx (starlette does not install it).
 httpx==0.28.1
+# Shared OpenID Connect sign-in and signed browser sessions.
+Authlib==1.9.1
+itsdangerous==2.2.0
