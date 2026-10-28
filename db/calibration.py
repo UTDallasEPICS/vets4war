@@ -26,8 +26,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-LEVEL_WINDOW_DAYS = 28
-LEVEL_CAP = 0.10
+LEVEL_WINDOW_DAYS = 7
+LEVEL_CAP = 0.15
 
 
 def recent_window_start(hour_start: pd.Series, window_days: int = LEVEL_WINDOW_DAYS) -> pd.Timestamp:
