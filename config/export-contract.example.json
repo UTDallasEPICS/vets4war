@@ -1,0 +1,20 @@
+{
+  "confirmed": false,
+  "confirmed_by": "",
+  "source_namespace": "jimmy-inbound",
+  "identifier_column": null,
+  "sheet": "Call Log",
+  "column_map": {
+    "start_ts": "Call Date/Time",
+    "abandoned": "Abandon",
+    "in_queue_sec": "Inqueue Time",
+    "agent_sec": "Agent Time",
+    "abandon_sec": "Abandon Time",
+    "routing_sec": "Routing Time"
+  },
+  "timestamp_format": null,
+  "timezone": "unconfirmed",
+  "duration_unit": "seconds",
+  "one_row_per_inbound_call": true,
+  "correction_policy": "replace_managed_month"
+}

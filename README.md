@@ -167,6 +167,11 @@ doubles on fall-back Sundays. Nothing is converted.
 
 ## Retraining
 
+For standalone Excel validation, see [Monthly call-file validation](docs/ingestion.md).
+For the draft ingestion ledger and frontend handoff, see
+[Ingestion integration](docs/ingestion-integration.md). Ingestion does not
+automatically retrain models or expose an upload page on this branch.
+
 New calls land in the `calls` table (loaded outside this repo). Then:
 
 ```
