@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
 import warnings
@@ -25,11 +26,26 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _level_factor(metadata: dict) -> float:
+    """Require a finite positive numeric correction; old artifacts use 1.0."""
+    value = metadata.get("level_factor", 1.0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("level_factor must be a finite positive number")
+    try:
+        factor = float(value)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError("level_factor must be a finite positive number") from exc
+    if not math.isfinite(factor) or factor <= 0:
+        raise ValueError("level_factor must be a finite positive number")
+    return factor
+
+
 def load_model(model_path: Path, metadata_path: Path):
     """Load one immutable in-memory copy and check the feature contract."""
     model_bytes = model_path.read_bytes()
     metadata_bytes = metadata_path.read_bytes()
     metadata = json.loads(metadata_bytes)
+    _level_factor(metadata)
     start, end = pd.Timestamp(metadata["train_start"]), pd.Timestamp(metadata["train_end"])
     if pd.isna(start) or pd.isna(end) or start.tz is not None or end.tz is not None or end < start:
         raise ValueError("invalid naive training interval")
@@ -54,6 +70,7 @@ def load_model(model_path: Path, metadata_path: Path):
 def evaluate(conn, booster, metadata, start: date | None, end: date | None,
              attestation: dict | None, today: date) -> dict:
     """Score only complete historical days in the repository's wall-clock grain."""
+    factor = _level_factor(metadata)
     train_end = pd.Timestamp(metadata["train_end"])
     first = train_end.normalize().date() + timedelta(days=1)
     start = max(start or first, first)
@@ -70,23 +87,31 @@ def evaluate(conn, booster, metadata, start: date | None, end: date | None,
     if attestation is None:
         result["warnings"].append("Completeness cannot be established: no loader/operator attestation. Metrics withheld; missing hours are not assumed zero.")
         return result
-    required = {"complete_start", "complete_end", "source", "evidence", "timezone", "offered_count"}
+    if not isinstance(attestation, dict):
+        raise ValueError("completeness attestation must be an object")
+    text_fields = ("complete_start", "complete_end", "source", "evidence", "timezone")
+    required = {*text_fields, "offered_count"}
     if not required.issubset(attestation):
         raise ValueError("completeness attestation is missing required fields")
+    if any(not isinstance(attestation[name], str) or not attestation[name].strip()
+           for name in text_fields):
+        raise ValueError("attestation text fields must be nonempty strings")
     if attestation["timezone"] != "Eastern naive wall-clock":
         raise ValueError("attestation timezone must match Eastern naive wall-clock")
-    if not str(attestation["source"]).strip() or not str(attestation["evidence"]).strip():
-        raise ValueError("attestation source and evidence must be nonempty")
+    expected = attestation["offered_count"]
+    if type(expected) is not int or expected < 0:
+        raise ValueError("attestation offered_count must be a nonnegative integer")
     a_start, a_end = date.fromisoformat(attestation["complete_start"]), date.fromisoformat(attestation["complete_end"])
     if (a_start, a_end) != (start, end):
         result["warnings"].append("Attestation must cover exactly the effective evaluation dates (including any training/historical clipping).")
         return result
-    expected = attestation["offered_count"]
-    if type(expected) is not int or expected < 0:
-        raise ValueError("attestation offered_count must be a nonnegative integer")
     try:
         hourly = load_hourly(conn)
     except ValueError as exc:
+        # load_hourly's explicit empty-table signal is the only ValueError
+        # that means no data. Parsing/processing failures must remain errors.
+        if str(exc) != "`calls` is empty; nothing to aggregate":
+            raise
         result.update(status="no_data")
         result["warnings"].append(str(exc))
         return result
@@ -114,7 +139,7 @@ def evaluate(conn, booster, metadata, start: date | None, end: date | None,
     # Match production volume inference, including its saved level correction.
     # Older metadata without calibration retains the original predictions.
     predicted = (np.asarray(booster.predict(featured[metadata["features"]]), dtype=float)
-                 * float(metadata.get("level_factor", 1.0)))
+                 * factor)
     if predicted.shape != actual.shape or not np.isfinite(predicted).all() or (predicted < 0).any():
         raise ValueError("model produced invalid predictions")
     # Existing scorer also calculates MAPE; suppress its undefined zero-denominator warning.
@@ -127,7 +152,8 @@ def evaluate(conn, booster, metadata, start: date | None, end: date | None,
                          "hours": len(actual), "days": len(actual) // 24,
                          "actual_calls": int(actual.sum()), "predicted_calls": float(predicted.sum())}
     result["completeness"] = {"verified": True, "method": "external_attestation_and_count_reconciliation",
-                              "attestation": attestation, "zero_filled_hours": len(actual) - len(selected)}
+                              "attestation": {name: attestation[name] for name in (*text_fields, "offered_count")},
+                              "zero_filled_hours": len(actual) - len(selected)}
     result["warnings"].append("Completeness relies on external attestation; count reconciliation alone cannot prove completeness or detect duplicates.")
     result["warnings"].append("Retrospective replay uses today's holiday table; historical calendar availability is not archived. DST follows existing naive wall-clock aggregation (24 bins/day).")
     result["status"] = "success"

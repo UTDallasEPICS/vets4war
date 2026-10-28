@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import shlex
 import sys
 from datetime import date
 from pathlib import Path
@@ -296,3 +297,83 @@ def test_real_synthetic_booster_roundtrip(tmp_path):
     loaded, _, identity = monitor.load_model(model, metadata)
     assert identity["pairing"] == "hash_verified"
     np.testing.assert_allclose(loaded.predict(training), booster.predict(training))
+
+
+def test_transaction_options_preserve_isolation_argument(artifacts, monkeypatch, capsys):
+    monkeypatch.setenv("V4W_DATABASE_URL", "mock-dsn")
+    connect = MagicMock()
+    monkeypatch.setattr(monitor.psycopg, "connect", connect)
+    assert monitor.main(["--model", str(artifacts[0]), "--metadata", str(artifacts[1])]) == 2
+    capsys.readouterr()
+    # For these quote-free options, shlex follows PostgreSQL's documented
+    # backslash/whitespace rules. Double-escaping splits 'repeatable read'.
+    assert shlex.split(connect.call_args.kwargs["options"]) == [
+        "-c", "default_transaction_read_only=on",
+        "-c", "default_transaction_isolation=repeatable read",
+    ]
+    assert connect.call_args.kwargs["connect_timeout"] == 15
+
+
+@pytest.mark.parametrize("field", ["complete_start", "complete_end", "source", "evidence", "timezone"])
+@pytest.mark.parametrize("value", [None, 42, True, [], {}, "", "   "])
+def test_attestation_requires_nonempty_strings(setup, field, value):
+    setup[1][field] = value
+    with pytest.raises(ValueError, match="nonempty strings"):
+        replay(setup)
+    monitor.load_hourly.assert_not_called()
+
+
+@pytest.mark.parametrize("attestation", [[], "invalid", 42])
+def test_attestation_requires_object(setup, attestation):
+    with pytest.raises(ValueError, match="object"):
+        replay(setup, attestation=attestation)
+
+
+def test_report_attestation_excludes_unknown_fields(setup):
+    approved = setup[1].copy()
+    setup[1]["private_notes"] = "test-only private value"
+    result = replay(setup)
+    assert result["completeness"]["attestation"] == approved
+    assert "private_notes" not in json.dumps(result)
+    assert "test-only private value" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("error", [ValueError("bad timestamps"), RuntimeError("processing failed")])
+def test_loader_processing_errors_are_not_no_data(setup, error):
+    monitor.load_hourly.side_effect = error
+    with pytest.raises(type(error), match=str(error)):
+        replay(setup)
+
+
+@pytest.mark.parametrize("factor", [0, -1, float("nan"), float("inf"), float("-inf"), None, True, "bad", "1.0"])
+def test_invalid_level_factor_rejected_before_evaluation(setup, factor):
+    setup[0]["level_factor"] = factor
+    with pytest.raises(ValueError, match="level_factor"):
+        replay(setup)
+    monitor.load_hourly.assert_not_called()
+    setup[2].predict.assert_not_called()
+
+
+@pytest.mark.parametrize("factor", [0, -1, float("nan"), float("inf"), None, True, "bad"])
+def test_invalid_level_factor_rejected_when_loading(artifacts, factor):
+    model, metadata, _ = artifacts
+    content = json.loads(metadata.read_text())
+    content["level_factor"] = factor
+    metadata.write_text(json.dumps(content))
+    with pytest.raises(ValueError, match="level_factor"):
+        monitor.load_model(model, metadata)
+
+
+def test_cli_processing_failure_is_redacted_error(artifacts, setup, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("V4W_DATABASE_URL", "mock-dsn")
+    monkeypatch.setattr(monitor.psycopg, "connect", MagicMock())
+    monitor.load_hourly.side_effect = ValueError("test-only private processing detail")
+    evidence = tmp_path / "complete.json"
+    evidence.write_text(json.dumps(setup[1]))
+    code = monitor.main(["--model", str(artifacts[0]), "--metadata", str(artifacts[1]),
+                         "--start", "2026-01-02", "--end", "2026-01-02", "--completeness", str(evidence)])
+    output = capsys.readouterr().out
+    assert code == 1
+    report = json.loads(output)
+    assert report["status"] == "error" and report["metrics"] is None
+    assert "test-only private processing detail" not in output
