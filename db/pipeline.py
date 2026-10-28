@@ -2,8 +2,9 @@
 
 No authentication, frontend, reporting, monitoring, training, or activation is
 owned by this module. No migration or import runs on import/server startup.
-The import draft still requires verified source IDs; the supplied six-column
-export needs a separately implemented month-based identity/correction policy.
+Monthly imports use batch IDs and database-generated call row IDs. The supplied
+six-column export needs no source call ID. Repeat months require explicit
+replacement of the currently imported batch.
 """
 from __future__ import annotations
 
@@ -127,8 +128,8 @@ def preview(conn, content, month, uploader, profile):
     # Error reports remain bounded; the full counts still describe the workbook.
     report["row_errors_truncated"] = len(report["row_errors"]) > 200
     report["row_errors"] = report["row_errors"][:200]
-    records = [{**row.record, "start_ts": row.record["start_ts"].isoformat(),
-                "source_id": row.source_identifier} for row in result.rows] if report["ok"] else None
+    records = [{**row.record, "start_ts": row.record["start_ts"].isoformat()}
+               for row in result.rows] if report["ok"] else None
     fingerprint = hashlib.sha256(content).hexdigest()
     batch_id = uuid.uuid4()
     with conn.transaction():
@@ -152,9 +153,7 @@ def preview(conn, content, month, uploader, profile):
 
 def commit_import(conn, batch_id, profile, *, expected_rows, replace_batch_id=None, actor=None):
     if not profile.confirmed or not profile.confirmed_by.strip():
-        raise PipelineError("Confirm the historical export format and stable call identifier before enabling imports.")
-    if profile.identifier_column is None:
-        raise PipelineError("Validation without call IDs is supported. Monthly importing without source IDs is not implemented yet.")
+        raise PipelineError("Confirm the historical export format and full-month replacement policy before enabling imports.")
     with conn.transaction():
         lock_import(conn)
         batch = conn.execute("SELECT *, expires_at > now() AS fresh FROM pipeline_batches WHERE id=%s FOR UPDATE",
@@ -167,7 +166,7 @@ def commit_import(conn, batch_id, profile, *, expected_rows, replace_batch_id=No
             raise PipelineError("The export contract changed. Validate the file again.")
         if len(batch["records"]) != expected_rows:
             raise PipelineError("The confirmed source row count does not match the upload.")
-        # Never invent IDs or reuse sponsor IDs as database primary keys.
+        # Internal row IDs come from the database, not an Excel column.
         generated = conn.execute("""SELECT column_default, is_identity FROM information_schema.columns
             WHERE table_schema=current_schema() AND table_name='calls' AND column_name='id'""").fetchone()
         if not generated or not (generated["column_default"] or generated["is_identity"] == "YES"):
@@ -192,10 +191,6 @@ def commit_import(conn, batch_id, profile, *, expected_rows, replace_batch_id=No
             conn.execute("DELETE FROM calls WHERE id=ANY(%s)", ([r["call_id"] for r in old_ids],))
             conn.execute("UPDATE pipeline_batches SET status='superseded' WHERE id=%s", (prior["id"],))
         records = batch["records"]
-        existing = conn.execute("SELECT 1 FROM pipeline_call_links WHERE source_namespace=%s AND source_id=ANY(%s) LIMIT 1",
-                                (profile.source_namespace, [r["source_id"] for r in records])).fetchone()
-        if existing:
-            raise PipelineError("A source call identifier is already imported in another month. No records were changed.")
         # Psycopg batches executemany through its pipeline to avoid a network
         # round trip per row when the database is remote.
         with conn.cursor() as cursor:
@@ -208,9 +203,10 @@ def commit_import(conn, batch_id, profile, *, expected_rows, replace_batch_id=No
                 call_ids.append(cursor.fetchone()["id"])
                 if not cursor.nextset():
                     break
-            cursor.executemany("INSERT INTO pipeline_call_links VALUES (%s,%s,%s,%s)",
-                               [(profile.source_namespace, r["source_id"], call_id, batch_id)
-                                for r, call_id in zip(records, call_ids, strict=True)])
+            if len(call_ids) != len(records):
+                raise PipelineError("The database did not return an ID for every call. No records were changed.")
+            cursor.executemany("INSERT INTO pipeline_call_links(call_id,batch_id) VALUES (%s,%s)",
+                               [(call_id, batch_id) for call_id in call_ids])
         conn.execute("UPDATE pipeline_batches SET status='imported',imported_at=now(),imported_by=%s,records=NULL,replaced_batch_id=%s WHERE id=%s",
                      (actor or batch["uploader"], prior["id"] if prior else None, batch_id))
         conn.execute("UPDATE pipeline_state SET revision=revision+1")
@@ -238,6 +234,13 @@ def revision(conn):
 
 def migrate(conn):
     with conn.transaction():
+        # The former prototype used a different primary key. Never silently
+        # rewrite an already-applied ledger or discard its provenance.
+        legacy = conn.execute("""SELECT 1 FROM information_schema.columns
+            WHERE table_schema=current_schema() AND table_name='pipeline_call_links'
+            AND column_name='source_id'""").fetchone()
+        if legacy:
+            raise PipelineError("An older source-ID ledger exists. Review a schema/data migration before applying this version.", 503)
         conn.execute((ROOT / "db/migrations/001_ingestion.sql").read_text())
 
 

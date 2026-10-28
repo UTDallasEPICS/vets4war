@@ -18,6 +18,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from db import pipeline
+from db.ingest import PARTNER_COLUMNS
 
 
 @pytest.fixture(scope="module")
@@ -53,14 +54,15 @@ def db(test_dsn):
 @pytest.fixture
 def profile():
     return pipeline.ExportContract(confirmed=True, confirmed_by="Synthetic test fixture", source_namespace="test-inbound",
-                                   identifier_column="Call ID", sheet="Calls")
+                                   sheet="Call Log", column_map=PARTNER_COLUMNS)
 
 
-def workbook(rows=None):
+def workbook(rows=None, *, description=""):
     wb = Workbook()
-    wb.active.title = "Calls"
-    wb.active.append(["start_ts", "abandoned", "in_queue_sec", "agent_sec", "abandon_sec", "routing_sec", "Call ID", "Ignored"])
-    for row in rows or [[datetime(2026, 9, 1, 12), False, 10, 300, None, 2, "synthetic-1", "private-ignored"]]:
+    wb.active.title = "Call Log"
+    wb.properties.description = description
+    wb.active.append(["Call Date/Time", "Inqueue Time", "Routing Time", "Agent Time", "Abandon", "Abandon Time"])
+    for row in rows if rows is not None else [[datetime(2026, 9, 1, 12), 10, 2, 300, "N", 0]]:
         wb.active.append(row)
     stream = BytesIO()
     wb.save(stream)
@@ -79,16 +81,24 @@ def import_one(db, profile):
 
 
 def test_validation_import_history_and_replay(db, profile):
+    assert profile.identifier_column is None
     content = workbook()
     batch = pipeline.preview(db, content, date(2026, 9, 1), "uploader@example.test", profile)
     assert batch["validation"]["ok"]
+    assert not batch["validation"]["duplicate_detection_enabled"]
     assert "private-ignored" not in json.dumps(batch)
     assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 0
+    records = db.execute("SELECT records FROM pipeline_batches").fetchone()["records"]
+    assert all("source_id" not in row and "id" not in row for row in records)
     repeat = pipeline.preview(db, content, date(2026, 9, 1), "uploader@example.test", profile)
     assert repeat["id"] == batch["id"]
     result = pipeline.commit_import(db, batch["id"], profile, expected_rows=1)
     assert result["status"] == "imported"
     assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 1
+    call = db.execute("SELECT * FROM calls").fetchone()
+    assert isinstance(call["id"], int) and call["agent_sec"] == 300 and call["abandoned"] is False
+    link = db.execute("SELECT * FROM pipeline_call_links").fetchone()
+    assert link["call_id"] == call["id"] and str(link["batch_id"]) == batch["id"]
     assert db.execute("SELECT records FROM pipeline_batches").fetchone()["records"] is None
     assert pipeline.revision(db) == 1
     assert pipeline.history(db)[0]["status"] == "imported"
@@ -99,7 +109,7 @@ def test_validation_import_history_and_replay(db, profile):
 
 
 def test_invalid_dates_and_bad_rows_never_stage_records(db, profile):
-    rows = [[datetime(2026, 8, 1, 12), False, 10, 300, None, 2, "id-1"]]
+    rows = [[datetime(2026, 8, 1, 12), 10, 2, 300, "N", 0]]
     batch = stage(db, profile, rows)
     assert not batch["validation"]["ok"]
     assert batch["validation"]["file_errors"][0]["code"] == "outside_month"
@@ -119,23 +129,25 @@ def test_unconfirmed_contract_count_and_changed_contract_block_import(db, profil
     assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 0
 
 
-def test_no_identifier_profile_can_validate_but_cannot_import_yet(db, profile):
-    no_id = profile.model_copy(update={"identifier_column": None})
-    batch = stage(db, no_id)
+def test_no_identifier_profile_imports_answered_and_abandoned_calls(db, profile):
+    rows = [[datetime(2026, 9, 1, 12), 10, 2, 300, "N", 0],
+            [datetime(2026, 9, 2, 12), 20, 0, 0, "Y", 20]]
+    batch = stage(db, profile, rows)
     assert batch["validation"]["ok"]
     assert not batch["validation"]["duplicate_detection_enabled"]
-    with pytest.raises(pipeline.PipelineError, match="Monthly importing without source IDs is not implemented"):
-        pipeline.commit_import(db, batch["id"], no_id, expected_rows=1)
-    assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 0
+    pipeline.commit_import(db, batch["id"], profile, expected_rows=2)
+    calls = db.execute("SELECT * FROM calls ORDER BY start_ts").fetchall()
+    assert len(calls) == 2 and len({row["id"] for row in calls}) == 2
+    assert calls[0]["abandoned"] is False and calls[1]["abandoned"] is True
+    assert calls[1]["abandon_sec"] == 20
 
 
-def test_cross_file_duplicates_rollback_entire_transaction(db, profile):
+def test_repeat_month_with_different_workbook_bytes_is_blocked(db, profile):
     import_one(db, profile)
-    rows = [[datetime(2026, 8, 1, 12), False, 10, 200, None, 2, "new-id"],
-            [datetime(2026, 8, 2, 12), False, 10, 300, None, 2, "synthetic-1"]]
-    batch = stage(db, profile, rows, date(2026, 8, 1))
+    # The same call data in a regenerated Excel archive has a different hash.
+    batch = pipeline.preview(db, workbook(description="regenerated export"), date(2026, 9, 1), "test", profile)
     with pytest.raises(pipeline.PipelineError, match="already imported"):
-        pipeline.commit_import(db, batch["id"], profile, expected_rows=2)
+        pipeline.commit_import(db, batch["id"], profile, expected_rows=1)
     assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 1
     assert db.execute("SELECT count(*) AS n FROM pipeline_batches WHERE status='imported'").fetchone()["n"] == 1
     assert pipeline.revision(db) == 1
@@ -143,7 +155,7 @@ def test_cross_file_duplicates_rollback_entire_transaction(db, profile):
 
 def test_correction_requires_explicit_current_batch_and_replaces_atomically(db, profile):
     old = import_one(db, profile)
-    rows = [[datetime(2026, 9, 1, 12), False, 10, 450, None, 2, "synthetic-1"]]
+    rows = [[datetime(2026, 9, 1, 12), 10, 2, 450, "N", 0]]
     corrected = stage(db, profile, rows)
     with pytest.raises(pipeline.PipelineError, match="already imported"):
         pipeline.commit_import(db, corrected["id"], profile, expected_rows=1)
@@ -154,25 +166,103 @@ def test_correction_requires_explicit_current_batch_and_replaces_atomically(db, 
         pipeline.commit_import(db, old["id"], profile, expected_rows=1, replace_batch_id=corrected["id"])
 
 
+def test_identical_calls_are_preserved_and_other_months_import_independently(db, profile):
+    rows = [[datetime(2026, 9, 1, 12), 10, 2, 300, "N", 0]] * 2
+    batch = stage(db, profile, rows)
+    pipeline.commit_import(db, batch["id"], profile, expected_rows=2)
+    calls = db.execute("SELECT id FROM calls").fetchall()
+    assert len(calls) == 2 and len({row["id"] for row in calls}) == 2
+    august = stage(db, profile, [[datetime(2026, 8, 1, 12), 10, 2, 300, "N", 0]], date(2026, 8, 1))
+    pipeline.commit_import(db, august["id"], profile, expected_rows=1)
+    assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 3
+    assert pipeline.revision(db) == 2
+
+
+def test_whole_month_replacement_removes_old_batch_rows_only(db, profile):
+    original = stage(db, profile, [[datetime(2026, 9, 1, 12), 10, 2, 300, "N", 0],
+                                  [datetime(2026, 9, 2, 12), 10, 2, 400, "N", 0]])
+    pipeline.commit_import(db, original["id"], profile, expected_rows=2)
+    old_ids = [row["id"] for row in db.execute("SELECT id FROM calls")]
+    other = stage(db, profile, [[datetime(2026, 8, 1, 12), 10, 2, 200, "N", 0]], date(2026, 8, 1))
+    pipeline.commit_import(db, other["id"], profile, expected_rows=1)
+    other_call = db.execute("SELECT * FROM calls WHERE start_ts<'2026-09-01'").fetchone()
+    corrected = stage(db, profile, [[datetime(2026, 9, 3, 12), 10, 2, 500, "N", 0]])
+    pipeline.commit_import(db, corrected["id"], profile, expected_rows=1, replace_batch_id=original["id"])
+    assert db.execute("SELECT count(*) AS n FROM calls WHERE id=ANY(%s)", (old_ids,)).fetchone()["n"] == 0
+    assert db.execute("SELECT * FROM calls WHERE id=%s", (other_call["id"],)).fetchone() == other_call
+    assert db.execute("SELECT count(*) AS n FROM pipeline_call_links WHERE batch_id=%s", (original["id"],)).fetchone()["n"] == 0
+    assert db.execute("SELECT count(*) AS n FROM pipeline_call_links WHERE batch_id=%s", (corrected["id"],)).fetchone()["n"] == 1
+    assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 2
+
+
+def test_stale_or_unrelated_replacement_batch_is_rejected(db, profile):
+    original = stage(db, profile)
+    with pytest.raises(pipeline.PipelineError, match="no longer current"):
+        pipeline.commit_import(db, original["id"], profile, expected_rows=1, replace_batch_id=uuid.uuid4())
+    pipeline.commit_import(db, original["id"], profile, expected_rows=1)
+    corrected = stage(db, profile, [[datetime(2026, 9, 1, 12), 10, 2, 450, "N", 0]])
+    pipeline.commit_import(db, corrected["id"], profile, expected_rows=1, replace_batch_id=original["id"])
+    newer = stage(db, profile, [[datetime(2026, 9, 1, 12), 10, 2, 500, "N", 0]])
+    with pytest.raises(pipeline.PipelineError, match="already imported"):
+        pipeline.commit_import(db, newer["id"], profile, expected_rows=1, replace_batch_id=original["id"])
+    assert db.execute("SELECT agent_sec FROM calls").fetchone()["agent_sec"] == 450
+
+
 def test_failed_correction_restores_old_calls_and_current_batch(db, profile):
     old = import_one(db, profile)
-    other = stage(db, profile, [[datetime(2026, 8, 1, 12), False, 10, 200, None, 2, "other-id"]], date(2026, 8, 1))
+    before = db.execute("SELECT * FROM calls").fetchall()
+    before_links = db.execute("SELECT * FROM pipeline_call_links").fetchall()
+    other = stage(db, profile, [[datetime(2026, 8, 1, 12), 10, 2, 200, "N", 0]], date(2026, 8, 1))
     pipeline.commit_import(db, other["id"], profile, expected_rows=1)
-    corrected = stage(db, profile, [[datetime(2026, 9, 1, 12), False, 10, 900, None, 2, "other-id"]])
-    with pytest.raises(pipeline.PipelineError, match="already imported"):
-        pipeline.commit_import(db, corrected["id"], profile, expected_rows=1, replace_batch_id=old["id"])
-    assert db.execute("SELECT agent_sec FROM calls WHERE start_ts >= '2026-09-01'").fetchone()["agent_sec"] == 300
+    # A database failure on the second inserted row happens after the old
+    # month's calls/links have been deleted inside the same transaction.
+    db.execute("ALTER TABLE calls ADD CONSTRAINT synthetic_agent_limit CHECK (agent_sec<800)")
+    corrected = stage(db, profile, [[datetime(2026, 9, 1, 12), 10, 2, 450, "N", 0],
+                                    [datetime(2026, 9, 2, 12), 10, 2, 900, "N", 0]])
+    with pytest.raises(psycopg.errors.CheckViolation):
+        pipeline.commit_import(db, corrected["id"], profile, expected_rows=2, replace_batch_id=old["id"])
+    assert db.execute("SELECT * FROM calls WHERE start_ts >= '2026-09-01'").fetchall() == before
+    assert db.execute("SELECT * FROM pipeline_call_links WHERE batch_id=%s", (old["id"],)).fetchall() == before_links
     assert db.execute("SELECT status FROM pipeline_batches WHERE id=%s", (old["id"],)).fetchone()["status"] == "imported"
+    assert db.execute("SELECT status FROM pipeline_batches WHERE id=%s", (corrected["id"],)).fetchone()["status"] == "validated"
+    assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 2
+    assert pipeline.revision(db) == 2
 
 
-def test_unmanaged_overlap_and_missing_id_default_fail_closed(db, profile):
+def test_unmanaged_overlap_fails_closed(db, profile):
     db.execute("INSERT INTO calls(start_ts,abandoned) VALUES ('2026-09-02',false)")
     batch = stage(db, profile)
     with pytest.raises(pipeline.PipelineError, match="unmanaged"):
         pipeline.commit_import(db, batch["id"], profile, expected_rows=1)
+
+
+def test_missing_database_generated_id_fails_closed(db, profile):
+    batch = stage(db, profile)
     db.execute("ALTER TABLE calls ALTER COLUMN id DROP IDENTITY")
     with pytest.raises(pipeline.PipelineError, match="database-generated"):
         pipeline.commit_import(db, batch["id"], profile, expected_rows=1)
+
+
+def test_new_import_database_failure_leaves_no_partial_rows_or_links(db, profile):
+    db.execute("ALTER TABLE calls ADD CONSTRAINT synthetic_agent_limit CHECK (agent_sec<800)")
+    batch = stage(db, profile, [[datetime(2026, 9, 1, 12), 10, 2, 300, "N", 0],
+                                [datetime(2026, 9, 2, 12), 10, 2, 900, "N", 0]])
+    with pytest.raises(psycopg.errors.CheckViolation):
+        pipeline.commit_import(db, batch["id"], profile, expected_rows=2)
+    assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 0
+    assert db.execute("SELECT count(*) AS n FROM pipeline_call_links").fetchone()["n"] == 0
+    assert pipeline.revision(db) == 0
+
+
+def test_correction_refuses_unmanaged_calls_added_to_managed_month(db, profile):
+    original = import_one(db, profile)
+    db.execute("INSERT INTO calls(start_ts,abandoned) VALUES ('2026-09-02',false)")
+    before = db.execute("SELECT * FROM calls ORDER BY id").fetchall()
+    corrected = stage(db, profile, [[datetime(2026, 9, 1, 12), 10, 2, 450, "N", 0]])
+    with pytest.raises(pipeline.PipelineError, match="unmanaged"):
+        pipeline.commit_import(db, corrected["id"], profile, expected_rows=1, replace_batch_id=original["id"])
+    assert db.execute("SELECT * FROM calls ORDER BY id").fetchall() == before
+    assert pipeline.revision(db) == 1
 
 
 def test_expired_staging_is_not_importable_and_is_purged(db, profile):
@@ -221,11 +311,23 @@ def test_pipeline_tables_are_backend_only_with_rls(db):
     rows = db.execute("SELECT relrowsecurity FROM pg_class WHERE relnamespace=current_schema()::regnamespace AND relname LIKE 'pipeline_%%' AND relkind='r'").fetchall()
     assert len(rows) == 3
     assert all(row["relrowsecurity"] for row in rows)
+    columns = db.execute("""SELECT column_name FROM information_schema.columns
+        WHERE table_schema=current_schema() AND table_name='pipeline_call_links' ORDER BY ordinal_position""").fetchall()
+    assert [row["column_name"] for row in columns] == ["call_id", "batch_id"]
+    pipeline.migrate(db)  # New ledger installation is idempotent.
+
+
+def test_old_draft_schema_is_not_silently_changed(db):
+    db.execute("DROP TABLE pipeline_call_links")
+    db.execute("CREATE TABLE pipeline_call_links(source_id text PRIMARY KEY,call_id bigint,batch_id uuid)")
+    with pytest.raises(pipeline.PipelineError, match="older source-ID ledger"):
+        pipeline.migrate(db)
+    assert db.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='pipeline_call_links' AND column_name='source_id'").fetchone()
 
 
 def test_row_limit_is_enforced_without_partial_acceptance(db, profile, monkeypatch):
     monkeypatch.setattr(pipeline, "MAX_ROWS", 1)
-    batch = stage(db, profile, [[datetime(2026, 9, 1, 12), False, 10, 300, None, 2, "id-1"],
-                               [datetime(2026, 9, 2, 12), False, 10, 300, None, 2, "id-2"]])
+    batch = stage(db, profile, [[datetime(2026, 9, 1, 12), 10, 2, 300, "N", 0],
+                               [datetime(2026, 9, 2, 12), 10, 2, 300, "N", 0]])
     assert not batch["validation"]["ok"]
     assert any(error["code"] == "too_many_rows" for error in batch["validation"]["file_errors"])

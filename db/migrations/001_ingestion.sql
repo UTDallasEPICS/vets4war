@@ -1,6 +1,8 @@
 -- Ingestion ledger only. Apply explicitly with python -m db.pipeline migrate.
 -- No shared DB is altered
 -- at application startup. Calls must already exist and generate their own IDs.
+-- Fresh installations use database row IDs, not identifiers from Excel.
+-- Existing draft source-ID ledgers require a separately reviewed upgrade.
 CREATE TABLE IF NOT EXISTS pipeline_batches (
     id uuid PRIMARY KEY,
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -21,11 +23,8 @@ CREATE TABLE IF NOT EXISTS pipeline_batches (
 CREATE UNIQUE INDEX IF NOT EXISTS pipeline_one_active_month
     ON pipeline_batches(month) WHERE status = 'imported';
 CREATE TABLE IF NOT EXISTS pipeline_call_links (
-    source_namespace text NOT NULL,
-    source_id text NOT NULL,
-    call_id bigint NOT NULL UNIQUE REFERENCES calls(id),
-    batch_id uuid NOT NULL REFERENCES pipeline_batches(id),
-    PRIMARY KEY (source_namespace, source_id)
+    call_id bigint PRIMARY KEY REFERENCES calls(id),
+    batch_id uuid NOT NULL REFERENCES pipeline_batches(id)
 );
 CREATE INDEX IF NOT EXISTS pipeline_links_batch ON pipeline_call_links(batch_id);
 CREATE TABLE IF NOT EXISTS pipeline_state (

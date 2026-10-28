@@ -15,7 +15,7 @@ in commit `e73f0bb` for reference.
 | `db/pipeline.py` | Draft monthly staging, transactional import, correction rollback, upload history, staged-record expiry and data revision |
 | `db/migrations/001_ingestion.sql` | Backend-only ingestion ledger tables, explicitly applied |
 | `tests/test_pipeline.py` | Synthetic PostgreSQL import/rollback/history tests |
-| `config/export-contract.example.json` | Observed sheet/header mapping and seconds; import approval and source-ID policy remain unconfirmed |
+| `config/export-contract.example.json` | Observed sheet/header mapping and seconds; explicit import approval remains unconfirmed |
 | `tests/test_partner_ingest.py` | Synthetic six-column partner workbooks, Y/N, month checks and timestamp preservation |
 
 The model, its artifacts, forecast API and staffing dashboard match
@@ -52,11 +52,12 @@ Partner validation is implemented: `--profile partner` selects the actual
 their source timezone remains unconfirmed. The provided historical workbook
 passed all 93,407 rows in a read-only check.
 
-1. Implement/test the agreed complete-month duplicate/replacement policy without
-   assuming timestamps or generated database IDs identify the same source call.
-   Current source-ID import tests do not establish this future behavior.
-2. Add the validation-only HTTP boundary and connect the teammate's UI.
-3. Review the existing database's calls schema, generated ID default and
+Monthly imports now use the reporting month, batch UUID, and database-generated
+row IDs. Source call IDs are not required. Six-column synthetic import tests
+cover repeat files/months, explicit corrections, and transaction rollback.
+
+1. Add the validation-only HTTP boundary and connect the teammate's UI.
+2. Review the existing database's calls schema, generated ID default and
    historical provenance; then test imports in an agreed isolated environment.
    Real database importing must not be enabled solely because synthetic tests pass.
 
@@ -70,19 +71,26 @@ bounded; input limits are 25 MB compressed, 100 MB expanded, 2,000 ZIP entries a
 100,000 rows. The caller must enforce the compressed request limit before reading
 an HTTP body; no upload HTTP implementation is supplied here.
 
-The example now deliberately has `identifier_column: null` and
-`timezone: "unconfirmed"`. Both the standalone partner validator and draft
-staging service can validate without IDs, but `commit_import()` explicitly
-blocks such profiles until month-based importing is implemented. Changing
-`confirmed` to true alone does not enable importing this six-column file.
+The example deliberately has `identifier_column: null` and
+`timezone: "unconfirmed"`. Both validation and monthly importing accept this
+six-column layout without source IDs. The example remains `confirmed: false`;
+the import profile, database setup, full-month coverage and replacement policy
+must be approved before real imports are enabled.
 
-`commit_import()` requires a confirmed profile, stable source IDs, a matching
+`commit_import()` requires a confirmed profile, a matching
 source row count, and explicit selection of the current batch for replacements.
 It refuses months containing unmanaged historical records and requires the
-database to generate `calls.id`. All call changes, source links, batch state and
+database to generate `calls.id`. All call changes, batch-to-row links, batch state and
 revision increment are committed together or rolled back. The authenticated
 caller must independently confirm full-month coverage before invoking it; counts
 and days without calls cannot prove completeness.
+
+Re-uploading identical file bytes returns the existing batch. A different file
+for an imported month is also blocked unless the current batch is selected
+explicitly for replacement. The ledger does not infer call identity from
+timestamps or durations and preserves identical rows within a file. It does
+not detect individual calls repeated with altered timestamps in different
+monthly exports; selected-month validation is not source reconciliation.
 
 `history(conn)` returns ingestion history only. There are no training jobs or
 report tables in this migration. The revision is available to future consumers
@@ -99,6 +107,10 @@ browser policies. Use an appropriately privileged backend database role.
 If someone applied the old prototype migration in a private test database,
 this revised migration does not drop that database's old job/report tables.
 No migration or data change was run against the shared database during cleanup.
+If an old draft ledger with a `source_id` column was applied privately,
+`python -m db.pipeline migrate` refuses to silently rewrite it. Review a separate
+schema/data upgrade rather than dropping existing records. Fresh installations
+create `pipeline_call_links(call_id, batch_id)` with database row IDs only.
 
 ## Tests
 

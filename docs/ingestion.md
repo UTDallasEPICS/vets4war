@@ -49,8 +49,9 @@ no configuration, credentials, database, login or model is needed.
 The file has no source call ID. This profile does not require or invent one,
 and does not remove identical rows. Reports warn that source-ID duplicate
 detection was not performed. Passing checks cannot prove a complete export or
-that a file is safe to insert. No-ID database importing remains unimplemented
-and is explicitly blocked by `commit_import()` even for a confirmed profile.
+that a file is safe to insert. The separate monthly importer uses reporting
+month and import-batch tracking, without source IDs, after explicit approval
+of its configuration and full-month coverage. See the integration document.
 
 The partner profile is tested with synthetic workbooks. A read-only check of
 the supplied 2021–2025 workbook passed all 93,407 rows; its bytes were unchanged.
@@ -315,7 +316,9 @@ database importing.
 The observed sheet/headers, Y/N values and confirmed seconds are now supported.
 Still confirm one row represents one inbound call and agree on complete-month
 replacement/correction handling. The model owner must verify timestamp
-compatibility before live integration. A source call ID is absent: implement a
-month-based import policy rather than invent an identifier from timestamps.
+compatibility before live integration. The source call ID is absent: the monthly
+importer now tracks database rows by batch rather than inventing identifiers
+from timestamps.
 Confirm destination data provenance and generated-ID defaults/constraints before
-enabling writes. The current draft importer remains blocked for no-ID profiles.
+enabling writes. The example profile remains unconfirmed, and no import HTTP
+endpoint or production authentication integration has been enabled.
