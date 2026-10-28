@@ -63,7 +63,7 @@ web/index.html   the console: markup + stylesheet
 web/logic.js     every number the page shows is derived here (pure, node-testable)
 web/app.js       DOM wiring, fetch, exports; no arithmetic of its own
 web/erlang.js    mirror of db/erlang.py + staff_for_hour, parity-tested
-models/          seeded model pair; versions/ + active.json after retraining
+models/          volume_lgbm.txt + metadata.json, written by `make train`
 tests/           pytest; test_features.py and test_api.py need the database,
                  test_erlang_js.py and test_web.py need node
 ```
@@ -97,10 +97,6 @@ Create `.env` in the repo root. It is gitignored and must never be committed:
 ```
 cp .env.example .env
 ```
-
-Configure organization sign-in using [Monthly administration](docs/admin-pipeline.md).
-For local dashboard development without a provider, set `V4W_REQUIRE_AUTH=false`;
-the admin portal still requires a configured sign-in provider and authorized account.
 
 Paste the connection string from the Supabase project (Connect button,
 "Session pooler" tab) as `V4W_DATABASE_URL`.
@@ -154,8 +150,8 @@ port 8000 using the same local environment. These requests all returned
 
 ## The data
 
-Forecasting reads the existing tables as-is. The optional admin migration adds
-separate pipeline tables; it does not modify the `calls` or `holidays` schema.
+Tables are read as-is; this code adds no views, columns or constraints to
+the shared database.
 
 - `calls`: one row per inbound call. `start_ts` (naive timestamp),
   `in_queue_sec`, `routing_sec`, `agent_sec`, `abandon_sec`, `abandoned`.
@@ -171,16 +167,10 @@ doubles on fall-back Sundays. Nothing is converted.
 
 ## Retraining
 
-The admin portal, shared authentication, monthly imports, automatic retraining,
-and stored reports are documented in [Monthly administration](docs/admin-pipeline.md).
-The portal is at `/admin`; production setup requires an OIDC provider, authorized
-accounts, an explicit database migration, a confirmed export contract, and a
-worker sharing persistent model storage with the API. Imports remain disabled
-until that configuration is complete.
-
-For local Excel validation before any database import, see
-[Monthly call-file validation](docs/ingestion.md). This validator does not write
-to Supabase or retrain the model.
+For standalone Excel validation, see [Monthly call-file validation](docs/ingestion.md).
+For the draft ingestion ledger and frontend handoff, see
+[Ingestion integration](docs/ingestion-integration.md). Ingestion does not
+automatically retrain models or expose an upload page on this branch.
 
 New calls land in the `calls` table (loaded outside this repo). Then:
 
@@ -190,10 +180,9 @@ make train PYTHON=.venv/bin/python
 
 About 30 seconds. It rebuilds the full hourly grid, reruns the 12-month
 rolling backtest against the two baselines, prints the per-fold table, and
-only then writes a versioned model/metadata pair and atomically activates it
-through `models/active.json` (or `V4W_MODEL_DIR`). If
+only then writes `models/volume_lgbm.txt` and `models/metadata.json`. If
 LightGBM does not beat seasonal naive on daily-total MAE it prints `STOP`,
-exits non-zero and keeps the active model. The hold-out window moves
+exits non-zero and leaves `models/` untouched. The hold-out window moves
 forward automatically with the data: the last 12 complete months.
 
 The running API reloads the model on the next request after a retrain.
@@ -223,7 +212,7 @@ POST /api/planned
     service level and abandonment at the PLANNED staffing
 
 GET /api/model
-    active model metadata plus data_source
+    models/metadata.json plus data_source
 ```
 
 Every response carries `data_source` (`kind`, `label`, `start`, `end`).

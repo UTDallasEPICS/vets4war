@@ -74,3 +74,51 @@ def test_verdicts_and_consequences(checks):
     assert checks["sampleVerdict"] == "on target"
     assert checks["plannedFewerLowersServiceLevel"] is True
     assert checks["oneFewerRaises"] is True
+
+
+def test_period_report_covers_the_selected_window_and_matches_the_page_totals(checks):
+    report = checks["report"]
+    assert report["isDocument"]
+    assert report["hasPeriod"]
+    assert report["dayRows"] == 7
+    assert report["totalCalls"] == report["expectedCalls"]
+    assert report["totalPersonHours"] == report["expectedPersonHours"]
+    assert report["holidayShown"]
+
+
+def test_period_report_escapes_text_from_the_server(checks):
+    assert checks["report"]["escaped"]
+
+
+def test_period_report_shows_undefined_staffing_as_a_dash_not_a_number(checks):
+    assert checks["reportUndefined"] == "-"
+
+
+def test_period_report_refuses_an_empty_window(checks):
+    assert checks["reportEmptyError"] == "no forecast hours in the selected period"
+
+
+def test_evening_cap_is_six_and_others_seven(checks):
+    caps = checks["caps"]
+    assert caps["byHour"] == [7, 7, 6, 6]
+    assert caps["eveningSevenVerdict"] == "exceeds capacity"
+    assert caps["daySevenVerdict"] == "on target"
+    assert caps["eveningHoursCarryCap"] is True
+    assert caps["eveningShiftCap"] == 6
+
+
+def test_current_roster_outcome_moves_the_right_way(checks):
+    roster = checks["roster"]
+    assert roster["callsMatch"] and roster["inRange"]
+    assert roster["fewerHangups"] and roster["betterService"]
+    assert roster["undefinedAtZeroEfficiency"] is None
+
+
+def test_staff_tradeoff_table_runs_to_the_cap_and_moves_the_right_way(checks):
+    t = checks["tradeoff"]
+    assert t["rows"] == [1, 2, 3, 4, 5, 6]          # Evening: 1 up to its cap of 6
+    assert t["lostFallsWithStaff"] and t["serviceRisesWithStaff"]
+    assert t["partsAddUp"]                          # lost + in time + late = calls
+    assert t["coreCallsOnly"]                       # each call counted once
+    assert t["plannedHasTotals"]
+    assert t["undefinedAtZeroEfficiency"] is None

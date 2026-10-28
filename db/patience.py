@@ -38,6 +38,8 @@ PATIENCE_SQL = """
 def estimate_patience(conn) -> dict:
     """Censored-exponential MLE of mean patience in seconds, with the counts
     it came from so the UI can say where the number comes from."""
+    # Abandoned waits are observed through hang-up; answered waits are
+    # right-censored at answer. Their combined exposure estimates mean patience.
     with conn.cursor() as cur:
         cur.execute(PATIENCE_SQL)
         total_wait_sec, n_abandoned, n_calls = cur.fetchone()
@@ -54,12 +56,26 @@ def estimate_patience(conn) -> dict:
     }
 
 
-# Process-wide cache. db.freshness clears it after committed monthly imports.
+# Process-wide cache, replaced wholesale on first use. The calls table only
+# changes on a reload, which also restarts the server.
 _cache: dict | None = None
 
 
 def cached_patience(conn) -> dict:
     global _cache
     if _cache is None:
+        # The source call table is treated as static during a server process;
+        # loads happen operationally before the server restarts.
         _cache = estimate_patience(conn)
     return _cache
+
+
+# This module estimates the mean caller patience under an exponential
+# right-censoring model. Abandoned callers contribute their observed wait to
+# the likelihood, answered callers contribute queue time as censored exposure,
+# and explicit validation rejects empty or unidentifiable datasets.
+#
+# db.staffing requests the cached estimate only for Erlang A when the caller
+# has not provided an override; Erlang C intentionally does not use patience.
+# The result and sample counts are also exposed by the API so users can see
+# whether abandonment estimates came from data or from a manual parameter.

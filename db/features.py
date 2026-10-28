@@ -77,6 +77,8 @@ def _read_table(conn, sql: str) -> pd.DataFrame:
     work without SQLAlchemy.
     """
     with conn.cursor() as cur:
+        # Capture names before fetching so returned records stay aligned with
+        # the database's SELECT order without requiring an ORM or SQLAlchemy.
         cur.execute(sql)
         columns = [d.name for d in cur.description]
         rows = cur.fetchall()
@@ -87,6 +89,8 @@ def load_hourly(conn) -> pd.DataFrame:
     """One row per hour that had at least one call: hour_start, offered,
     answered, abandoned, answered_30s, talk_sec. Ordered by hour_start."""
     df = _read_table(conn, HOURLY_SQL)
+    # An empty source cannot produce either training labels or useful features;
+    # fail here rather than letting downstream reductions operate on emptiness.
     if df.empty:
         raise ValueError("`calls` is empty; nothing to aggregate")
     df["hour_start"] = pd.to_datetime(df["hour_start"])
@@ -95,6 +99,8 @@ def load_hourly(conn) -> pd.DataFrame:
 
 def load_holidays(conn) -> pd.DataFrame:
     """Every row of the holidays table, ordered by date."""
+    # Preserve optional calendar columns (such as holiday_name) for consumers
+    # while normalizing the date type used by feature calculations.
     df = _read_table(conn, "SELECT * FROM holidays ORDER BY holiday_date")
     df["holiday_date"] = pd.to_datetime(df["holiday_date"])
     return df
@@ -105,6 +111,8 @@ def load_holidays(conn) -> pd.DataFrame:
 # =============================================================================
 
 def _validate_inputs(df: pd.DataFrame, holidays: pd.DataFrame) -> None:
+    # Fail early with an actionable message instead of allowing pandas date
+    # operations below to produce misleading or misaligned features.
     if "hour_start" not in df.columns:
         raise ValueError("df must have an `hour_start` column")
     if not pd.api.types.is_datetime64_any_dtype(df["hour_start"]):
@@ -122,20 +130,31 @@ def _validate_inputs(df: pd.DataFrame, holidays: pd.DataFrame) -> None:
 
 def _calendar_features(hour_start: pd.Series, epoch: pd.Timestamp) -> pd.DataFrame:
     """dow, hour, month, week_of_year, trend index, cyclic encodings, weekend."""
+    # Keep both integer calendar identifiers (for tree splits) and cyclic
+    # encodings (so adjacent times remain mathematically close).
     dow = hour_start.dt.isocalendar().day.astype("int64")       # 1=Mon..7=Sun
     hour = hour_start.dt.hour.astype("int64")
+    # Day-of-month supports the deliberately coarse payday window below;
+    # it is not used as a high-cardinality exact-date identifier.
+    day = hour_start.dt.day.astype("int64")
 
     return pd.DataFrame({
         "dow": dow,
         "hour": hour,
         "month": hour_start.dt.month.astype("int64"),
         "week_of_year": hour_start.dt.isocalendar().week.astype("int64"),
+        # The caller supplies the training epoch at inference so this trend
+        # coordinate remains in the same frame as the values learned by trees.
         "days_since_epoch": (hour_start.dt.normalize() - epoch).dt.days.astype("int64"),
         "hour_sin": np.sin(2 * np.pi * hour / HOURS_PER_DAY),
         "hour_cos": np.cos(2 * np.pi * hour / HOURS_PER_DAY),
         "dow_sin": np.sin(2 * np.pi * (dow - 1) / DAYS_PER_WEEK),
         "dow_cos": np.cos(2 * np.pi * (dow - 1) / DAYS_PER_WEEK),
         "is_weekend": (dow >= SATURDAY_ISODOW).astype("int64"),
+        "is_sunday": (dow == 7).astype("int64"),
+        "is_evening_peak": ((hour >= 16) & (hour <= 20)).astype("int64"),
+        "sunday_evening": ((dow == 7) & (hour >= 16) & (hour <= 20)).astype("int64"),
+        "is_payday_window": day.isin([1, 2, 3, 14, 15, 16]).astype("int64"),
     }, index=hour_start.index)
 
 
@@ -145,6 +164,8 @@ def _days_to_nearest_holiday(dates: pd.Series, holiday_dates: np.ndarray) -> pd.
     Positive = holiday is ahead, negative = holiday has passed, 0 = today.
     Ties go to the upcoming holiday. Clipped to +/- HOLIDAY_WINDOW_DAYS.
     """
+    # Integer day coordinates make the nearest previous/next holiday lookup
+    # vectorized and avoid a per-row scan through the calendar.
     day_values = dates.to_numpy(dtype="datetime64[D]").astype("int64")
     holiday_values = np.sort(holiday_dates.astype("datetime64[D]").astype("int64"))
 
@@ -165,6 +186,8 @@ def _days_to_nearest_holiday(dates: pd.Series, holiday_dates: np.ndarray) -> pd.
         np.iinfo("int64").min,
     )
 
+    # On an equal-distance tie, prefer the next holiday for deterministic
+    # signed values on both sides of the calendar.
     pick_next = np.abs(to_next) <= np.abs(to_prev)
     signed = np.where(pick_next, to_next, to_prev)
     clipped = np.clip(signed, -HOLIDAY_WINDOW_DAYS, HOLIDAY_WINDOW_DAYS)
@@ -175,9 +198,13 @@ def _holiday_features(hour_start: pd.Series, holidays: pd.DataFrame) -> pd.DataF
     """is_holiday and days_to_nearest_holiday. The model learns each
     holiday's size from the flag; no multipliers are read from the table."""
     calendar = holidays.copy()
+    # Normalize and deduplicate so time-of-day or repeated holiday records
+    # cannot change whether a calendar date is considered a holiday.
     calendar["holiday_date"] = pd.to_datetime(calendar["holiday_date"]).dt.normalize()
     calendar = calendar.drop_duplicates(subset="holiday_date")
 
+    # Work at date granularity: holiday rows and call hours can carry different
+    # time components, but holiday membership is a property of the whole day.
     row_dates = hour_start.dt.normalize()
     holiday_dates = calendar["holiday_date"]
 
@@ -206,9 +233,25 @@ def build_features(
     """
     _validate_inputs(df, holidays)
 
+    # Normalize timestamps once and anchor trend features consistently; at
+    # inference the caller supplies the training epoch recorded in metadata.
     hour_start = pd.to_datetime(df["hour_start"])
     anchor = hour_start.min() if epoch is None else pd.Timestamp(epoch)
     calendar = _calendar_features(hour_start, anchor.normalize())
     holiday = _holiday_features(hour_start, holidays)
 
+    # Concatenation preserves the caller's original data and row/index order.
     return pd.concat([df, calendar, holiday], axis=1)
+
+
+# This module is the shared feature contract for both offline model fitting and
+# live forecast generation. It defines calendar encodings, the stable trend
+# coordinate, and holiday proximity, with input checks that catch malformed
+# timestamps or an unusable holiday calendar before the model is invoked.
+#
+# The database loaders aggregate historical calls and retrieve holiday records;
+# build_features enriches those hourly rows without modifying the caller's
+# frame. db.train uses the resulting columns to fit and validate LightGBM,
+# while db.forecast calls the same builder with the persisted training epoch.
+# That shared path is essential: a feature definition or anchor mismatch would
+# make otherwise valid saved models receive different inputs in production.

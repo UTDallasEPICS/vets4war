@@ -102,9 +102,12 @@
   .field-in:hover { border-color: var(--accent); }
   input[type=date].field-in { width: 132px; }
   input[type=number].field-in { width: 52px; text-align: right; }
+  input[type=number]#effNum { width: 64px; }
   .muted { color: var(--ink-3); font-size: 12px; }
   .sep { width: 1px; align-self: stretch; background: var(--hairline-2); }
   .range { position: relative; width: 112px; height: 24px; display: flex; align-items: center; }
+  .range.roster-range { width: 84px; }
+  .ctl .val.roster-val { min-width: 1.2em; }
   .range input { -webkit-appearance: none; appearance: none; width: 100%; height: 24px; margin: 0; background: transparent; cursor: pointer; }
   .range input::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: linear-gradient(to right, var(--accent) 0 var(--fill, 0%), var(--hairline-2) var(--fill, 0%)); }
   .range input::-moz-range-track { height: 6px; border-radius: 3px; background: var(--hairline-2); }
@@ -142,7 +145,7 @@
   .banner.note { background: var(--amber-soft); color: var(--amber-ink); }
 
   /* ---- summary ---- */
-  .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s4) var(--s5); padding: var(--s5); border-radius: var(--r-xl); align-items: end; }
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--s4) var(--s5); padding: var(--s5); border-radius: var(--r-xl); align-items: end; }
   .stat .k { font-size: 13px; color: var(--ink-2); }
   .stat .v { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; margin-top: 2px; white-space: nowrap; }
   .stat .v small { font-size: 14px; font-weight: 500; color: var(--ink-3); margin-left: 6px; letter-spacing: 0; }
@@ -262,6 +265,12 @@
   .tours th:first-child, .tours td:first-child { text-align: left; }
   .tours td { padding: var(--s2) 0; border-top: 1px solid var(--hairline); text-align: right; font-weight: 600; }
   .tours td:first-child { font-weight: 500; color: var(--ink-2); }
+  .verdict .lost { display: block; font-weight: 600; color: var(--red-ink); }
+  .tradeoff-head { margin: var(--s4) 0 var(--s2); font-size: 13px; font-weight: 600; }
+  .tradeoff-head small { font-weight: 400; color: var(--ink-3); }
+  .tradeoff td small { display: block; font-size: 10px; font-weight: 500; color: var(--ink-3); }
+  .tradeoff tr.rec td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .tradeoff tr.plan td { box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
   .tours td small { display: block; font-size: 11px; font-weight: 400; color: var(--ink-3); }
   .sheet-foot { margin-top: var(--s4); display: flex; gap: var(--s2); }
 
@@ -292,6 +301,7 @@
     </div>
     <span class="badge src-unlabeled" id="sourceBadge">Checking data source</span>
     <span class="spacer"></span>
+    <button type="button" class="pill" id="exportReport" title="Printable summary of the selected period; save it as a PDF from the print dialog">Export report</button>
     <button type="button" class="pill" id="exportCsv" title="Every hour, with your planned staff and verdicts">Export CSV</button>
     <button type="button" class="pill primary" id="exportPng" title="The grid as currently computed">Export image</button>
   </header>
@@ -304,8 +314,16 @@
     <span class="sep"></span>
     <div class="ctl" title="Share of a shift a person is free for inbound calls. Below 20% the numbers stop being useful.">
       <label class="name" for="eff">Efficiency</label>
-      <div class="range caution"><input type="range" id="eff" min="0" max="100" step="1" value="65"></div>
-      <span class="val"><input class="field-in" type="number" id="effNum" min="0" max="100" step="1" value="65" inputmode="numeric" autocomplete="off" aria-label="Efficiency percent"> %</span>
+      <div class="range caution"><input type="range" id="eff" min="0" max="100" step="0.1" value="65.6"></div>
+      <span class="val"><input class="field-in" type="number" id="effNum" min="0" max="100" step="0.1" value="65.6" inputmode="decimal" autocomplete="off" aria-label="Efficiency percent"> %</span>
+    </div>
+    <div class="ctl" title="The people actually scheduled today, per shift. The summary shows the hang-ups and answered-in-time this roster gives.">
+      <span class="name">Staff per shift</span>
+      <label class="muted" for="rosterO">Overnight</label><div class="range roster-range"><input type="range" id="rosterO" min="0" max="10" step="1" value="4" aria-label="Staff, Overnight"></div><span class="val roster-val" id="rosterOVal">4</span>
+      <label class="muted" for="rosterD">Day</label><div class="range roster-range"><input type="range" id="rosterD" min="0" max="10" step="1" value="4" aria-label="Staff, Day"></div><span class="val roster-val" id="rosterDVal">4</span>
+      <label class="muted" for="rosterE">Evening</label><div class="range roster-range"><input type="range" id="rosterE" min="0" max="10" step="1" value="6" aria-label="Staff, Evening"></div><span class="val roster-val" id="rosterEVal">6</span>
+      <button type="button" class="pill" id="rosterRec" title="Set each shift to our recommended peak for the selected dates (capped)">Use recommended</button>
+      <button type="button" class="pill" id="rosterReal" title="Back to what the partner actually staffed Oct 14-20 2026">4/4/6</button>
     </div>
     <div class="ctl" title="Amber band: where the line performs today (80 to 85%). Tick: the 90% industry standard.">
       <label class="name" for="sl">Answered</label>
@@ -338,8 +356,8 @@
     </div>
     <div class="legend" id="legend">
       <span data-legend="under"><span class="sw under"></span>Under the cap, one shade per person (<b id="legendRange"></b>)</span>
-      <span data-legend="at"><span class="sw at"></span>At the cap of 7</span>
-      <span data-legend="over"><span class="sw over"></span>Over the cap; small line is service level with only 7</span>
+      <span data-legend="at"><span class="sw at"></span>At the cap (7; Evening 6)</span>
+      <span data-legend="over"><span class="sw over"></span>Over the cap; small line is service level at the cap</span>
       <span><span class="sw own"></span>Your planned number</span>
       <span><span class="sw hol"></span>Holiday</span>
     </div>
@@ -358,9 +376,9 @@
   <div class="sheet-body" id="sheetBody"></div>
 </aside>
 
-<script src="session.js"></script>
 <script src="erlang.js"></script>
 <script src="logic.js"></script>
+<script src="report.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

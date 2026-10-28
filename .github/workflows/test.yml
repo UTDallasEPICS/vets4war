@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - dev
+      - forecast-mvp
       - stage
       - prod
 
@@ -19,7 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       V4W_DATABASE_URL: ""
-      V4W_REQUIRE_AUTH: "false"
       V4W_TEST_DATABASE_URL: postgresql://pipeline_test:pipeline_test@localhost:5432/pipeline_test
     services:
       postgres:

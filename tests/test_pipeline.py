@@ -18,8 +18,6 @@ from psycopg.rows import dict_row
 import pytest
 
 from db import pipeline
-from db.artifacts import active_paths
-from db.worker import run_once
 
 
 @pytest.fixture(scope="module")
@@ -93,7 +91,8 @@ def test_validation_import_history_and_replay(db, profile):
     assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 1
     assert db.execute("SELECT records FROM pipeline_batches").fetchone()["records"] is None
     assert pipeline.revision(db) == 1
-    assert pipeline.history(db)[0]["training_status"] == "pending"
+    assert pipeline.history(db)[0]["status"] == "imported"
+    assert "job_id" not in result
     with pytest.raises(pipeline.PipelineError):
         pipeline.commit_import(db, batch["id"], profile, expected_rows=1)
     assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 1
@@ -128,7 +127,7 @@ def test_cross_file_duplicates_rollback_entire_transaction(db, profile):
     with pytest.raises(pipeline.PipelineError, match="already imported"):
         pipeline.commit_import(db, batch["id"], profile, expected_rows=2)
     assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 1
-    assert db.execute("SELECT count(*) AS n FROM pipeline_jobs").fetchone()["n"] == 1
+    assert db.execute("SELECT count(*) AS n FROM pipeline_batches WHERE status='imported'").fetchone()["n"] == 1
     assert pipeline.revision(db) == 1
 
 
@@ -166,83 +165,26 @@ def test_unmanaged_overlap_and_missing_id_default_fail_closed(db, profile):
         pipeline.commit_import(db, batch["id"], profile, expected_rows=1)
 
 
-def test_worker_rejected_model_keeps_active_model_and_saves_report(db, profile, tmp_path, monkeypatch):
-    monkeypatch.setenv("V4W_MODEL_DIR", str(tmp_path))
-    batch = import_one(db, profile)
-    assert run_once(db, trainer=lambda *_: {"status": "rejected", "backtest": {"reason": "baseline"}})
-    job = db.execute("SELECT * FROM pipeline_jobs").fetchone()
-    assert job["state"] == "complete" and job["training_status"] == "rejected"
-    assert not (tmp_path / "active.json").exists()
-    report = db.execute("SELECT content FROM pipeline_reports").fetchone()["content"]
-    assert report["actuals"]["calls"] == 1
-    assert report["actuals"]["mean_handle_sec"] == 300
-    assert report["batch_id"] == batch["id"]
-    assert report["training"]["status"] == "rejected"
-    pipeline.retry_job(db, job["id"])
-    assert db.execute("SELECT state FROM pipeline_jobs").fetchone()["state"] == "pending"
-
-
-def test_worker_failure_retains_report_and_can_recover_running_job(db, profile, tmp_path, monkeypatch):
-    monkeypatch.setenv("V4W_MODEL_DIR", str(tmp_path))
-    import_one(db, profile)
-
-    def failing(*_):
-        raise RuntimeError("sensitive error must not appear in history")
-
-    run_once(db, trainer=failing)
-    job = db.execute("SELECT * FROM pipeline_jobs").fetchone()
-    assert job["state"] == "failed" and job["report_status"] == "complete"
-    assert job["error_code"] == "processing_failed"
-    assert "sensitive" not in json.dumps(pipeline.history(db), default=str)
-    pipeline.retry_job(db, job["id"])
-    db.execute("UPDATE pipeline_jobs SET state='running'")  # Simulated worker crash.
-    run_once(db, trainer=lambda *_: {"status": "rejected"})
-    assert db.execute("SELECT state FROM pipeline_jobs").fetchone()["state"] == "complete"
-
-
-def test_worker_activates_real_candidate_pair_only_after_validation(db, profile, tmp_path, monkeypatch):
-    import lightgbm as lgb
-    import numpy as np
-    monkeypatch.setenv("V4W_MODEL_DIR", str(tmp_path))
-    import_one(db, profile)
-
-    def train(_, output):
-        output.mkdir(parents=True)
-        booster = lgb.train({"objective": "poisson", "verbose": -1, "num_threads": 1},
-                            lgb.Dataset(np.arange(40).reshape(20, 2), label=np.ones(20)), num_boost_round=1)
-        booster.save_model(str(output / "volume_lgbm.txt"))
-        (output / "metadata.json").write_text(json.dumps({"features": ["a", "b"], "train_start": "2020-01-01"}))
-        return {"status": "passed", "backtest": {}}
-
-    run_once(db, trainer=train)
-    model, metadata = active_paths()
-    assert model.is_file() and metadata.is_file()
-    assert db.execute("SELECT training_status FROM pipeline_jobs").fetchone()["training_status"] == "passed"
-    assert json.loads(metadata.read_text())["model_version"] == model.parent.name
-    assert pipeline.revision(db) == 2
-
-
 def test_expired_staging_is_not_importable_and_is_purged(db, profile):
     content = workbook()
     batch = pipeline.preview(db, content, date(2026, 9, 1), "test", profile)
     db.execute("UPDATE pipeline_batches SET expires_at=now()-interval '1 day'")
     with pytest.raises(pipeline.PipelineError, match="expired"):
         pipeline.commit_import(db, batch["id"], profile, expected_rows=1)
-    assert not run_once(db)
+    assert pipeline.purge_expired(db) == 1
     assert db.execute("SELECT records FROM pipeline_batches").fetchone()["records"] is None
     refreshed = pipeline.preview(db, content, date(2026, 9, 1), "test", profile)
     assert refreshed["status"] == "validated" and refreshed["id"] == batch["id"]
     pipeline.commit_import(db, batch["id"], profile, expected_rows=1)
 
 
-def test_import_and_workers_obey_global_lock(db, test_dsn, profile):
+def test_imports_obey_global_lock(db, test_dsn, profile):
     batch = stage(db, profile)
     with psycopg.connect(test_dsn, autocommit=True) as other:
         other.execute("SELECT pg_advisory_lock(%s)", (pipeline.LOCK_ID,))
         try:
-            with pytest.raises(pipeline.PipelineError, match="processing is running"):
+            with pytest.raises(pipeline.PipelineError, match="Another import is running"):
                 pipeline.commit_import(db, batch["id"], profile, expected_rows=1)
-            assert not run_once(db)
         finally:
             other.execute("SELECT pg_advisory_unlock(%s)", (pipeline.LOCK_ID,))
 
@@ -265,16 +207,9 @@ def test_wrong_reporting_month_does_not_poison_future_validation(db, profile):
     assert wrong["id"] != right["id"]
 
 
-def test_new_uploads_cannot_skip_intervening_months(db, profile):
-    import_one(db, profile)
-    later = stage(db, profile, [[datetime(2026, 12, 1, 12), False, 10, 300, None, 2, "later-id"]], date(2026, 12, 1))
-    with pytest.raises(pipeline.PipelineError, match="intervening months"):
-        pipeline.commit_import(db, later["id"], profile, expected_rows=1)
-
-
 def test_pipeline_tables_are_backend_only_with_rls(db):
     rows = db.execute("SELECT relrowsecurity FROM pg_class WHERE relnamespace=current_schema()::regnamespace AND relname LIKE 'pipeline_%%' AND relkind='r'").fetchall()
-    assert len(rows) == 5
+    assert len(rows) == 3
     assert all(row["relrowsecurity"] for row in rows)
 
 
@@ -284,93 +219,3 @@ def test_row_limit_is_enforced_without_partial_acceptance(db, profile, monkeypat
                                [datetime(2026, 9, 2, 12), False, 10, 300, None, 2, "id-2"]])
     assert not batch["validation"]["ok"]
     assert any(error["code"] == "too_many_rows" for error in batch["validation"]["file_errors"])
-
-
-def test_portal_api_upload_import_report_and_download(db, profile, tmp_path, monkeypatch):
-    from base64 import b64encode
-    import time
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from itsdangerous import TimestampSigner
-    from api.auth import install_auth
-    from api.admin import router
-
-    secret = "synthetic-api-integration-secret-123456789"
-    contract_path = tmp_path / "contract.json"
-    contract_path.write_text(profile.model_dump_json())
-    monkeypatch.setenv("V4W_SESSION_SECRET", secret)
-    monkeypatch.setenv("V4W_ADMIN_EMAILS", "admin@example.test")
-    monkeypatch.setenv("V4W_COOKIE_SECURE", "false")
-    monkeypatch.setenv("V4W_REQUIRE_AUTH", "true")
-    monkeypatch.setenv("V4W_PIPELINE_ENABLED", "true")
-    monkeypatch.setenv("V4W_EXPORT_CONTRACT", str(contract_path))
-    monkeypatch.setenv("V4W_MODEL_DIR", str(tmp_path))
-    schema = db.execute("SELECT current_schema() AS name").fetchone()["name"]
-    # Open independent request connections into the synthetic schema only.
-    monkeypatch.setattr(pipeline, "connect", lambda: psycopg.connect(db.info.dsn, row_factory=dict_row,
-                                                                    options="-csearch_path=" + schema))
-    app = FastAPI()
-    install_auth(app)
-    app.include_router(router)
-    client = TestClient(app)
-    payload = {"user": {"email": "admin@example.test", "sub": "test", "signed_in_at": time.time()}, "csrf": "test-csrf"}
-    client.cookies.set("v4w_session", TimestampSigner(secret).sign(b64encode(json.dumps(payload).encode())).decode())
-    headers = {"X-CSRF-Token": "test-csrf", "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
-    response = client.post("/api/admin/uploads?month=2026-09", content=workbook(), headers=headers)
-    assert response.status_code == 200, response.text
-    batch_id = response.json()["id"]
-    invalid = client.post(f"/api/admin/uploads/{batch_id}/import", json={"confirm_complete_month": False, "expected_rows": 1},
-                          headers={"X-CSRF-Token": "test-csrf"})
-    assert invalid.status_code == 422
-    response = client.post(f"/api/admin/uploads/{batch_id}/import", json={"confirm_complete_month": True, "expected_rows": 1},
-                           headers={"X-CSRF-Token": "test-csrf"})
-    assert response.status_code == 200, response.text
-    run_once(db, trainer=lambda *_: {"status": "rejected"})
-    history = client.get("/api/admin/uploads").json()["uploads"]
-    assert history[0]["imported_by"] == "admin@example.test"
-    report_id = history[0]["report_id"]
-    report = client.get("/api/admin/reports/" + report_id)
-    assert report.status_code == 200 and report.json()["actuals"]["calls"] == 1
-    csv = client.get("/api/admin/reports/" + report_id + "?format=csv")
-    assert csv.status_code == 200 and "mean_handle_sec,300" in csv.text
-    assert csv.headers["content-disposition"].startswith("attachment;")
-    assert "private-ignored" not in report.text
-
-
-def test_tuple_dashboard_connections_refresh_all_caches(db, profile, monkeypatch):
-    import db.forecast as forecast
-    import db.patience as patience
-    import db.source as source
-    import db.freshness as freshness
-    monkeypatch.setenv("V4W_PIPELINE_ENABLED", "true")
-    monkeypatch.setattr(freshness, "_seen", None)
-    monkeypatch.setattr(patience, "_cache", {"stale": True})
-    monkeypatch.setattr(source, "_range_cache", ("old", "old"))
-    monkeypatch.setattr(forecast, "_cache", {"stale": True})
-    previous_factory = db.row_factory
-    db.row_factory = psycopg.rows.tuple_row
-    try:
-        freshness.refresh(db)
-        assert patience._cache is None and source._range_cache is None
-        assert forecast._cache["booster"] is None
-    finally:
-        db.row_factory = previous_factory
-
-
-def test_training_runs_real_rolling_backtest_on_synthetic_history(db, tmp_path, monkeypatch):
-    import db.train as training
-    db.execute("CREATE TABLE holidays(holiday_date date,holiday_name text)")
-    db.execute("INSERT INTO holidays VALUES ('2025-01-01','Synthetic holiday')")
-    db.execute("""INSERT INTO calls(start_ts,abandoned,in_queue_sec,agent_sec)
-        SELECT day + interval '12 hours',false,10,300 FROM
-        generate_series('2025-01-01'::timestamp,'2026-09-30'::timestamp,interval '1 day') AS day""")
-    monkeypatch.setattr(training, "NUM_BOOST_ROUNDS", 2)
-    monkeypatch.setattr(training, "LGBM_PARAMS", {**training.LGBM_PARAMS, "num_threads": 1})
-    output = tmp_path / "candidate"
-    result = training.train_candidate(db, output)
-    assert result["status"] in {"passed", "rejected"}
-    assert len(result["backtest"]["per_fold"]) == 12 * 3
-    if result["status"] == "passed":
-        assert (output / "metadata.json").exists()
-    else:
-        assert not output.exists()

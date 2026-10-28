@@ -1,9 +1,9 @@
 # Monthly call-file validation (phase 1)
 
-This document describes the original standalone validator. The implemented
-admin upload/import/training workflow is documented in
-[Monthly administration](admin-pipeline.md). The validator itself still performs
-no database writes; the admin service builds on its validation results.
+This document describes the standalone validator. The ingestion-only draft
+import service and handoff to the teammate's admin/monitoring branch are
+documented in [Ingestion integration](ingestion-integration.md). The validator
+itself still performs no database writes; staging/imports are separate.
 
 This phase reads and validates `.xlsx` workbooks only. It never loads `.env`,
 connects to Supabase, inserts records, or trains a model. CSV, upload endpoints,

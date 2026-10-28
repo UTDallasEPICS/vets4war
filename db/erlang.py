@@ -69,6 +69,8 @@ def erlang_c(agents: int, load: float) -> float:
     if agents <= 0 or agents <= load:
         return 1.0
 
+    # Erlang B's recursive form avoids factorials and large intermediate
+    # powers, making the waiting-probability calculation numerically stable.
     blocking = 1.0
     for k in range(1, agents + 1):
         blocking = load * blocking / (k + load * blocking)
@@ -109,11 +111,15 @@ def required_agents(
     if target_sec < 0:
         raise ValueError(f"target_sec must be >= 0, got {target_sec}")
 
+    # Convert the arrival rate and mean service duration into offered load,
+    # the common input used by both queueing models.
     load = calls_per_hour * aht_sec / SECONDS_PER_HOUR
     if patience_sec is not None and patience_sec <= 0:
         raise ValueError(f"patience_sec must be > 0, got {patience_sec}")
     agents = 1 if patience_sec is not None else math.ceil(load) + 1
 
+    # Staffing is monotonic for the supported queue models, so the first
+    # count meeting the target is the minimum practical recommendation.
     while agents <= MAX_AGENTS:
         if patience_sec is None:
             wait_prob = erlang_c(agents, load)
@@ -152,6 +158,8 @@ def _queue_state_probabilities(agents: int, load: float, mu: float, theta: float
         if n >= agents + MAX_QUEUE_STATES:
             break
         n += 1
+    # Normalize the unscaled birth-death stationary weights into probabilities
+    # for each modeled number of callers in the system.
     total = sum(weights)
     return [w / total for w in weights]
 
@@ -228,6 +236,8 @@ def erlang_a(agents: int, load: float, aht_sec: float, patience_sec: float,
     mu, theta = 1.0 / aht_sec, 1.0 / patience_sec
     pi = _queue_state_probabilities(agents, load, mu, theta)
 
+    # States at or above the agent count imply a queue. Their conditional
+    # waiting times determine both abandonment and timely answers.
     wait_prob = sum(pi[agents:])
     abandon_prob = 0.0
     answered_within = sum(pi[:agents])          # no wait: answered at once
@@ -247,3 +257,15 @@ def erlang_a(agents: int, load: float, aht_sec: float, patience_sec: float,
         "abandon_prob": min(1.0, max(0.0, abandon_prob)),
         "service_level": min(1.0, max(0.0, answered_within)),
     }
+
+
+# This module implements the queueing math for Erlang C, where callers never
+# abandon, and Erlang A, where patience is exponentially distributed. It
+# calculates stable waiting probabilities, steady-state queue probabilities,
+# abandonment and timely-answer likelihood, then searches for the smallest
+# integer agent count satisfying a requested service-level target.
+#
+# db.staffing supplies forecast calls, AHT and (for Erlang A) patience, then
+# uses these pure functions for both recommendations and "what-if" rosters.
+# Keeping the calculations independent of database, API and pandas concerns
+# makes the same numerical behavior reusable by web requests and snapshots.

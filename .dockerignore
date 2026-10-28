@@ -32,9 +32,6 @@ requirements.md
 
 # Local data and exports must never enter the build context
 data
-models/versions
-models/active.json
-models/.active-*
 *.csv
 *.tsv
 *.xls

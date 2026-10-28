@@ -1,0 +1,430 @@
+Note: fine tune from 14 - 27 (14 - 20 already done twice) when 28 - 3 arrives
+
+VETS4WARRIORS STAFFING FORECAST
+PROJECT FILE GUIDE AND READING ORDER
+====================================
+
+PURPOSE
+-------
+This file is a map for understanding the repository. It explains the main
+runtime and data flows first, then lists the important source, test,
+documentation, model, and deployment files by role. It is intended as a
+navigation aid; README.md remains the primary setup and operator guide.
+
+The application forecasts inbound calls by hour, estimates average handle
+time, and uses queueing calculations to recommend staffing. The Python
+backend provides model training, forecasting, staffing logic, and an HTTP API.
+The static browser application displays the forecast and can recompute several
+staffing scenarios locally. Tests cover important Python and JavaScript logic.
+
+
+RECOMMENDED READING ORDER
+------------------------
+
+1. README.md
+   Start here for the product overview, system setup, database and environment
+   expectations, model accuracy context, API routes, and dashboard behavior.
+   Read the data and retraining sections before running commands that connect
+   to the database or rewrite model artifacts.
+
+2. Makefile and requirements.txt
+   These establish the common developer commands and the pinned Python
+   dependencies. `make db-check` checks database access, `make train` invokes
+   model training, `make serve` runs the API, and `make test` runs pytest.
+
+3. db/load_week.py, if investigating data ingestion
+   Follow the partner spreadsheet from validation and parsing through its
+   optional transactional insert into the calls table. The loader is
+   dry-run-first; database writes require its explicit commit option.
+
+4. db/features.py
+   Read this before either training or inference. It owns hourly call
+   aggregation and the shared calendar and holiday feature definitions.
+   Training and production predictions both call the same feature builder.
+
+5. db/train.py
+   This is the main model lifecycle: loading data, completing hourly grids,
+   preparing features, fitting LightGBM, running rolling holdout backtests,
+   checking the seasonal-naive gate, and saving the model and metadata.
+   It also defines the configuration and reusable helpers used by tuning.
+
+6. db/tune.py
+   This runs a fixed grid of training configurations using db.train's
+   evaluation code. It reports a recommended training command but does not
+   write or replace the deployed model.
+
+7. models/metadata.json, then models/volume_lgbm.txt
+   Metadata explains how the saved booster was trained and how it must be
+   called: feature names/order, training epoch, configuration and evaluation.
+   The LightGBM text file is the learned model itself. Treat them as a pair:
+   forecast code needs both, and training rewrites both when its acceptance
+   gate passes.
+
+8. db/aht.py, db/patience.py, db/calibration.py, and db/forecast.py
+   These modules provide the supporting forecast inputs and inference path.
+   AHT estimates weekday/hour handling time, patience estimates caller wait
+   tolerance for Erlang A, calibration provides an optional bounded level
+   factor, and forecast.py combines the saved booster, shared features, holiday
+   calendar, AHT table, and metadata into hourly call/AHT predictions.
+
+9. db/erlang.py, then db/staffing.py
+   Start with the pure queueing calculations, then follow how staffing.py
+   converts predictions into offered load, agents required, people scheduled,
+   shift maxima, capacity flags, service levels, and abandonment estimates.
+   Staffing is the shared domain layer used by both the API and snapshot CLI.
+
+10. db/quick_abandon.py and db/source.py
+    These supply dashboard context rather than call-volume forecasts:
+    quick_abandon measures very short abandoned calls, while source.py reports
+    whether the dataset is labeled partner/synthetic and its date range.
+
+11. db/snapshot.py and db/score_week.py
+    For a frozen forecast evaluation, snapshot.py produces an immutable,
+    timestamped forecast CSV with the model's view of a selected roster.
+    Later, score_week.py compares that saved forecast to actual call records.
+    This sequence separates predictions made in advance from the subsequent
+    assessment of real outcomes.
+
+12. api/main.py
+    Read this after the db modules. It validates HTTP inputs, connects each
+    request to the shared calculation layer, shapes API responses, exposes
+    model metadata, and serves the static web application. Most numerical
+    business logic intentionally lives in db/, not in the route handlers.
+
+13. Browser files: web/erlang.js, web/logic.js, web/app.js, web/report.js,
+    and web/index.html
+    Start with erlang.js for the client-side queue/staffing math, then logic.js
+    for pure calculations and rollups, then app.js for DOM events and API
+    requests. report.js generates the printable report from already-computed
+    results. index.html contains the page markup, styles and script loading
+    order. The browser math mirrors Python so slider changes can be immediate.
+
+14. Tests
+    Use tests/test_erlang.py and tests/test_erlang_a.py for queue math;
+    tests/test_features.py for feature definitions; tests/test_training_changes.py
+    for training/backtest behavior; tests/test_staffing.py and
+    tests/test_caps_and_roster.py for staffing and shift rules; and
+    tests/test_api.py for HTTP behavior. Ingestion and scoring have focused
+    coverage in tests/test_load_week.py and tests/test_score_week.py.
+    tests/test_erlang_js.py checks Python/JavaScript numerical parity.
+    tests/test_web.py and tests/web_checks.js cover browser-side logic and
+    display helpers without requiring a full browser session.
+
+
+END-TO-END DATA FLOW
+--------------------
+
+Historical input and training:
+
+  Partner call records already in Postgres
+      -> db/features.py: load_hourly() aggregates hourly call targets
+      -> db/train.py: complete_hourly_grid() adds zero-call hours only within
+         dates that have some reported calls
+      -> db/features.py: build_features() adds shared calendar/holiday inputs
+      -> db/train.py: LightGBM fit, monthly rolling backtest and baseline gate
+      -> models/volume_lgbm.txt + models/metadata.json
+
+  Optional spreadsheet ingestion:
+      -> db/load_week.py validates/normalizes a partner workbook
+      -> dry-run by default, explicit commit inserts rows into calls
+      -> later training and estimates can read the inserted rows
+
+Forecasting and staffing:
+
+  API request or CLI date range
+      -> db/forecast.py loads the saved booster and its metadata
+      -> db/features.py builds future-hour features using the saved training
+         epoch and current holiday calendar
+      -> LightGBM predicts offered calls; db/aht.py supplies per-cell AHT
+      -> db/staffing.py converts calls and AHT to offered load
+      -> db/patience.py supplies estimated patience when Erlang A is used
+      -> db/erlang.py estimates service level, abandonment and required agents
+      -> db/staffing.py converts productive agents to scheduled headcount and
+         rolls hourly needs into overlapping shifts/tours
+      -> api/main.py returns JSON, or db/snapshot.py saves a frozen CSV
+
+Browser display and interaction:
+
+  web/app.js requests API forecast data for the date window and holiday mode
+      -> web/logic.js and web/erlang.js calculate client-side outcomes for
+         controls that do not need a new forecast
+      -> web/app.js renders cells, summaries, roster comparisons and details
+      -> web/report.js can build a printable report from the same computed
+         data; CSV/image exports are initiated by the UI code
+
+Scoring a completed forecast:
+
+  db/snapshot.py output from BEFORE the actual period is available
+      + actual spreadsheet parsed by db/load_week.py
+      -> db/score_week.py restricts comparison to shared dates
+      -> daily accuracy/bias, hourly MAE, AHT, service-level and abandonment
+         comparisons are printed for review
+
+
+FILE-BY-FILE GUIDE
+------------------
+
+ROOT AND DEVELOPER ENTRY POINTS
+
+  README.md
+    Main project and operations guide. Covers product behavior, accuracy
+    context, setup, environment variables, database tables, model retraining,
+    API routes, console behavior, and data-handling constraints.
+
+  Makefile
+    Short developer commands for checking the database, training, serving,
+    and running Python tests. Its PYTHON, HOST, and PORT variables allow a
+    virtual-environment interpreter and alternate server binding.
+
+  requirements.txt
+    Pinned Python runtime and test dependencies for reproducible environments.
+    Includes Postgres, pandas/numpy, LightGBM, FastAPI/Uvicorn, pytest, Excel
+    parsing, dotenv, and API test dependencies.
+
+  .env.example
+    Names and placeholder format for local settings. Copy to a local .env and
+    provide real values there; never put credentials in this example or commit
+    the local secret-bearing .env file.
+
+  .gitignore
+    Excludes secrets, environments, caches, local data exports and other
+    generated or machine-specific files from version control.
+
+  .dockerignore
+    Keeps development-only files, secrets, datasets, and test/docs content out
+    of the container build context where they are not needed.
+
+  Dockerfile
+    Builds a Python 3.12 application image in separate dependency-builder and
+    runtime stages. The runtime installs LightGBM's OpenMP dependency, copies
+    only the application packages/model/web assets, and runs Uvicorn as a
+    non-root user.
+
+
+  api/main.py
+    FastAPI application. Implements /api/forecast, /api/staffing, /api/planned,
+    and /api/model, validates requests, maps expected failures to HTTP errors,
+    adds source/holiday context, and mounts the frontend at the root URL.
+
+
+BACKEND PACKAGE: db/
+
+  db/features.py
+    Shared data and feature contract. Loads call-hour aggregates and holidays,
+    validates timestamp/calendar inputs, derives calendar and cyclic features,
+    computes nearest-holiday features, and keeps feature generation identical
+    in training and prediction.
+
+  db/train.py
+    Main model-training command and reusable training library. Builds the
+    observed-day hourly grid, defines TrainConfig, recency weights, model
+    fitting, baselines, scoring, rolling-origin folds, recent-period scoring,
+    acceptance gate, and model/metadata persistence.
+
+  db/tune.py
+    Evaluates a predetermined grid of db.train configurations. Ranks candidates
+    using pooled daily-total MAE over complete held-out months, reports recent
+    period results, and prints the command to reproduce the winning setting.
+    It is report-only and does not persist a trained model.
+
+  db/forecast.py
+    Loads and caches the trained LightGBM booster, model metadata, and
+    recency-specific AHT tables. Creates a complete future hourly grid,
+    builds shared features at the saved training epoch, predicts offered calls,
+    optionally neutralizes holiday inputs, and returns predicted calls/AHT.
+
+  db/aht.py
+    Computes average handle time for every weekday/hour cell from answered
+    calls with positive agent time. Supports equal and exponential recency
+    weighting and falls back to a weighted overall mean for sparse cells.
+
+  db/patience.py
+    Estimates mean caller patience under an exponential model, treating
+    answered waits as right-censored. Caches the result and reports sample
+    counts for API provenance.
+
+  db/calibration.py
+    Defines the recent observed-date window and bounded actual/predicted total
+    ratio used as an optional multiplicative correction for systematic volume
+    level differences.
+
+  db/erlang.py
+    Pure Erlang C and Erlang A queueing math. Computes waiting, timely service,
+    and abandonment probabilities, then finds the least agent count meeting a
+    requested service-level target.
+
+  db/staffing.py
+    Shared business logic for a single hour, a date range, and shift rollups.
+    Combines predicted calls/AHT with efficiency, queue model, patience,
+    capacity caps, and tour boundaries to report staff required, service
+    level, abandonment, and planned-roster outcomes.
+
+  db/quick_abandon.py
+    Measures the number/share of calls abandoned before a short threshold in
+    a recent window. It is context for the dashboard; it is not added again to
+    Erlang A's abandonment estimate.
+
+  db/source.py
+    Reads the explicit V4W_DATA_SOURCE label and the min/max call dates to
+    provide source provenance for API and dashboard responses. It avoids
+    guessing whether data is partner or synthetic.
+
+  db/load_week.py
+    Parses the partner call-record workbook into the calls-table shape and
+    optionally inserts it. It validates fields, uses a transaction/table lock,
+    refuses overlapping date ranges, and defaults to dry-run mode.
+
+  db/snapshot.py
+    CLI that runs a forecast for explicit dates and writes a uniquely
+    timestamped CSV with predictions, recommended staffing, selected roster,
+    and predicted roster service-level/abandonment outcomes.
+
+  db/score_week.py
+    CLI and pure scoring function that compare a db.snapshot CSV with actual
+    partner call records over shared dates. Reports call, AHT, service-level,
+    and abandonment measures.
+
+
+MODEL ARTIFACTS
+
+  models/volume_lgbm.txt
+    Serialized LightGBM booster used by db.forecast. It is a generated model
+    artifact, not source code; retrain through db.train rather than editing
+    the file by hand.
+
+  models/metadata.json
+    Companion model contract and audit record: feature list/order, training
+    dates, config, parameters, correction factor and backtest results.
+    db.forecast relies on this metadata to reproduce inference inputs.
+
+
+FRONTEND: web/
+
+  web/index.html
+    Static page structure and styles for the staffing console. Loads the
+    browser scripts in dependency order and contains the controls, grid,
+    summary, detail/report areas, and user-facing labels.
+
+  web/erlang.js
+    JavaScript mirror of the Python Erlang and single-hour staffing math.
+    Allows the page to recalculate local controls immediately; parity tests
+    guard against drift from db/erlang.py.
+
+  web/logic.js
+    DOM-independent user-interface calculation layer. Turns hourly forecasts
+    and controls into staffing results, shift/day rollups, summary metrics,
+    planned-roster verdicts, selections, and persistence helpers.
+
+  web/app.js
+    Browser orchestration and DOM layer. Reads controls, fetches forecast data,
+    invokes logic.js, renders the grid and summaries, manages interactions and
+    planned values, and coordinates exports and error states.
+
+  web/report.js
+    Pure report builder that returns a printable HTML document for the current
+    period. It uses the same computed data as the grid and is intended for
+    print/save-as-PDF output.
+
+
+TESTS
+
+  tests/test_features.py
+    Checks feature creation, holiday calculations, validation, and feature
+    contract behavior.
+
+  tests/test_training_changes.py
+    Checks changes in the model-training workflow, including grid completion,
+    fold selection, scoring/configuration, and model acceptance behaviors.
+
+  tests/test_erlang.py
+    Checks Erlang C and required-agent calculations.
+
+  tests/test_erlang_a.py
+    Checks Erlang A probabilities and caller-abandonment behavior.
+
+  tests/test_staffing.py
+    Checks the staffing calculations and shift/day rollups.
+
+  tests/test_caps_and_roster.py
+    Checks per-shift capacity rules and planned-roster outcomes.
+
+  tests/test_api.py
+    Checks API route behavior and response shapes. Some integration paths
+    require database/model configuration as described in README.md.
+
+  tests/test_load_week.py
+    Checks spreadsheet parsing and safe dry-run/insert behavior.
+
+  tests/test_score_week.py
+    Checks snapshot-versus-actual scoring calculations.
+
+  tests/test_erlang_js.py
+    Compares JavaScript queue/staffing math against Python reference outputs.
+
+  tests/test_web.py
+    Python test wrapper for browser-side JavaScript checks.
+
+  tests/web_checks.js
+    Node-executable checks for pure web logic and report helpers.
+
+
+DOCUMENTATION AND PROJECT AUTOMATION
+
+  design.md
+    Detailed product/UI design brief: user needs, terminology, screen layout,
+    controls, visual states, and interaction behavior. Use it when changing the
+    console's visual or product experience.
+
+  requirements.md
+    Requirements matrix and change log. Note that it contains baseline
+    template requirements; check current implementation and README before
+    assuming every entry describes this forecast application.
+
+  first-working-frontend.md
+    Historical backup/document of an earlier frontend version and notes for
+    restoring it. It is not the active page; active frontend files are under
+    web/.
+
+  docs/adr/001_template.md
+    Blank Architecture Decision Record template. Copy and fill it when
+    documenting a significant architecture choice; it is not an implemented
+    runtime component.
+
+  wpr/s1_fall26/w1.md
+    Coursework/project progress document for the Fall 2026 work period.
+
+  .github/workflows/test.yml
+    GitHub Actions correctness workflow as currently configured in the file.
+    It sets up pnpm/Node and invokes lint/typecheck/test scripts; compare with
+    the current Python-focused Makefile and repository manifests before
+    treating it as the active backend test command.
+
+  .github/workflows/deploy.yml
+    Reusable environment deployment pipeline. Defines the shared image build,
+    migration, image publishing and deployment steps for callers.
+
+  .github/workflows/stage.yml
+    Invokes the reusable deploy pipeline for pushes to the stage branch.
+
+  .github/workflows/prod.yml
+    Invokes the reusable deploy pipeline for pushes to the prod branch.
+
+  .github/ISSUE_TEMPLATE/bug_report.md
+    Form template for reporting defects in GitHub Issues.
+
+  .github/ISSUE_TEMPLATE/feature_request.md
+    Form template for proposing product or engineering changes in GitHub
+    Issues.
+
+
+LOCAL AND GENERATED FILES
+-------------------------
+Local .env files contain environment-specific settings and potentially
+credentials. They are intentionally excluded from this guide and must not be
+committed. Virtual environments, Python caches, pytest caches, editor state,
+and generated model/forecast output are not source-code reading prerequisites.
+
+Call-record exports and other raw datasets may exist locally, but are ignored
+from version control and are not listed or described in detail here. Keep
+actual input data out of notes and source control; use the documented database
+and controlled ingestion flow instead.

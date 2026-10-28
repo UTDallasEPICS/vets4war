@@ -1,7 +1,7 @@
 # Vets4Warriors staffing forecast
 #
 #   make db-check   connect with $V4W_DATABASE_URL and print row counts
-#   make train      rolling-origin backtest, then activate a versioned model pair
+#   make train      rolling-origin backtest, then save models/volume_lgbm.txt
 #   make serve      FastAPI on http://127.0.0.1:8000 (serves web/index.html)
 #
 # Override the interpreter:  make train PYTHON=.venv/bin/python
@@ -11,13 +11,7 @@ PYTHON ?= python3
 HOST   ?= 127.0.0.1
 PORT   ?= 8000
 
-.PHONY: db-check train serve test migrate worker
-
-migrate:
-	$(PYTHON) -m db.pipeline migrate
-
-worker:
-	$(PYTHON) -m db.worker
+.PHONY: db-check train serve test
 
 db-check:
 	$(PYTHON) -c "\

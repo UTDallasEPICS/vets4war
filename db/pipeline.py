@@ -1,6 +1,9 @@
-"""Durable monthly imports. All SQL mutations use explicit transactions.
+"""Ingestion-only monthly staging, imports and history.
 
-No migration or import runs on module import or server startup.
+No authentication, frontend, reporting, monitoring, training, or activation is
+owned by this module. No migration or import runs on import/server startup.
+The import draft still requires verified source IDs; the supplied six-column
+export needs a separately implemented month-based identity/correction policy.
 """
 from __future__ import annotations
 
@@ -8,7 +11,6 @@ import argparse
 import calendar
 import hashlib
 from io import BytesIO
-import json
 import os
 from pathlib import Path
 import uuid
@@ -92,7 +94,7 @@ def next_month(month):
 def lock_import(conn):
     locked = conn.execute("SELECT pg_try_advisory_xact_lock(%s) AS locked", (LOCK_ID,)).fetchone()["locked"]
     if not locked:
-        raise PipelineError("Monthly processing is running. Try the import again when it finishes.")
+        raise PipelineError("Another import is running. Try again when it finishes.")
 
 
 def preview(conn, content, month, uploader, profile):
@@ -171,9 +173,6 @@ def commit_import(conn, batch_id, profile, *, expected_rows, replace_batch_id=No
         # Legacy writers must also be excluded while checking monthly overlap.
         conn.execute("LOCK TABLE calls IN SHARE ROW EXCLUSIVE MODE")
         month = batch["month"]
-        latest = conn.execute("SELECT max(start_ts)::date AS latest FROM calls").fetchone()["latest"]
-        if latest and month > next_month(latest.replace(day=1)):
-            raise PipelineError("Import the intervening months first so missing data is not trained as zero call volume.")
         prior = conn.execute("SELECT id FROM pipeline_batches WHERE month=%s AND status='imported' FOR UPDATE",
                              (month,)).fetchone()
         if prior and str(prior["id"]) != str(replace_batch_id):
@@ -212,50 +211,46 @@ def commit_import(conn, batch_id, profile, *, expected_rows, replace_batch_id=No
                                 for r, call_id in zip(records, call_ids, strict=True)])
         conn.execute("UPDATE pipeline_batches SET status='imported',imported_at=now(),imported_by=%s,records=NULL,replaced_batch_id=%s WHERE id=%s",
                      (actor or batch["uploader"], prior["id"] if prior else None, batch_id))
-        job_id = uuid.uuid4()
-        conn.execute("INSERT INTO pipeline_jobs(id,batch_id) VALUES (%s,%s)", (job_id, batch_id))
         conn.execute("UPDATE pipeline_state SET revision=revision+1")
-    return {"id": str(batch_id), "status": "imported", "job_id": str(job_id)}
+    return {"id": str(batch_id), "status": "imported"}
 
 
 def history(conn):
-    return conn.execute("""SELECT b.id,b.created_at,b.uploader,b.month,b.status,b.summary,b.imported_at,b.imported_by,b.replaced_batch_id,
-        j.id AS job_id,j.state AS job_state,j.training_status,j.report_status,j.error_code,j.model_version,
-        r.id AS report_id FROM pipeline_batches b LEFT JOIN pipeline_jobs j ON j.batch_id=b.id
-        LEFT JOIN pipeline_reports r ON r.batch_id=b.id ORDER BY b.created_at DESC LIMIT 100""").fetchall()
+    return conn.execute("""SELECT id,created_at,uploader,month,status,summary,imported_at,imported_by,replaced_batch_id
+        FROM pipeline_batches ORDER BY created_at DESC LIMIT 100""").fetchall()
 
 
-def retry_job(conn, job_id):
+def purge_expired(conn):
+    """Remove stale staged values explicitly; retain the batch audit record."""
     with conn.transaction():
         lock_import(conn)
-        row = conn.execute("""UPDATE pipeline_jobs j SET state='pending',error_code=NULL,updated_at=now()
-            FROM pipeline_batches b WHERE j.id=%s AND j.batch_id=b.id AND b.status='imported'
-            AND (j.state='failed' OR j.training_status='rejected') RETURNING j.id""", (job_id,)).fetchone()
-        if not row:
-            raise PipelineError("Only failed or rejected jobs for the current monthly batch can be retried.")
-    return {"id": str(row["id"]), "state": "pending"}
+        result = conn.execute("UPDATE pipeline_batches SET records=NULL,status='expired' WHERE status='validated' AND expires_at<now()")
+    return result.rowcount
 
 
 def revision(conn):
-    # Dashboard connections use tuple rows; admin connections use dictionary rows.
+    # Available to future consumers; this module does not refresh model caches.
     with conn.cursor(row_factory=dict_row) as cursor:
         return cursor.execute("SELECT revision FROM pipeline_state WHERE singleton").fetchone()["revision"]
 
 
 def migrate(conn):
     with conn.transaction():
-        conn.execute((ROOT / "db/migrations/001_admin_pipeline.sql").read_text())
+        conn.execute((ROOT / "db/migrations/001_ingestion.sql").read_text())
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["migrate"])
-    parser.parse_args()
+    parser.add_argument("command", choices=["migrate", "purge-expired"])
+    args = parser.parse_args()
     from dotenv import load_dotenv
     load_dotenv()
     with connect() as conn:
-        migrate(conn)
-    print("Admin pipeline migration applied.")
+        if args.command == "migrate":
+            migrate(conn)
+            print("Ingestion migration applied.")
+        else:
+            print(f"Expired staged batches cleared: {purge_expired(conn)}")
 
 
 if __name__ == "__main__":

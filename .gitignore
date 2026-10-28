@@ -44,7 +44,3 @@ data/
 .agents/
 .claude/
 skills-lock.json
-# Runtime model versions are retained on a shared volume, not in Git.
-models/versions/
-models/active.json
-models/.active-*

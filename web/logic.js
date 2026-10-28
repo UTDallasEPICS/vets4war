@@ -16,11 +16,17 @@ const V4WUI = (() => {
   // hours); the `boundary` hour is the 30-minute overlap at the tour's end and
   // joins the staffing peak of both adjacent tours but is never double-counted.
   // Evening's boundary is hour 0 of the NEXT date.
+  // `cap` mirrors db/staffing.SHIFT_CAPS: the partner never staffs above 6
+  // from 16:00 to midnight (2026-10-21 meeting).
+  const EVENING_CAP = 6;
   const SHIFTS = [
-    { name: "Overnight", short: "O", span: "00:00 to 08:30", core: HOURS.slice(0, 8), boundary: { hour: 8, nextDay: false } },
-    { name: "Day", short: "D", span: "08:00 to 16:30", core: HOURS.slice(8, 16), boundary: { hour: 16, nextDay: false } },
-    { name: "Evening", short: "E", span: "16:00 to 00:30", core: HOURS.slice(16, 24), boundary: { hour: 0, nextDay: true } },
+    { name: "Overnight", short: "O", span: "00:00 to 08:30", core: HOURS.slice(0, 8), boundary: { hour: 8, nextDay: false }, cap: MAX_STAFF_PER_SHIFT },
+    { name: "Day", short: "D", span: "08:00 to 16:30", core: HOURS.slice(8, 16), boundary: { hour: 16, nextDay: false }, cap: MAX_STAFF_PER_SHIFT },
+    { name: "Evening", short: "E", span: "16:00 to 00:30", core: HOURS.slice(16, 24), boundary: { hour: 0, nextDay: true }, cap: EVENING_CAP },
   ];
+  // Cap of the shift whose core hours contain `hour`.
+  const capForHour = (hour) => SHIFTS.find((s) => s.core.includes(hour)).cap;
+  const capForShift = (name) => SHIFTS.find((s) => s.name === name).cap;
   const SHIFT_NAMES = SHIFTS.map((s) => s.name);
   const VERDICTS = ["understaffed", "on target", "overstaffed", "exceeds capacity"];
   const PEAK_HOUR_COUNT = 4;          // hours underlined on the time axis
@@ -33,17 +39,17 @@ const V4WUI = (() => {
   // Cap states. Three distinct situations with three distinct remedies:
   // under = fine; at = no headroom; over = the roster cannot do this.
   // ---------------------------------------------------------------------------
-  function capState(staff) {
+  function capState(staff, cap = MAX_STAFF_PER_SHIFT) {
     if (staff === null || staff === undefined) return "undef";
-    if (staff > MAX_STAFF_PER_SHIFT) return "over";
-    if (staff === MAX_STAFF_PER_SHIFT) return "at";
+    if (staff > cap) return "over";
+    if (staff === cap) return "at";
     return "under";
   }
 
-  // Service level if an over-cap hour were clamped to the cap: the consequence
-  // of "we only have 7". The recommendation itself is never clamped.
-  function clampedServiceLevel(row, c) {
-    const effective = Math.floor(MAX_STAFF_PER_SHIFT * c.efficiency);
+  // Service level if an over-cap hour were clamped to its shift's cap: the
+  // consequence of "we only have 6 (or 7)". The recommendation is never clamped.
+  function clampedServiceLevel(row, c, cap = MAX_STAFF_PER_SHIFT) {
+    const effective = Math.floor(cap * c.efficiency);
     return E.serviceLevel(effective, row.load_erlangs, row.aht_sec, c.targetSec, c.patienceSec);
   }
 
@@ -65,10 +71,12 @@ const V4WUI = (() => {
   function computeHours(baseHours, c) {
     return baseHours.map((h) => {
       const r = E.staffForHour(h.predicted_calls, h.aht_sec, c.efficiency, c.targetPct, c.targetSec, c.patienceSec);
-      const state = capState(r.staff_to_schedule);
+      const cap = capForHour(h.hour);
+      const state = capState(r.staff_to_schedule, cap);
       return {
-        date: h.date, hour: h.hour, ...r, cap_state: state,
-        service_level_if_capped: state === "over" ? clampedServiceLevel(r, c) : null,
+        date: h.date, hour: h.hour, ...r, cap, cap_state: state,
+        over_cap: r.staff_to_schedule === null ? r.over_cap : r.staff_to_schedule > cap,
+        service_level_if_capped: state === "over" ? clampedServiceLevel(r, c, cap) : null,
       };
     });
   }
@@ -106,11 +114,13 @@ const V4WUI = (() => {
           predicted_calls: core.reduce((a, r) => a + r.predicted_calls, 0),
           agents_required: all.length ? Math.max(...all.map((r) => r.agents_required)) : 0,
           staff_needed: peak,
-          capped: peak === null ? null : peak > MAX_STAFF_PER_SHIFT,
+          cap: spec.cap,
+          capped: peak === null ? null : peak > spec.cap,
           person_hours: undefined_ ? null : core.reduce((a, r) => a + r.staff_to_schedule, 0),
           service_level_delivered: undefined_ ? null : Math.min(...all.map((r) => r.service_level_delivered)),
           abandon_share: undefined_ || all.some((r) => r.abandon_share === null) ? null : Math.max(...all.map((r) => r.abandon_share)),
           hours: all,
+          core_hours: core,
         };
       });
       const totals = Object.values(shifts).map((s) => s.person_hours);
@@ -121,8 +131,8 @@ const V4WUI = (() => {
   // ---------------------------------------------------------------------------
   // Planned roster: the supervisor's number per (date, shift) against ours.
   // ---------------------------------------------------------------------------
-  function verdict(planned, recommended) {
-    if (planned > MAX_STAFF_PER_SHIFT) return "exceeds capacity";
+  function verdict(planned, recommended, cap = MAX_STAFF_PER_SHIFT) {
+    if (planned > cap) return "exceeds capacity";
     if (planned < recommended) return "understaffed";
     if (planned > recommended) return "overstaffed";
     return "on target";
@@ -167,6 +177,37 @@ const V4WUI = (() => {
     };
   }
 
+  // What `staff` people deliver over a shift's CORE hours (each call counted
+  // once), in calls, not just shares. Per hour: floor(staff x efficiency) on
+  // inbound, Erlang A. serviceLevel = share of ALL calls answered within the
+  // target; answeredLate = answered, but after the target; lost = hung up.
+  function shiftTotals(coreHours, staff, c) {
+    if (c.patienceSec === null || c.efficiency === 0 || !coreHours || coreHours.length === 0 || staff === null) return null;
+    const effective = Math.floor(staff * c.efficiency);
+    let calls = 0, lost = 0, inTime = 0;
+    coreHours.forEach((h) => {
+      calls += h.predicted_calls;
+      lost += h.predicted_calls * E.abandonShare(effective, h.load_erlangs, h.aht_sec, c.targetSec, c.patienceSec);
+      inTime += h.predicted_calls * E.serviceLevel(effective, h.load_erlangs, h.aht_sec, c.targetSec, c.patienceSec);
+    });
+    const late = Math.max(0, calls - lost - inTime);
+    return { staff, effective, calls, lost, inTime, late,
+      lostShare: calls > 0 ? lost / calls : null, serviceLevel: calls > 0 ? inTime / calls : null };
+  }
+
+  // One shiftTotals row per staff number from `minStaff` to the shift cap:
+  // the "what does 4 vs 5 vs 6 cost" table.
+  const TRADEOFF_MIN_STAFF = 1;
+  function shiftTradeoff(coreHours, cap, c, minStaff = TRADEOFF_MIN_STAFF) {
+    const rows = [];
+    for (let n = minStaff; n <= cap; n++) {
+      const t = shiftTotals(coreHours, n, c);
+      if (t === null) return [];
+      rows.push(t);
+    }
+    return rows;
+  }
+
   // Planned value + verdict + consequence for every shift of every day.
   function judgeRoster(rolled, store, c) {
     return rolled.map((day) => {
@@ -178,7 +219,8 @@ const V4WUI = (() => {
         const planned = own !== null ? own : rec;
         judged[name] = rec === null || planned === null
           ? { planned, recommended: rec, delta: null, verdict: null, is_own: own !== null, service_level: null, abandon_share: null, effective_agents: null }
-          : { planned, recommended: rec, delta: planned - rec, verdict: verdict(planned, rec), is_own: own !== null, ...plannedOutcome(s.hours, planned, c) };
+          : { planned, recommended: rec, delta: planned - rec, verdict: verdict(planned, rec, capForShift(name)), is_own: own !== null, ...plannedOutcome(s.hours, planned, c),
+              totals: shiftTotals(s.core_hours, planned, c), recommendedTotals: shiftTotals(s.core_hours, rec, c) };
       });
       return { ...day, planned: judged };
     });
@@ -206,6 +248,24 @@ const V4WUI = (() => {
       const effective = Math.floor(Math.max(h.staff_to_schedule - 1, 0) * c.efficiency);
       return a + h.predicted_calls * E.abandonShare(effective, h.load_erlangs, h.aht_sec, c.targetSec, c.patienceSec);
     }, 0);
+  }
+
+  // What a FIXED roster delivers over the window: every hour gets the roster
+  // number of the shift whose core hours contain it (the partner's real
+  // 4/4/6 by default). Same chain as everything else: floor(staff x
+  // efficiency) on inbound, Erlang A for hang-ups and answered-in-time.
+  // Validated on Oct 14-20 2026: model 77.8% / 13.5% vs actual 78.1% / 14.3%.
+  function rosterOutcome(hours, roster, c) {
+    if (c.patienceSec === null || c.efficiency === 0 || hours.length === 0) return null;
+    let calls = 0, abandoned = 0, answered = 0;
+    hours.forEach((h) => {
+      const shift = SHIFTS.find((s) => s.core.includes(h.hour)).name;
+      const effective = Math.floor(roster[shift] * c.efficiency);
+      calls += h.predicted_calls;
+      abandoned += h.predicted_calls * E.abandonShare(effective, h.load_erlangs, h.aht_sec, c.targetSec, c.patienceSec);
+      answered += h.predicted_calls * E.serviceLevel(effective, h.load_erlangs, h.aht_sec, c.targetSec, c.patienceSec);
+    });
+    return { calls, abandoned, abandonShare: calls > 0 ? abandoned / calls : null, serviceLevel: calls > 0 ? answered / calls : null };
   }
 
   function dayStats(day, dayHours) {
@@ -265,9 +325,9 @@ const V4WUI = (() => {
     return lines.join("\n") + "\n";
   }
 
-  return { HOURS, SHIFTS, SHIFT_NAMES, VERDICTS, CSV_COLUMNS, STORAGE_KEY, MAX_STAFF_PER_SHIFT, SECONDS_PER_HOUR,
-    key, shiftKey, capState, clampedServiceLevel, discreteScale, computeHours, diffCells, rollupShifts, verdict,
-    plannedOutcome, createPlannedStore, judgeRoster, summarize, abandonedOneFewer, dayStats, peakHours,
+  return { HOURS, SHIFTS, SHIFT_NAMES, VERDICTS, CSV_COLUMNS, STORAGE_KEY, MAX_STAFF_PER_SHIFT, EVENING_CAP, SECONDS_PER_HOUR,
+    key, shiftKey, capForHour, capForShift, capState, clampedServiceLevel, discreteScale, computeHours, diffCells, rollupShifts, verdict,
+    plannedOutcome, createPlannedStore, judgeRoster, summarize, abandonedOneFewer, rosterOutcome, shiftTotals, shiftTradeoff, dayStats, peakHours,
     shiftOfHour, csvRows, toCsv };
 })();
 

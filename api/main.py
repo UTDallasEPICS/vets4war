@@ -19,7 +19,7 @@
         body: the same params plus planned: [{date, shift, planned}]; returns
         the recommendation, the verdict (under / on target / over / exceeds
         capacity) and the Erlang service level at the PLANNED number.
-    GET /api/model                                          active model metadata
+    GET /api/model                                          models/metadata.json
     GET /                                                   web/index.html (static)
 
     Every response carries data_source: which data (partner / synthetic,
@@ -58,6 +58,7 @@ from db.aht import DEFAULT_RECENCY, RECENCY_OPTIONS  # noqa: E402
 from db.features import SATURDAY_ISODOW, load_holidays  # noqa: E402
 from db.forecast import aht_table, holiday_coverage  # noqa: E402
 from db.patience import cached_patience  # noqa: E402
+from db.quick_abandon import quick_hangups  # noqa: E402
 from db.source import describe_source  # noqa: E402
 from db.staffing import (  # noqa: E402
     DEFAULT_EFFICIENCY,
@@ -66,6 +67,7 @@ from db.staffing import (  # noqa: E402
     DEFAULT_TARGET_SEC,
     SHIFT_ORDER,
     abandon_share_at,
+    cap_for_shift,
     planned_outcome,
     resolve_patience,
     rollup_shifts,
@@ -73,10 +75,7 @@ from db.staffing import (  # noqa: E402
     staff_for_range,
     verdict,
 )
-from db.artifacts import active_paths, active_version
-from db.freshness import refresh as refresh_data_caches
-from api.auth import install_auth
-from api.admin import router as admin_router
+from db.train import METADATA_PATH  # noqa: E402
 
 log = logging.getLogger("v4w.api")
 
@@ -102,32 +101,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = REPO_ROOT / "web"
 
 app = FastAPI(title="Vets4Warriors staffing forecast", version="0.1.0")
-install_auth(app)
-app.include_router(admin_router)
 
 
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-
-@app.get("/api/status")
-def data_status():
-    from db.pipeline import revision
-    data_revision = 0
-    latest_month = None
-    training_status = None
-    if os.getenv("V4W_PIPELINE_ENABLED", "false").lower() == "true":
-        from api.admin import database
-        with database() as conn:
-            data_revision = revision(conn)
-            latest = conn.execute("SELECT max(month) AS month FROM pipeline_batches WHERE status='imported'").fetchone()
-            latest_month = latest["month"].strftime("%Y-%m") if latest["month"] else None
-            job = conn.execute("""SELECT j.training_status FROM pipeline_jobs j JOIN pipeline_batches b ON b.id=j.batch_id
-                WHERE b.status='imported' ORDER BY j.created_at DESC LIMIT 1""").fetchone()
-            training_status = job["training_status"] if job else None
-    return {"revision": data_revision, "active_model_version": active_version(),
-            "latest_imported_month": latest_month, "training_status": training_status}
+@app.middleware("http")
+async def revalidate_page_files(request, call_next):
+    """Browsers must re-check the page's HTML/JS/CSS on every load (a cheap
+    304 when unchanged). Without this a browser can run a cached old script
+    against new HTML, which breaks the page silently."""
+    # Apply cache policy after the route has produced its response so static
+    # assets are revalidated without imposing this policy on JSON API results.
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 # =============================================================================
@@ -135,11 +121,15 @@ def data_status():
 # =============================================================================
 
 def _default_range() -> tuple[date, date]:
+    # Use an inclusive 30-day window, matching the forecast endpoint's
+    # documented default horizon.
     start = date.today()
     return start, start + timedelta(days=DEFAULT_HORIZON_DAYS - 1)
 
 
 def _validate_range(start: date | None, end: date | None) -> tuple[date, date]:
+    # Apply the same defaults and maximum horizon to each forecast endpoint
+    # before doing any database work.
     default_start, default_end = _default_range()
     start = start or default_start
     end = end or default_end
@@ -155,16 +145,20 @@ def _connection():
     dsn = os.environ.get("V4W_DATABASE_URL")
     if not dsn:
         raise HTTPException(503, "V4W_DATABASE_URL is not set")
+    # Convert an unavailable database into an explicit service error while
+    # retaining the original exception in server logs for diagnosis.
     try:
         return psycopg.connect(dsn)
     except psycopg.Error as exc:
-        log.error("database connection failed")
-        raise HTTPException(503, "Database unavailable. Please try again later.") from exc
+        log.exception("database connection failed")
+        raise HTTPException(503, f"database connection failed: {exc}") from exc
 
 
 def _queue_params(conn, queue_model: str, patience_sec: float | None) -> dict:
     """What the run actually used: the model, the patience in seconds, and
     where that patience came from (the data estimate, or the override)."""
+    # Resolve once and report the origin alongside the exact parameter used,
+    # so downstream calculations and the client-visible metadata agree.
     resolved = resolve_patience(conn, queue_model, patience_sec)
     if queue_model == "erlang_c":
         source = None
@@ -184,6 +178,8 @@ def _equal_weight_talk_sec(conn, start: date, end: date, recency: str, include_h
     calls are multiplied by the equal-weight AHT for each weekday and hour."""
     if recency == "equal":
         return _talk_seconds(hourly["offered_load_erlangs"].sum())
+    # Calls are unchanged by the AHT recency selector, so only recompute the
+    # AHT lookup and weight it by the already-produced hourly call forecast.
     equal = aht_table(conn, "equal")
     dow = hourly["hour_start"].dt.isocalendar().day.astype(int)
     hour = hourly["hour_start"].dt.hour
@@ -201,9 +197,10 @@ def _hourly_staffing(start: date, end: date, efficiency: float, target_pct: floa
     staff_for_range -> forecast_range builds the whole hourly grid once and
     runs the shared build_features on it once with the trained epoch. This
     is the only feature path; nothing here recomputes features."""
+    # Keep one connection around all related calculations so each response
+    # uses a consistent source and avoids reopening the database per helper.
     try:
         with _connection() as conn:
-            refresh_data_caches(conn)
             queue = _queue_params(conn, queue_model, patience_sec)
             hourly = staff_for_range(conn, start, end, efficiency, target_pct, target_sec,
                                      queue_model, queue["patience_sec"], recency, include_holidays)
@@ -215,14 +212,15 @@ def _hourly_staffing(start: date, end: date, efficiency: float, target_pct: floa
                 "queue": queue,
                 "source": describe_source(conn),
                 "equal_talk_sec": _equal_weight_talk_sec(conn, start, end, recency, include_holidays, hourly),
+                "quick_hangups": quick_hangups(conn),
             }
     except FileNotFoundError as exc:
         raise HTTPException(503, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except psycopg.Error as exc:
-        log.error("query failed")
-        raise HTTPException(500, "The forecast could not be loaded. Please try again later.") from exc
+        log.exception("query failed")
+        raise HTTPException(500, f"query failed: {exc}") from exc
 
 
 def format_duration(seconds: float) -> str:
@@ -246,6 +244,8 @@ def _hour_rows(hourly: pd.DataFrame) -> list[dict]:
     """One JSON row per hour with every link of the chain, unrounded, so a
     reader can recompute each number from the previous one. Scheduling
     fields are null at efficiency 0, with `reason` saying why."""
+    # Keep one stable JSON mapping per hourly row; `_opt` makes undefined
+    # staffing values JSON nulls instead of leaking NaN into the response.
     return [
         {
             "date": row.hour_start.strftime("%Y-%m-%d"),
@@ -281,6 +281,8 @@ def _abandoned_one_fewer(hourly: pd.DataFrame, efficiency: float, target_sec: fl
     buys. None under Erlang C (no abandonment) or at efficiency 0."""
     if patience_sec is None or efficiency == 0 or hourly["scheduled_needed"].isna().any():
         return None
+    # Convert the counterfactual scheduled headcount to productive agents and
+    # weight each hour's abandonment share by the forecast arrivals there.
     total = 0.0
     for row in hourly.itertuples(index=False):
         fewer = max(int(row.scheduled_needed) - 1, 0)
@@ -295,8 +297,12 @@ def _window_summary(hourly: pd.DataFrame, start: date, end: date, efficiency: fl
     """Totals over the whole requested window, in seconds and as text, next to
     the call total they came from. Carries the caveat so the number never
     travels without it."""
+    # Derive totals from the hourly frame already used for staffing, avoiding
+    # a second prediction pass and keeping summaries internally consistent.
     calls = float(hourly["predicted_offered"].sum())
     talk_sec = _talk_seconds(hourly["offered_load_erlangs"].sum())
+    # Erlang C intentionally has no abandonment estimate; omit its undefined
+    # values rather than representing them as zero hang-ups.
     known = hourly["abandon_share"].notna()
     abandoned = float((hourly["predicted_offered"] * hourly["abandon_share"])[known].sum()) if known.any() else None
     # recency_effect_pct: how far the chosen weighting moves expected talk
@@ -351,6 +357,8 @@ def _days_with_calendar(shifts: pd.DataFrame, holidays: pd.DataFrame,
 def _days_with_shifts(shifts: pd.DataFrame) -> list[dict]:
     """One entry per date, shifts nested by name, plus the daily call total."""
     days = []
+    # Grouping after rollup keeps shift calculations in db.staffing and limits
+    # this helper to formatting the API's nested day/shift response shape.
     for shift_date, group in shifts.groupby("shift_date", sort=True):
         by_name = {
             row.shift: {
@@ -398,7 +406,10 @@ def api_forecast(
     recency: str = Query(DEFAULT_RECENCY, pattern=RECENCY_PATTERN),
     include_holidays: bool = True,
 ):
+    # Validate user-controlled inputs before invoking shared domain logic.
     start, end = _validate_range(start, end)
+    # Compute one shared hourly frame, then derive both detailed hours and
+    # daily/shift summaries from those same rows.
     run = _hourly_staffing(start, end, efficiency, target_pct, target_sec, queue_model, patience_sec,
                            recency, include_holidays)
     hourly = run["hourly"]
@@ -410,6 +421,8 @@ def api_forecast(
         "days": _days_with_calendar(rollup_shifts(hourly), run["holidays"], _talk_by_date(hourly)),
         "window": _window_summary(hourly, start, end, efficiency, target_sec, run["queue"],
                                   recency, run["equal_talk_sec"]),
+        # Context for the hang-up numbers (db.quick_abandon). Not added to them.
+        "quick_hangups": run["quick_hangups"],
     }
 
 
@@ -426,6 +439,8 @@ def api_staffing(
     include_holidays: bool = True,
 ):
     start, end = _validate_range(start, end)
+    # This compact endpoint reuses the full forecast computation but returns
+    # only the shift/day output needed by simpler clients.
     run = _hourly_staffing(start, end, efficiency, target_pct, target_sec, queue_model, patience_sec,
                            recency, include_holidays)
     return {
@@ -465,11 +480,15 @@ def api_planned(body: PlannedRequest):
     run = _hourly_staffing(start, end, body.efficiency, body.target_pct, body.target_sec,
                            body.queue_model, body.patience_sec, body.recency, body.include_holidays)
     hourly, queue = run["hourly"], run["queue"]
+    # Index recommendations by the exact date/shift key used by each planned
+    # roster row, then evaluate the supervisor's chosen headcount separately.
     recommended = rollup_shifts(hourly).set_index(["shift_date", "shift"])["staff_needed"]
     memberships = shift_memberships(hourly)
     if body.efficiency == 0:
         raise HTTPException(400, "efficiency is 0: people to schedule is undefined, so there is no roster to judge")
 
+    # Evaluate each submitted roster row independently while reusing the
+    # same forecast, shift memberships and queue parameters for the request.
     results = []
     for item in body.planned:
         key = (pd.Timestamp(item.date), item.shift)
@@ -484,7 +503,8 @@ def api_planned(body: PlannedRequest):
             "planned": item.planned,
             "recommended": rec,
             "delta": item.planned - rec,
-            "verdict": verdict(item.planned, rec),
+            "cap": cap_for_shift(item.shift),
+            "verdict": verdict(item.planned, rec, cap_for_shift(item.shift)),
             **outcome,
         })
     return {
@@ -497,22 +517,37 @@ def api_planned(body: PlannedRequest):
 
 @app.get("/api/model")
 def api_model():
-    metadata_path = active_paths()[1]
-    if not metadata_path.exists():
-        raise HTTPException(404, "Model metadata not found; run training first.")
+    if not METADATA_PATH.exists():
+        raise HTTPException(404, f"{METADATA_PATH} not found; run `make train`")
+    # Return persisted metadata verbatim (plus source provenance), and surface
+    # malformed JSON or database failures as explicit HTTP errors.
     try:
-        metadata = json.loads(metadata_path.read_text())
+        metadata = json.loads(METADATA_PATH.read_text())
     except json.JSONDecodeError as exc:
-        raise HTTPException(500, "Model metadata could not be loaded.") from exc
+        raise HTTPException(500, f"{METADATA_PATH} is not valid JSON: {exc}") from exc
     try:
         with _connection() as conn:
-            refresh_data_caches(conn)
             source = describe_source(conn)
     except (psycopg.Error, ValueError) as exc:
-        log.error("data source lookup failed")
-        raise HTTPException(503, "Data source information is unavailable.") from exc
+        log.exception("data source lookup failed")
+        raise HTTPException(503, f"data source lookup failed: {exc}") from exc
     return {**metadata, "data_source": source}
 
 
-# Static site last so /api/* routes win.
+# Mount the static UI only after defining the API routes so `/api/*` requests
+# continue to resolve to their handlers rather than the frontend file server.
 app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+
+
+# This module exposes the forecasting and staffing domain through FastAPI.
+# It validates date ranges and query/body constraints, manages one database
+# connection per calculation, calls shared domain helpers, and serializes
+# hourly details, daily shift summaries, planned-roster outcomes, model
+# metadata, holiday coverage, and data-source provenance for clients.
+#
+# Numerical behavior deliberately remains in db/ modules: volume prediction
+# belongs to db.forecast, queueing and staffing to db.staffing/db.erlang, and
+# historical estimates to their focused helpers. This separation lets the
+# frontend API and command-line snapshot/scoring workflows use the same
+# calculations, while this module owns HTTP-specific validation, status codes,
+# response shape, static-file serving, and error logging.
