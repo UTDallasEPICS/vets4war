@@ -1,8 +1,8 @@
 name: CI
 
-# Runs lint, type-check, and the Vitest suite on every pull request and on
-# pushes to the deploy branches. Deploys themselves live in deploy.yml; this is
-# the correctness gate.
+# Runs pytest, including ingestion and Node-backed dashboard checks, on pull
+# requests and deploy-branch pushes. Database-dependent tests skip without
+# credentials; this job does not connect to the shared database.
 on:
   pull_request:
   push:
@@ -17,29 +17,29 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      V4W_DATABASE_URL: ""
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v6
+      - name: Set up Python
+        uses: actions/setup-python@v7
         with:
-          version: 10
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 22
-          cache: pnpm
+
+      - name: Install OpenMP runtime
+        run: sudo apt-get update && sudo apt-get install --yes libgomp1
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Lint
-        run: pnpm lint
-
-      - name: Type check
-        run: pnpm typecheck
+        run: python -m pip install --requirement requirements.txt
 
       - name: Run tests
-        run: pnpm test
+        run: python -m pytest tests -q -rs
