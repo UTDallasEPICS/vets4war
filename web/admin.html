@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Vets4Warriors administration interface preview. Backend and authentication are not connected.">
+<meta name="description" content="Vets4Warriors administration preview with Auth0 sign-in. Backend features and server authorization are not connected.">
 <title>Vets4Warriors Admin</title>
 <style>
   :root {
@@ -49,6 +49,8 @@
   .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: -.02em; }
   .brand svg { color: var(--accent); }
   .brand span { color: var(--ink-3); font-weight: 500; }
+  .user-email { max-width: 260px; overflow-wrap: anywhere; font-size: 12px; color: var(--ink-2); }
+  .auth-gate { max-width: 620px; margin: 32px auto; }
   .spacer { flex: 1; }
   .badge { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--accent-soft); color: var(--accent-ink); white-space: nowrap; }
   .badge::before { content: ""; width: 6px; height: 6px; background: currentColor; border-radius: 50%; }
@@ -107,6 +109,7 @@
   @media (max-width: 560px) { .metrics { grid-template-columns: 1fr; } .card { padding: 18px; } .facts { grid-template-columns: 1fr; } .topbar .spacer { display: none; } .intro { padding-top: 24px; } }
   @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 </style>
+<script src="https://cdn.auth0.com/js/auth0-spa-js/2.29/auth0-spa-js.production.js" defer></script>
 <script src="admin.js" defer></script>
 </head>
 <body>
@@ -120,15 +123,26 @@
     </div>
     <span class="badge pending">Interface preview</span>
     <span class="spacer"></span>
+    <span class="user-email" id="userEmail" hidden></span>
+    <button type="button" class="pill" id="logout" hidden>Log out</button>
     <a class="pill" href="./">Public staffing dashboard ↗</a>
   </header>
   <main id="main">
+    <section class="card auth-gate" id="authGate" aria-labelledby="authTitle">
+      <p class="eyebrow">Vets4Warriors administration</p>
+      <h1 id="authTitle">Staff sign-in</h1>
+      <p class="muted">Log in with Auth0 to view the admin interface.</p>
+      <p id="authStatus" role="status" aria-live="polite">Checking your sign-in session…</p>
+      <button type="button" class="pill primary" id="login" disabled>Log in with Auth0</button>
+      <p class="sub">Interface preview only. Backend authorization, uploads, reports, and retraining are not connected.</p>
+      <noscript><p class="notice">JavaScript is required to sign in. Admin content remains hidden.</p></noscript>
+    </section>
+    <div id="adminContent" hidden>
     <div class="intro">
       <div><p class="eyebrow">Operations workspace</p><h1>Data &amp; model administration</h1><p class="muted">Manage monthly call data and review forecast performance.</p></div>
       <span class="badge pending">Backend not connected</span>
     </div>
-    <div class="notice"><strong>Preview only · No authentication.</strong> Auth0 and backend integration are pending. Files stay in this browser session; nothing is uploaded, imported, or used to retrain a model.</div>
-    <noscript><div class="notice">Enable JavaScript for local file selection checks. All backend functionality remains unconnected.</div></noscript>
+    <div class="notice"><strong>Signed-in interface preview · Backend authorization pending.</strong> Auth0 sign-in controls this interface only; server-side API protection is not implemented. Nothing is uploaded, imported, or used to retrain a model.</div>
     <nav class="nav glass" aria-label="Admin sections"><a href="#upload">Monthly data</a><a href="#reports">Accuracy reports</a><a href="#health">Model health</a><a href="#retraining">Retraining</a></nav>
     <div class="grid">
       <section class="card" id="upload" aria-labelledby="uploadTitle">
@@ -171,6 +185,7 @@
         <p id="reportStatus" class="sub" role="status" aria-live="polite">No monthly accuracy reports are connected.</p>
         <div class="table-scroll"><table><caption>Monthly report placeholders · No live or sample metrics</caption><thead><tr><th scope="col">Month</th><th scope="col">Evaluation</th><th scope="col">Daily-total MAE</th><th scope="col">Hourly MAE</th><th scope="col">RMSE</th><th scope="col">Bias</th></tr></thead><tbody><tr><th scope="row" id="reportMonthLabel">Select a month</th><td>Not connected</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td colspan="6" class="empty">No verified report available. Monthly uploads and monitoring results will be connected in a later integration.</td></tr></tbody></table></div>
       </section>
+    </div>
     </div>
   </main>
   <footer><span>Vets4Warriors · Administration preview</span><span>No live data · No uploads · No training jobs</span></footer>

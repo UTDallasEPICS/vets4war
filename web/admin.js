@@ -1,5 +1,5 @@
-/* Standalone administration preview. No API calls, workbook parsing, or storage.
- * Backend validation, imports, reports, training, and Auth0 are intentionally
+/* Auth0-gated administration preview. Only Auth0 receives authentication calls.
+ * Backend authorization, validation, imports, reports, and training remain
  * unconnected; never treat local selection checks as workbook validation.
  */
 "use strict";
@@ -110,4 +110,121 @@
   reportMonth.addEventListener("input", updateReport);
   syncButtons();
   updateReport();
+
+  // Public SPA configuration, not credentials. Never add a client secret here.
+  const authConfig = {
+    domain: "dev-f1eoazec4c5dukjs.us.auth0.com",
+    clientId: "OrI6PaDntfNRXjZ0xYFjukTKgZr8qWwN",
+    cacheLocation: "memory",
+    useRefreshTokens: false,
+    authorizationParams: {
+      audience: "https://api.vets4warriors.admin",
+      scope: "openid profile email",
+      redirect_uri: `${window.location.origin}/admin.html`,
+    },
+  };
+  const login = get("login");
+  const logout = get("logout");
+  const authStatus = get("authStatus");
+  const content = get("adminContent");
+  const gate = get("authGate");
+  const email = get("userEmail");
+  let client = null;
+
+  function hideContent() {
+    content.hidden = true;
+    gate.hidden = false;
+    email.hidden = true;
+    email.textContent = "";
+  }
+
+  function authMessage(text) {
+    // Never display SDK errors, callback parameters, profiles, or tokens.
+    authStatus.textContent = text;
+  }
+
+  function clearCallbackParameters() {
+    const url = new URL(window.location.href);
+    for (const key of ["code", "state", "error", "error_description", "error_uri", "iss", "session_state"]) {
+      url.searchParams.delete(key);
+    }
+    window.history.replaceState({}, document.title, url.pathname + url.search + url.hash);
+  }
+
+  login.addEventListener("click", async () => {
+    if (!client || login.disabled) return;
+    login.disabled = true;
+    authMessage("Redirecting to Auth0…");
+    try {
+      // The official SPA SDK handles PKCE, state, and nonce verification.
+      await client.loginWithRedirect();
+    } catch (_) {
+      hideContent();
+      login.disabled = false;
+      authMessage("Sign-in could not start. Please try again.");
+    }
+  });
+
+  logout.addEventListener("click", async () => {
+    hideContent();
+    selectedFile = null;
+    workbook.value = "";
+    syncButtons();
+    message("File cleared. Nothing has been uploaded or stored.");
+    login.disabled = true;
+    logout.disabled = true;
+    authMessage("Signing out…");
+    try {
+      await client.logout({ logoutParams: { returnTo: authConfig.authorizationParams.redirect_uri } });
+    } catch (_) {
+      // Keep content hidden even when Auth0 logout cannot complete.
+      logout.disabled = false;
+      login.disabled = false;
+      authMessage("Sign-out could not complete. Try logging out again to end the Auth0 session.");
+    }
+  });
+
+  async function initializeAuth() {
+    hideContent();
+    const params = new URLSearchParams(window.location.search);
+    const callback = params.has("code") || params.has("error") || params.has("state");
+    try {
+      if (!window.auth0 || typeof window.auth0.Auth0Client !== "function") {
+        authMessage("Auth0 could not load. Check your connection and reload this page.");
+        return;
+      }
+      client = new window.auth0.Auth0Client(authConfig);
+      if (callback) {
+        try {
+          await client.handleRedirectCallback();
+        } finally {
+          clearCallbackParameters();
+        }
+      } else {
+        await client.checkSession();
+      }
+      if (!(await client.isAuthenticated())) {
+        authMessage("Sign in to view the admin interface.");
+        return;
+      }
+      logout.hidden = false;
+      // Request a token for the configured API. It stays in the SDK's memory
+      // cache: never log, render, persist, or send it to an unconnected backend.
+      await client.getTokenSilently();
+      const user = await client.getUser();
+      email.textContent = user && typeof user.email === "string" ? user.email : "Signed in (email unavailable)";
+      email.hidden = false;
+      gate.hidden = true;
+      content.hidden = false;
+    } catch (_) {
+      hideContent();
+      authMessage("Sign-in or API token request failed. Try logging in again; if this continues, ask an administrator to check Auth0 configuration.");
+    } finally {
+      // Clean even an error callback received while the SDK was unavailable.
+      if (callback) clearCallbackParameters();
+      login.disabled = !client;
+    }
+  }
+
+  initializeAuth();
 })();
