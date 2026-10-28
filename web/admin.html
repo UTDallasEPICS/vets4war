@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Vets4Warriors administration interface preview. Backend and authentication are not connected.">
+<title>Vets4Warriors Admin</title>
+<style>
+  :root {
+    color-scheme: light;
+    --field: #eef2fb; --ink: #0f172a; --ink-2: #475569; --ink-3: #64748b;
+    --accent: #3b82f6; --accent-ink: #1d4ed8; --accent-soft: rgba(59,130,246,.14);
+    --glass: rgba(255,255,255,.55); --strong: rgba(255,255,255,.86);
+    --edge: rgba(255,255,255,.7); --hairline: rgba(15,23,42,.12);
+    --amber-ink: #92400e; --amber-soft: #fef3c7; --red-ink: #b91c1c;
+    --shadow: 0 1px 2px rgba(15,23,42,.06), 0 8px 24px -8px rgba(30,41,90,.18);
+    --blob-a: #7aa7ff; --blob-b: #b9a6ff; --blob-c: #a8f0e0;
+    --font: "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont, Inter, system-ui, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --field: #0b1020; --ink: #e2e8f0; --ink-2: #a3b0c4; --ink-3: #94a3b8;
+      --accent: #60a5fa; --accent-ink: #93c5fd; --accent-soft: rgba(96,165,250,.16);
+      --glass: rgba(20,28,52,.55); --strong: rgba(17,24,45,.92);
+      --edge: rgba(255,255,255,.12); --hairline: rgba(255,255,255,.14);
+      --amber-ink: #fbbf24; --amber-soft: rgba(251,191,36,.14); --red-ink: #f87171;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px -12px rgba(0,0,0,.6);
+      --blob-a: #1e3a8a; --blob-b: #4c1d95; --blob-c: #134e4a;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { background: var(--field); scroll-behavior: smooth; }
+  body { margin: 0; min-height: 100vh; color: var(--ink); font: 14px/1.5 var(--font); font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
+  button, input { font: inherit; color: inherit; }
+  a { color: var(--accent-ink); }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+  .skip { position: absolute; left: 16px; top: -100px; z-index: 50; padding: 12px; background: var(--strong); }
+  .skip:focus { top: 12px; }
+  .field { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+  .field i { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .55; width: 48vw; height: 48vw; }
+  .field i:nth-child(1) { background: var(--blob-a); left: -14vw; top: -18vw; }
+  .field i:nth-child(2) { background: var(--blob-b); right: -12vw; top: 6vh; }
+  .field i:nth-child(3) { background: var(--blob-c); left: 30vw; bottom: -24vw; }
+  .page { max-width: 1440px; margin: auto; padding: 16px max(16px, 2vw) 48px; }
+  .glass { background: var(--glass); border: 1px solid var(--edge); box-shadow: inset 0 1px 0 var(--edge), var(--shadow); backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); }
+  .topbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; border-radius: 28px; padding: 10px 16px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: -.02em; }
+  .brand svg { color: var(--accent); }
+  .brand span { color: var(--ink-3); font-weight: 500; }
+  .spacer { flex: 1; }
+  .badge { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--accent-soft); color: var(--accent-ink); white-space: nowrap; }
+  .badge::before { content: ""; width: 6px; height: 6px; background: currentColor; border-radius: 50%; }
+  .pending { color: var(--amber-ink); background: var(--amber-soft); }
+  .pill { display: inline-flex; justify-content: center; align-items: center; min-height: 36px; padding: 7px 16px; border-radius: 999px; border: 1px solid var(--hairline); background: var(--strong); font-size: 13px; font-weight: 600; text-decoration: none; cursor: pointer; }
+  .pill:hover:not(:disabled) { box-shadow: 0 0 0 4px var(--accent-soft); }
+  .pill.primary { background: var(--accent-ink); color: var(--field); border-color: transparent; }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  .intro { padding: 32px 4px 20px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 16px; }
+  .eyebrow { margin: 0 0 8px; color: var(--accent-ink); font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+  h1 { font-size: clamp(26px, 4vw, 36px); line-height: 1.15; letter-spacing: -.04em; margin: 0 0 10px; }
+  h2 { font-size: 18px; letter-spacing: -.02em; margin: 0; }
+  h3 { font-size: 14px; margin: 0 0 6px; }
+  p { margin: 0 0 12px; }
+  .muted, .sub { color: var(--ink-2); }
+  .sub { font-size: 12px; }
+  .notice { padding: 14px 18px; border-radius: 16px; background: var(--amber-soft); color: var(--amber-ink); margin-bottom: 24px; }
+  .nav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
+  .nav a { text-decoration: none; padding: 8px 14px; border-radius: 999px; color: var(--ink-2); }
+  .nav a:hover { color: var(--accent-ink); background: var(--accent-soft); }
+  .grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 20px; }
+  .card { background: var(--strong); border: 1px solid var(--edge); border-radius: 24px; padding: 24px; box-shadow: var(--shadow); min-width: 0; scroll-margin-top: 24px; }
+  .card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  .full { grid-column: 1 / -1; }
+  .form-row { display: flex; flex-wrap: wrap; gap: 16px; margin: 20px 0; }
+  .control { display: grid; gap: 6px; font-size: 12px; font-weight: 600; }
+  input[type=month] { padding: 8px 12px; min-height: 38px; border: 1px solid var(--hairline); border-radius: 12px; background: var(--glass); }
+  .dropzone { display: grid; place-items: center; text-align: center; padding: 28px 18px; border: 1.5px dashed var(--hairline); border-radius: 18px; background: var(--accent-soft); margin: 18px 0 14px; gap: 8px; }
+  .dropzone.dragging { border-color: var(--accent-ink); outline: 3px solid var(--accent-soft); }
+  .upload-icon { color: var(--accent-ink); font-size: 28px; line-height: 1; }
+  input[type=file] { max-width: 100%; font-size: 12px; }
+  input[type=file]::file-selector-button { border: 1px solid var(--hairline); border-radius: 999px; padding: 8px 14px; margin-right: 10px; background: var(--strong); color: var(--ink); cursor: pointer; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+  .feedback { min-height: 44px; margin: 0; overflow-wrap: anywhere; }
+  .feedback.error { color: var(--red-ink); }
+  .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 20px 0; }
+  .facts div { padding: 12px; border: 1px solid var(--hairline); border-radius: 12px; }
+  dt { color: var(--ink-2); font-size: 12px; }
+  dd { margin: 5px 0 0; font-weight: 600; }
+  .steps { list-style: none; margin: 20px 0; padding: 0; }
+  .steps li { display: flex; gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--hairline); color: var(--ink-2); }
+  .step { display: grid; place-items: center; width: 26px; height: 26px; flex: none; border-radius: 50%; background: var(--accent-soft); color: var(--accent-ink); font-size: 12px; }
+  .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 22px 0 16px; }
+  .metric { border: 1px solid var(--hairline); border-radius: 16px; padding: 18px; }
+  .metric dt { font-weight: 600; color: var(--ink); }
+  .metric dd { font-size: 34px; font-weight: 500; letter-spacing: -.04em; margin: 8px 0; }
+  .metric p { margin: 0; font-size: 12px; color: var(--ink-2); }
+  .table-scroll { overflow-x: auto; margin-top: 18px; }
+  table { width: 100%; border-collapse: collapse; text-align: left; white-space: nowrap; }
+  caption { text-align: left; padding-bottom: 12px; color: var(--ink-2); font-size: 12px; }
+  th { padding: 12px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-2); background: var(--accent-soft); }
+  td { padding: 16px 12px; border-bottom: 1px solid var(--hairline); }
+  .empty { text-align: center; white-space: normal; padding: 26px 12px; color: var(--ink-2); }
+  footer { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; padding: 24px 4px 0; color: var(--ink-3); font-size: 12px; }
+  @media (max-width: 850px) { .grid { grid-template-columns: 1fr; } .full { grid-column: auto; } }
+  @media (max-width: 560px) { .metrics { grid-template-columns: 1fr; } .card { padding: 18px; } .facts { grid-template-columns: 1fr; } .topbar .spacer { display: none; } .intro { padding-top: 24px; } }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+<script src="admin.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to admin content</a>
+<div class="field" aria-hidden="true"><i></i><i></i><i></i></div>
+<div class="page">
+  <header class="topbar glass">
+    <div class="brand">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><rect x="2" y="9" width="3.2" height="9" rx="1.6" opacity=".45"/><rect x="8.4" y="5" width="3.2" height="13" rx="1.6" opacity=".7"/><rect x="14.8" y="2" width="3.2" height="16" rx="1.6"/></svg>
+      Vets4Warriors <span>Admin</span>
+    </div>
+    <span class="badge pending">Interface preview</span>
+    <span class="spacer"></span>
+    <a class="pill" href="./">Public staffing dashboard ↗</a>
+  </header>
+  <main id="main">
+    <div class="intro">
+      <div><p class="eyebrow">Operations workspace</p><h1>Data &amp; model administration</h1><p class="muted">Manage monthly call data and review forecast performance.</p></div>
+      <span class="badge pending">Backend not connected</span>
+    </div>
+    <div class="notice"><strong>Preview only · No authentication.</strong> Auth0 and backend integration are pending. Files stay in this browser session; nothing is uploaded, imported, or used to retrain a model.</div>
+    <noscript><div class="notice">Enable JavaScript for local file selection checks. All backend functionality remains unconnected.</div></noscript>
+    <nav class="nav glass" aria-label="Admin sections"><a href="#upload">Monthly data</a><a href="#reports">Accuracy reports</a><a href="#health">Model health</a><a href="#retraining">Retraining</a></nav>
+    <div class="grid">
+      <section class="card" id="upload" aria-labelledby="uploadTitle">
+        <div class="card-head"><h2 id="uploadTitle">Monthly Excel upload</h2><span class="badge pending">Validation pending</span></div>
+        <p class="muted">Select a monthly call export to prepare for validation.</p>
+        <label class="control" for="uploadMonth">Reporting month<input type="month" id="uploadMonth" required></label>
+        <div class="dropzone" id="dropzone">
+          <span class="upload-icon" aria-hidden="true">↑</span>
+          <strong>Drop one Excel workbook here</strong>
+          <label for="workbook" class="sub">Or choose an .xlsx file · 10 MB preview limit</label>
+          <input type="file" id="workbook" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" aria-describedby="fileHelp fileStatus">
+        </div>
+        <p class="sub" id="fileHelp">Local checks inspect only the file extension, size, and selected month. Workbook contents and row dates are not read or validated.</p>
+        <div class="actions"><button type="button" class="pill primary" id="checkFile" disabled>Check file selection</button><button type="button" class="pill" id="clearFile" disabled>Clear file</button></div>
+        <p class="feedback sub" id="fileStatus" role="status" aria-live="polite">No file selected. Nothing has been uploaded.</p>
+        <dl class="facts"><div><dt>Workbook validation</dt><dd>Not connected</dd></div><div><dt>Valid / invalid / duplicate rows</dt><dd>— / — / —</dd></div></dl>
+        <button type="button" class="pill" disabled aria-describedby="importHelp">Validate &amp; import · Not connected</button>
+        <p class="sub" id="importHelp">Row validation, duplicate detection, and database import require backend integration.</p>
+      </section>
+      <section class="card" id="retraining" aria-labelledby="retrainingTitle">
+        <div class="card-head"><h2 id="retrainingTitle">Model retraining</h2><span class="badge pending">Not connected</span></div>
+        <p class="muted">Training jobs and deployment status will appear here.</p>
+        <dl class="facts"><div><dt>Job status</dt><dd>Unknown · Placeholder</dd></div><div><dt>Last trained</dt><dd>Not available</dd></div><div><dt>Active model</dt><dd>Not connected</dd></div><div><dt>Training data through</dt><dd>Not available</dd></div></dl>
+        <h3>Planned workflow</h3>
+        <ol class="steps"><li><span class="step">1</span>Reconcile and import monthly calls</li><li><span class="step">2</span>Train and run backtest checks</li><li><span class="step">3</span>Review results and publish model</li></ol>
+        <button type="button" class="pill" disabled aria-describedby="trainHelp">Request retraining · Not connected</button>
+        <p class="sub" id="trainHelp">This preview cannot start jobs or replace the active model.</p>
+      </section>
+      <section class="card full" id="health" aria-labelledby="healthTitle">
+        <div class="card-head"><h2 id="healthTitle">Model health</h2><span class="badge pending">Awaiting monitoring data</span></div>
+        <p class="muted">Hourly call-volume performance. All values below are unconnected placeholders.</p>
+        <dl class="metrics"><div class="metric"><dt>MAE · calls/hour</dt><dd aria-label="Not available">—</dd><p>Mean absolute error. Lower is better.</p></div><div class="metric"><dt>RMSE · calls/hour</dt><dd aria-label="Not available">—</dd><p>Root mean squared error. Emphasizes larger misses.</p></div><div class="metric"><dt>Signed bias · calls/hour</dt><dd aria-label="Not available">—</dd><p>Predicted minus actual. Positive means overprediction.</p></div></dl>
+        <p class="sub">Evaluation window: not available · Model identity: not available · Data completeness: not verified</p>
+        <p class="sub">Retrospective replay and frozen-forecast evaluation will be labeled separately. No healthy/degraded verdict is assigned without verified results.</p>
+      </section>
+      <section class="card full" id="reports" aria-labelledby="reportsTitle">
+        <div class="card-head"><h2 id="reportsTitle">Monthly accuracy reports</h2><span class="badge pending">Reports not connected</span></div>
+        <p class="muted">Review forecast error by reporting month once verified results are available.</p>
+        <div class="form-row"><label class="control" for="reportMonth">Report month<input type="month" id="reportMonth" aria-describedby="reportStatus"></label><button type="button" class="pill" disabled aria-describedby="reportStatus">Download report · Not connected</button></div>
+        <p id="reportStatus" class="sub" role="status" aria-live="polite">No monthly accuracy reports are connected.</p>
+        <div class="table-scroll"><table><caption>Monthly report placeholders · No live or sample metrics</caption><thead><tr><th scope="col">Month</th><th scope="col">Evaluation</th><th scope="col">Daily-total MAE</th><th scope="col">Hourly MAE</th><th scope="col">RMSE</th><th scope="col">Bias</th></tr></thead><tbody><tr><th scope="row" id="reportMonthLabel">Select a month</th><td>Not connected</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td colspan="6" class="empty">No verified report available. Monthly uploads and monitoring results will be connected in a later integration.</td></tr></tbody></table></div>
+      </section>
+    </div>
+  </main>
+  <footer><span>Vets4Warriors · Administration preview</span><span>No live data · No uploads · No training jobs</span></footer>
+</div>
+</body>
+</html>
