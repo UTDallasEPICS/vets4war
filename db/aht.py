@@ -81,6 +81,8 @@ def _recency_weights(call_date: pd.Series, halflife_days: float | None) -> np.nd
     """halflife None = every call weighs 1.0 (equal weighting)."""
     if halflife_days is None:
         return np.ones(len(call_date))
+    # The latest date receives weight 1; older observations decay by one half
+    # for each configured half-life interval.
     age_days = (call_date.max() - call_date).dt.days.to_numpy()
     return np.power(0.5, age_days / halflife_days)
 
@@ -98,8 +100,12 @@ def estimate_aht(conn, halflife_days: float | None = DEFAULT_HALFLIFE_DAYS) -> d
         w=weights,
         w_sec=weights * calls["agent_sec"].to_numpy(),
     )
+    # Keep one fallback estimate for sparse weekday/hour cells; every possible
+    # (day, hour) key then has a predictable value for inference.
     global_mean = float(weighted["w_sec"].sum() / weighted["w"].sum())
 
+    # Count calls separately from weight sum: a cell can have many old,
+    # heavily downweighted observations but still pass the data-count threshold.
     cells = weighted.groupby(["dow", "call_hour"]).agg(
         n=("agent_sec", "size"),
         w=("w", "sum"),
@@ -115,3 +121,15 @@ def estimate_aht(conn, halflife_days: float | None = DEFAULT_HALFLIFE_DAYS) -> d
             else:
                 result[(dow, hour)] = global_mean
     return result
+
+
+# This module estimates expected agent handling time for each of the 168
+# weekday/hour cells from answered calls with positive recorded agent time.
+# It supports equal or exponentially decaying recency weights, uses a global
+# weighted mean for cells below the minimum sample count, and guarantees every
+# possible lookup key has a result for forecast generation.
+#
+# db.forecast combines this AHT table with LightGBM's offered-call prediction;
+# the recency selection therefore affects handling-time and staffing estimates
+# without changing the independently trained volume forecast. db.staffing uses
+# calls-per-hour and AHT together to calculate offered load for the queue model.

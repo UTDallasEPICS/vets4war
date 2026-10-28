@@ -12,5 +12,7 @@ lightgbm==4.7.0
 fastapi==0.141.1
 uvicorn==0.52.4
 pytest==9.1.1
+# Reads the partner's monthly call-records Excel files (db/load_week.py).
+openpyxl==3.1.5
 # TestClient in tests/test_api.py needs httpx (starlette does not install it).
 httpx==0.28.1

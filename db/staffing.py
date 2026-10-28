@@ -29,8 +29,9 @@
 Shift staffing is the MAX of the hourly requirement inside the shift, not
 the mean. You staff for the peak or you miss the SLA at the peak.
 
-The client caps a shift at 7 people. `capped` flags any requirement above
-that. It is surfaced, never clamped.
+The client caps a shift at 7 people, and the Evening shift (16:00 to
+midnight) at 6 (SHIFT_CAPS). `capped` flags any requirement above the
+shift's cap. It is surfaced, never clamped.
 
 Efficiency runs 0..1. At exactly 0 nobody scheduled is ever on inbound, so
 the people-to-schedule number is undefined: those fields are None and
@@ -54,7 +55,11 @@ from db.erlang import erlang_a, erlang_c, required_agents
 from db.forecast import forecast_range
 from db.patience import cached_patience
 
-DEFAULT_EFFICIENCY = 0.65
+# The partner's own staff-efficiency calculator (Oct 14-20 2026 validation
+# file): 480-min shift minus 45 breaks, 60 outbound, 60 training/admin
+# = 315 / 480 = 0.65625. Validated: with this and floor(), the model gave
+# 77.8% answered in 30 s at their real 4/4/6 roster vs 78.1% actual.
+DEFAULT_EFFICIENCY = 0.65625
 DEFAULT_TARGET_PCT = 0.80
 DEFAULT_TARGET_SEC = 30
 # erlang_a: callers hang up after Exp(patience) waiting, abandonment is
@@ -84,6 +89,25 @@ SHIFTS = (
 )
 SHIFT_ORDER = tuple(s["shift"] for s in SHIFTS)
 
+# Partner rule (2026-10-21 meeting): they never staff above 6 from 16:00 to
+# midnight. Other shifts keep the general cap.
+SHIFT_CAPS = {"Overnight": MAX_STAFF_PER_SHIFT, "Day": MAX_STAFF_PER_SHIFT, "Evening": 6}
+
+
+def cap_for_shift(shift: str) -> int:
+    if shift not in SHIFT_CAPS:
+        raise ValueError(f"unknown shift {shift!r}; expected one of {SHIFT_ORDER}")
+    return SHIFT_CAPS[shift]
+
+
+def cap_for_hour(hour: int) -> int:
+    """Cap of the shift whose CORE hours contain `hour` (the overlap hour
+    belongs to the shift it starts)."""
+    for spec in SHIFTS:
+        if hour in spec["core_hours"]:
+            return SHIFT_CAPS[spec["shift"]]
+    raise ValueError(f"hour must be 0..23, got {hour}")
+
 VERDICTS = ("understaffed", "on target", "overstaffed", "exceeds capacity")
 
 
@@ -95,6 +119,8 @@ def _service_level(agents: int, load: float, aht_sec: float, target_sec: float,
                    patience_sec: float | None = None) -> float:
     """Share of all arriving calls answered within target_sec with `agents`
     on inbound. Erlang C when patience_sec is None, else Erlang A."""
+    # No productive agents means no arriving calls can be answered within
+    # the threshold; otherwise choose the queue model from patience availability.
     if agents <= 0:
         return 0.0
     if patience_sec is not None:
@@ -126,10 +152,11 @@ def abandon_share_at(agents: int, load: float, aht_sec: float, target_sec: float
     return _abandon_share(agents, load, aht_sec, target_sec, patience_sec)
 
 
-def verdict(planned: int, recommended: int) -> str:
+def verdict(planned: int, recommended: int, cap: int = MAX_STAFF_PER_SHIFT) -> str:
     """The partner's literal question: over or under staffed? Capacity wins
-    over every other reading because it is the one the roster cannot do."""
-    if planned > MAX_STAFF_PER_SHIFT:
+    over every other reading because it is the one the roster cannot do.
+    `cap` is the shift's cap (cap_for_shift)."""
+    if planned > cap:
         return "exceeds capacity"
     if planned < recommended:
         return "understaffed"
@@ -181,6 +208,8 @@ def schedule_people(agents_required: int, efficiency: float) -> tuple[int | None
         raise ValueError(f"efficiency must be in [0, 1], got {efficiency}")
     if efficiency == 0:
         return None, None
+    # Round scheduled headcount up to ensure enough productive agents, then
+    # report the actual whole-agent count after applying the efficiency floor.
     scheduled = math.ceil(agents_required / efficiency)
     return scheduled, math.floor(scheduled * efficiency)
 
@@ -199,16 +228,19 @@ def staff_for_hour(
     target_pct: float = DEFAULT_TARGET_PCT,
     target_sec: float = DEFAULT_TARGET_SEC,
     patience_sec: float | None = None,
+    cap: int = MAX_STAFF_PER_SHIFT,
 ) -> dict:
     """Agents needed on inbound, people to schedule to get that many after
     efficiency loss, the service level those scheduled people deliver
     within `target_sec` seconds, and (Erlang A) the share of callers who
-    hang up. patience_sec None = Erlang C."""
+    hang up. patience_sec None = Erlang C. `capped` = scheduled > cap."""
     if not 0 <= efficiency <= 1:
         raise ValueError(f"efficiency must be in [0, 1], got {efficiency}")
     if predicted_offered < 0:
         raise ValueError(f"predicted_offered must be >= 0, got {predicted_offered}")
 
+    # Erlang formulas operate on offered load, i.e. expected busy agents, not
+    # raw calls; convert calls/hour times seconds/call into erlangs.
     load = predicted_offered * aht_sec / SECONDS_PER_HOUR
     agents = required_agents(predicted_offered, aht_sec, target_pct, target_sec, patience_sec)
     scheduled, effective_agents = schedule_people(agents, efficiency)
@@ -237,7 +269,7 @@ def staff_for_hour(
         "scheduled_needed": scheduled,
         "effective_agents": effective_agents,
         "service_level_at_scheduled": _service_level(effective_agents, load, aht_sec, target_sec, patience_sec),
-        "capped": scheduled > MAX_STAFF_PER_SHIFT,
+        "capped": scheduled > cap,
         "implausible": reason is not None,
         "reason": reason,
         "target_sec": target_sec,
@@ -270,11 +302,14 @@ def staff_for_range(
     and `include_holidays` go straight to forecast_range."""
     if queue_model not in QUEUE_MODELS:
         raise ValueError(f"queue_model must be one of {QUEUE_MODELS}, got {queue_model!r}")
+    # Resolve caller patience once, then use it consistently for every hour
+    # in the requested forecast window.
     patience = resolve_patience(conn, queue_model, patience_sec)
     forecast = forecast_range(conn, start_date, end_date, recency, include_holidays)
     staffing = pd.DataFrame([
         staff_for_hour(row.predicted_offered, row.predicted_aht_sec,
-                       efficiency, target_pct, target_sec, patience)
+                       efficiency, target_pct, target_sec, patience,
+                       cap=cap_for_hour(row.hour_start.hour))
         for row in forecast.itertuples(index=False)
     ])
     return pd.concat([forecast, staffing], axis=1)
@@ -302,6 +337,8 @@ def shift_memberships(hourly: pd.DataFrame) -> pd.DataFrame:
     day = hourly["hour_start"].dt.normalize()
     hour = hourly["hour_start"].dt.hour
     pieces = []
+    # Add core hours once and boundary hours to both adjacent shifts; shift
+    # dates account for the Evening shift crossing midnight.
     for spec in SHIFTS:
         core_mask = hour.isin(spec["core_hours"])
         core = hourly[core_mask].assign(
@@ -324,6 +361,8 @@ def rollup_shifts(hourly: pd.DataFrame) -> pd.DataFrame:
     long = shift_memberships(hourly)
     long["core_calls"] = long["predicted_offered"].where(long["is_core"], 0.0)
 
+    # Staffing is based on the worst hour, while calls are counted only in
+    # core hours so adjacent shift overlaps never double-count volume.
     grouped = long.groupby(["shift_date", "shift"]).agg(
         predicted_calls=("core_calls", "sum"),
         agents_required=("agents_required", "max"),
@@ -335,8 +374,22 @@ def rollup_shifts(hourly: pd.DataFrame) -> pd.DataFrame:
 
     complete = grouped[grouped["core_hours"] > 0].drop(columns="core_hours")
     # staff_needed is NaN when efficiency is 0 (undefined); capped follows it.
+    caps = complete["shift"].map(SHIFT_CAPS)
     complete = complete.assign(
-        capped=(complete["staff_needed"] > MAX_STAFF_PER_SHIFT).where(complete["staff_needed"].notna(), None)
+        capped=(complete["staff_needed"] > caps).where(complete["staff_needed"].notna(), None)
     )
     complete["shift"] = pd.Categorical(complete["shift"], categories=SHIFT_ORDER, ordered=True)
     return complete.sort_values(["shift_date", "shift"]).reset_index(drop=True)
+
+
+# This module is the business-logic layer that transforms hourly call-volume
+# and AHT predictions into offered load, required productive agents, scheduled
+# headcount, target service level, abandonment and shift summaries. It also
+# handles efficiency conversion, capacity flags, planned-roster comparisons,
+# shift boundaries, and missing/undefined outputs with explicit semantics.
+#
+# Both api.main and the command-line snapshot workflow call these functions,
+# keeping recommendations and roster outcomes consistent across interfaces.
+# Inputs come from db.forecast, caller patience from db.patience, and queue
+# probabilities from db.erlang; the resulting hourly frame is the shared
+# contract consumed by API response shaping and forecast snapshots.

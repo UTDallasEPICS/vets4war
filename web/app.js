@@ -39,9 +39,17 @@
     holidays: $("holidays"), changed: $("changed"),
     head: $("gridHead"), rows: $("rows"), scroll: $("gridScroll"), gridNote: $("gridNote"),
     sheet: $("sheet"), sheetTitle: $("sheetTitle"), sheetBody: $("sheetBody"), sheetClose: $("sheetClose"),
-    summary: $("summary"), caveat: $("caveat"), sourceBadge: $("sourceBadge"), exportPng: $("exportPng"), exportCsv: $("exportCsv"),
+    summary: $("summary"), caveat: $("caveat"), sourceBadge: $("sourceBadge"), exportPng: $("exportPng"), exportCsv: $("exportCsv"), exportReport: $("exportReport"),
     error: $("error"), holidayNote: $("holidayNote"),
+    rosterO: $("rosterO"), rosterD: $("rosterD"), rosterE: $("rosterE"),
+    rosterOVal: $("rosterOVal"), rosterDVal: $("rosterDVal"), rosterEVal: $("rosterEVal"),
+    rosterRec: $("rosterRec"), rosterReal: $("rosterReal"),
   };
+  // The partner's own efficiency calculator: 315 of 480 shift minutes on
+  // inbound = 65.625%, shown to one decimal (db/staffing.DEFAULT_EFFICIENCY).
+  const DEFAULT_EFF_PCT = 65.6;
+  // What the partner actually staffed Oct 14-20 2026 (validation file).
+  const CURRENT_ROSTER = { Overnight: 4, Day: 4, Evening: 6 };
 
   // ---- state ----
   let cache = null;          // { key, hours, days, window, params, source, coverage }
@@ -86,6 +94,31 @@
 
   // ---- controls: sync + feedback ----
   function clampInt(v, lo, hi, fallback) { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : fallback; }
+  function clampTenth(v, lo, hi, fallback) { const n = Math.round(Number(v) * 10) / 10; return Number.isFinite(n) && String(v).trim() !== "" ? Math.min(hi, Math.max(lo, n)) : fallback; }
+  // Staff-per-shift sliders. Moving one recomputes the lead hang-up stat
+  // locally (no network): L.rosterOutcome over every hour in the window.
+  const ROSTER_SLIDER_MAX = 10;
+  const ROSTER_INPUTS = () => [[el.rosterO, el.rosterOVal, "Overnight"], [el.rosterD, el.rosterDVal, "Day"], [el.rosterE, el.rosterEVal, "Evening"]];
+  function paintRoster(r) {
+    ROSTER_INPUTS().forEach(([input, label, name]) => { input.value = String(r[name]); label.textContent = String(r[name]); setFill(input); });
+  }
+  function onRoster() { paintRoster(roster()); onLocal(); }
+  function setRoster(r) { paintRoster(r); onLocal(); }
+  // Our recommended peak per shift over the loaded dates (sliders go to
+  // ROSTER_SLIDER_MAX, above the shift caps, so what-ifs are not cut off). Falls back to the current
+  // value when the recommendation is undefined (efficiency 0).
+  function recommendedRoster() {
+    const now = roster();
+    return Object.fromEntries(SHIFTS.map((spec) => {
+      const peaks = judged.map((d) => d.shifts[spec.name].staff_needed).filter((n) => n !== null);
+      return [spec.name, peaks.length ? Math.min(Math.max(...peaks), ROSTER_SLIDER_MAX) : now[spec.name]];
+    }));
+  }
+  function roster() {
+    return { Overnight: clampInt(el.rosterO.value, 0, ROSTER_SLIDER_MAX, CURRENT_ROSTER.Overnight),
+             Day: clampInt(el.rosterD.value, 0, ROSTER_SLIDER_MAX, CURRENT_ROSTER.Day),
+             Evening: clampInt(el.rosterE.value, 0, ROSTER_SLIDER_MAX, CURRENT_ROSTER.Evening) };
+  }
   function fraction(range) { return (range.value - range.min) / (range.max - range.min); }
   function setFill(range) { range.style.setProperty("--fill", (fraction(range) * 100).toFixed(1) + "%"); }
   // Thumb centre along a track, so marks line up with where the thumb sits.
@@ -129,7 +162,8 @@
       const data = await fetchJson("/api/forecast?" + serverParams());
       if (id !== inflight) return;
       cache = { key: k, hours: data.hours.map((h) => ({ date: h.date, hour: h.hour, predicted_calls: h.predicted_calls, aht_sec: h.aht_sec })),
-        days: data.days, window: data.window, params: data.params, source: data.data_source, coverage: data.holiday_coverage };
+        days: data.days, window: data.window, params: data.params, source: data.data_source, coverage: data.holiday_coverage,
+        quick: data.quick_hangups || null };
       el.error.hidden = true;
       renderSourceBadge(cache.source);
       el.holidayNote.hidden = !cache.coverage.message;
@@ -200,7 +234,7 @@
   function repaint() { patchCells(computed); patchShifts(judged); renderLegend(); }
 
   function patchCells(hours) {
-    scale = L.discreteScale(hours.map((h) => h.staff_to_schedule));
+    scale = L.discreteScale(hours.filter((h) => h.cap_state === "under").map((h) => h.staff_to_schedule));
     const peaks = new Set(L.peakHours(hours));
     el.head.querySelectorAll("th.hh").forEach((th) => {
       const peak = peaks.has(Number(th.dataset.h));
@@ -217,7 +251,7 @@
       td.className = `h cap-${h.cap_state}${MAJOR_HOURS.has(h.hour) ? " major" : ""}${lvl > DEEP_LEVEL ? " deep" : ""}${h.implausible ? " implausible" : ""}` +
         `${inSelection(h) ? " sel" : ""}${activeKey === L.key(h.date, h.hour) ? " active" : ""}`;
       td.innerHTML = h.cap_state === "over"
-        ? `<span class="n">${staff}</span><span class="cl">${pct(h.service_level_if_capped)} at ${MAX}</span>`
+        ? `<span class="n">${staff}</span><span class="cl">${pct(h.service_level_if_capped)} at ${h.cap}</span>`
         : `<span class="n">${staff === null ? UNDEF : staff}</span>`;
       td.setAttribute("aria-label", `${h.date} ${pad2(h.hour)}:00, ${staff === null ? "undefined" : staff} people to schedule`);
     });
@@ -230,20 +264,26 @@
         const cell = el.rows.querySelector(`td.roster[data-plan="${L.shiftKey(day.date, spec.name)}"]`);
         if (!cell) return;
         const input = cell.querySelector("input"), tag = cell.querySelector(".verdict");
-        cell.className = `roster cap-${L.capState(s.staff_needed)}${p.is_own ? " own" : ""}`;
+        cell.className = `roster cap-${L.capState(s.staff_needed, s.cap)}${p.is_own ? " own" : ""}`;
         if (document.activeElement !== input) input.value = p.is_own ? p.planned : "";
         input.placeholder = s.staff_needed === null ? UNDEF : s.staff_needed;
         if (p.verdict === null) { tag.className = "verdict"; tag.textContent = UNDEF; cell.title = ""; return; }
         if (p.is_own) {
+          // Option 1: the cost of the typed number, in calls, right in the cell.
           tag.className = `verdict ${verdictClass(p.verdict)}`;
-          tag.textContent = `${verdictShort(p.verdict)}${p.delta ? ` ${p.delta > 0 ? "+" : ""}${p.delta}` : ""}`;
+          const head = `${verdictShort(p.verdict)}${p.delta ? ` ${p.delta > 0 ? "+" : ""}${p.delta}` : ""}`;
+          tag.innerHTML = p.totals === null ? esc(head)
+            : `${esc(head)}<span class="lost">${Math.round(p.totals.lost)} lost · ${pct(p.totals.lostShare)}</span>`;
         } else {
           tag.className = "verdict";
           tag.textContent = `Peak · ${pct(p.service_level)}`;
         }
         cell.title = `${p.is_own ? `${p.verdict}: ${p.planned} planned vs ${p.recommended} recommended` : `${p.recommended} recommended (the tour's busiest hour)`}. ` +
           `${p.effective_agents} on inbound after efficiency; the weakest hour answers ${pct(p.service_level, 1)} in time` +
-          `${p.abandon_share === null ? "" : ` and loses ${pct(p.abandon_share, 1)} of callers`}.`;
+          `${p.abandon_share === null ? "" : ` and loses ${pct(p.abandon_share, 1)} of callers`}.` +
+          (p.totals === null ? "" : ` Over the whole tour: about ${Math.round(p.totals.lost)} of ${Math.round(p.totals.calls)} calls hang up ` +
+            `(${pct(p.totals.lostShare, 1)}), ${Math.round(p.totals.late)} are answered after ${controls().targetSec} s.` +
+            (p.recommendedTotals && p.is_own ? ` At the recommended ${p.recommended}: about ${Math.round(p.recommendedTotals.lost)} hang up.` : ""));
       });
     });
   }
@@ -251,15 +291,24 @@
   function renderLegend() { $("legendRange").textContent = scale.lo === scale.hi ? `${scale.lo}` : `${scale.lo} to ${scale.hi}`; }
 
   // ---- summary ----
+  // Measured share of hang-ups too fast for staffing to prevent
+  // (db/quick_abandon.py). Context only; already inside the model's total.
+  function quickHangupNote(q) {
+    if (!q || q.quick_share_of_abandoned === null) return "";
+    return ` In the last ${q.window_days} days of data (${q.first_day} to ${q.last_day}), ${pct(q.quick_share_of_abandoned, 0)} of hang-ups ` +
+      `(${q.n_quick.toLocaleString()} of ${q.n_abandoned.toLocaleString()}) came within ${q.threshold_sec} s, too fast for any staffing to answer.`;
+  }
   function renderSummary(c) {
     const s = L.summarize(computed);
     const fewer = L.abandonedOneFewer(computed, c);
     const stat = (cls, k, v, d) => `<div class="stat ${cls}"><div class="k">${k}</div><div class="v">${v}</div><div class="d">${d}</div></div>`;
     const span = `${shortDate(cache.window.start)} to ${shortDate(cache.window.end)}`;
-    const lead = s.abandoned === null
-      ? stat("lead", "Expected hang-ups", UNDEF, "Undefined at 0% efficiency")
-      : stat("lead", "Expected hang-ups", `${Math.round(s.abandoned).toLocaleString()}<small>${s.calls > 0 ? pct(s.abandoned / s.calls, 1) + " of calls" : ""}</small>`,
-        `Before a peer answers, at the recommended staffing, ${span}`);
+    // Secondary: what our recommendation would give. Labelled so it is never
+    // read as the roster the partner actually runs (that is the lead stat).
+    const recommendedStat = s.abandoned === null
+      ? stat("lead", "Hang-ups with recommended staffing", UNDEF, "Undefined at 0% efficiency")
+      : stat("lead", "Hang-ups with recommended staffing", `${Math.round(s.abandoned).toLocaleString()}<small>${s.calls > 0 ? pct(s.abandoned / s.calls, 1) + " hang up" : ""}</small>`,
+        `Every hour staffed as the grid recommends, ${span}`);
     const talkHours = s.talkSec / SPH;
     let story;
     if (s.personHours === null) story = "Scheduled person-hours are undefined at 0% efficiency.";
@@ -269,13 +318,22 @@
         `That gap is the efficiency setting (${el.effNum.value}% of a shift on inbound) plus the queue slack needed to answer ${el.slNum.value}% within ${c.targetSec} s.` +
         (fewer !== null && s.abandoned !== null ? ` With one fewer person every hour, hang-ups would rise from <b>${Math.round(s.abandoned).toLocaleString()}</b> to <b>${Math.round(fewer).toLocaleString()}</b>.` : "");
     }
-    el.summary.innerHTML = lead +
+    const r = roster();
+    const atRoster = L.rosterOutcome(computed, r, c);
+    // Lead: hang-ups at the roster the partner actually runs (validated against
+    // their Oct 14-20 2026 actuals).
+    const rosterStat = atRoster === null
+      ? stat("lead", "Hang-ups with the slider staff", UNDEF, "Needs Erlang A and efficiency above 0")
+      : stat("lead", "Hang-ups with the slider staff", `${Math.round(atRoster.abandoned).toLocaleString()}<small>${pct(atRoster.abandonShare, 1)} of calls</small>`,
+        `${r.Overnight}/${r.Day}/${r.Evening} staff, ${span}: ${pct(atRoster.serviceLevel, 1)} answered within ${c.targetSec} s`);
+    el.summary.innerHTML = recommendedStat + rosterStat +
       stat("", "Predicted calls", Math.round(s.calls).toLocaleString(), `${s.n.toLocaleString()} hours`) +
       stat("", "Expected talk time", formatDuration(s.talkSec), `Average call ${s.meanAht === null ? "?" : (s.meanAht / SECONDS_PER_MINUTE).toFixed(1)} min`) +
       stat("", "Person-hours to schedule", s.personHours === null ? UNDEF : s.personHours.toLocaleString(), "Every hour, added up") +
       `<p class="story"><span>${story}</span></p>`;
     el.caveat.textContent = `${cache.window.caveat} Callers are assumed to give up after ${Math.round(c.patienceSec || 0)} s on average, measured from ` +
-      `${cache.params.patience_source ? cache.params.patience_source.n_abandoned.toLocaleString() : "the"} past hang-ups.`;
+      `${cache.params.patience_source ? cache.params.patience_source.n_abandoned.toLocaleString() : "the"} past hang-ups.` +
+      quickHangupNote(cache.quick);
   }
 
   // ---- detail sheet ----
@@ -322,7 +380,7 @@
     if (h.staff_to_schedule === null) return body + `</ul><p class="reason">${esc(h.reason)}</p>`;
     body += line("Answered in time", pct(h.service_level_delivered, 1), `Target ${el.slNum.value}% within ${c.targetSec} s`) +
       line("Hang-ups", pct(h.abandon_share, 1), "Callers who give up before a peer answers");
-    if (h.cap_state === "over") body += line(`With only ${MAX} people`, pct(h.service_level_if_capped, 1), "Answered in time if you can't staff above the cap", "out");
+    if (h.cap_state === "over") body += line(`With only ${h.cap} people`, pct(h.service_level_if_capped, 1), "Answered in time if you can't staff above the cap", "out");
     return body + `</ul>` + (h.reason ? `<p class="reason">${esc(h.reason)}</p>` : "") +
       `<div class="sheet-foot"><button type="button" class="pill" data-open-day="${h.date}">See the whole day</button></div>`;
   }
@@ -331,7 +389,7 @@
     const s = L.summarize(rows);
     return `<p class="hint">${selection.dates.length} day${selection.dates.length === 1 ? "" : "s"}, ${pad2(selection.hours[0])}:00 to ${pad2(selection.hours[1])}:59, ${rows.length} hours</p>` +
       tiles([["Person-hours", s.personHours === null ? UNDEF : s.personHours.toLocaleString()], ["Peak staff", s.peakStaff === null ? UNDEF : s.peakStaff],
-        ["Predicted calls", Math.round(s.calls).toLocaleString()], ["Expected hang-ups", s.abandoned === null ? UNDEF : Math.round(s.abandoned).toLocaleString()]]) +
+        ["Predicted calls", Math.round(s.calls).toLocaleString()], ["Hang-ups if staffed as recommended", s.abandoned === null ? UNDEF : Math.round(s.abandoned).toLocaleString()]]) +
       `<div class="sheet-foot"><button type="button" class="pill" data-clear-selection>Clear selection</button></div>`;
   }
   function dayView(date) {
@@ -346,9 +404,28 @@
     const hoursList = (hs) => (hs.length ? hs.map((h) => `${pad2(h)}:00`).join(", ") : "None");
     return (day.holiday ? `<div class="chips"><span class="chip hol">${esc(day.holiday)}</span></div>` : "") +
       tiles([["Predicted calls", Math.round(st.calls).toLocaleString()], ["Busiest hour", st.peakHour === null ? UNDEF : `${pad2(st.peakHour)}:00`],
-        ["Peak staff", st.peakStaff === null ? UNDEF : st.peakStaff], ["Expected hang-ups", st.abandoned === null ? UNDEF : Math.round(st.abandoned).toLocaleString()]]) +
+        ["Peak staff", st.peakStaff === null ? UNDEF : st.peakStaff], ["Hang-ups if staffed as recommended", st.abandoned === null ? UNDEF : Math.round(st.abandoned).toLocaleString()]]) +
       `<table class="tours"><tr><th>Tour</th><th>Need</th><th>Planned</th><th>Verdict</th></tr>${tours}</table>` +
-      `<ul class="rows">${line("At the cap", hoursList(st.atCap))}${line("Over the cap", hoursList(st.overCap), "", st.overCap.length ? "out" : "")}</ul>`;
+      `<ul class="rows">${line("At the cap", hoursList(st.atCap))}${line("Over the cap", hoursList(st.overCap), "", st.overCap.length ? "out" : "")}</ul>` +
+      SHIFTS.map((spec) => tradeoffTable(spec, day)).join("") +
+      `<p class="hint">Rows with the same "On phones" number give the same result: after breaks, outbound and admin ` +
+      `(efficiency ${esc(el.effNum.value)}%), that extra person adds no time on inbound.</p>`;
+  }
+
+  // Option 2: every staff number from 1 to the shift's cap and what it costs
+  // over the tour, in calls. Recommended and planned rows are marked.
+  function tradeoffTable(spec, day) {
+    const s = day.shifts[spec.name], p = day.planned[spec.name], c = controls();
+    const rows = L.shiftTradeoff(s.core_hours, s.cap, c);
+    if (rows.length === 0) return "";
+    const body = rows.map((r) => {
+      const marks = [r.staff === s.staff_needed ? "rec" : "", p.is_own && r.staff === p.planned ? "plan" : ""].join(" ").trim();
+      const label = r.staff === s.staff_needed ? " <small>recommended</small>" : p.is_own && r.staff === p.planned ? " <small>planned</small>" : "";
+      return `<tr class="${marks}"><td>${r.staff}${label}</td><td>${r.effective}</td><td>${pct(r.serviceLevel)}</td><td>${pct(r.lostShare, 1)}</td>` +
+        `<td>${Math.round(r.lost)}</td><td>${Math.round(r.late)}</td></tr>`;
+    }).join("");
+    return `<h3 class="tradeoff-head">${esc(spec.name)} <small>${esc(spec.span)} · ${Math.round(rows[0].calls)} calls · cap ${s.cap}</small></h3>` +
+      `<table class="tours tradeoff"><tr><th>Staff</th><th title="Scheduled people actually on inbound after efficiency (rounded down)">On phones</th><th>In ${c.targetSec} s</th><th>Hang up</th><th>Lost calls</th><th>Late</th></tr>${body}</table>`;
   }
 
   // ---- grid interaction ----
@@ -467,9 +544,36 @@
       });
     });
     g.textAlign = "left"; g.font = `10px ${font}`; g.fillStyle = P.mute;
-    g.fillText(`Red: over the cap of ${MAX}, never clamped. Amber: at the cap. Blue: under, one shade per person. * = your planned number. Exported ${new Date().toISOString().slice(0, 16).replace("T", " ")}.`, P.pad, H - P.pad + 6);
+    g.fillText(`Red: over the shift cap (${MAX}; Evening ${L.EVENING_CAP}), never clamped. Amber: at the cap. Blue: under, one shade per person. * = your planned number. Exported ${new Date().toISOString().slice(0, 16).replace("T", " ")}.`, P.pad, H - P.pad + 6);
     cv.toBlob((blob) => download(`v4w-staffing-grid-${cache.window.start}-to-${cache.window.end}.png`, blob), "image/png");
   }
+  // Report: a printable summary of the selected period (web/report.js). It
+  // opens in a new window with the print dialog, so "Save as PDF" gives the
+  // file. If the browser blocks the window, the same page downloads as HTML.
+  const PRINT_DELAY_MS = 250;
+  function localStamp(d) { return `${isoDate(d)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`; }
+  function exportReport() {
+    if (!cache || computed.length === 0) { el.error.hidden = false; el.error.textContent = "Nothing to report yet: wait for the forecast to load, then try again."; return; }
+    const c = controls();
+    let html;
+    try {
+      html = V4WReport.buildReport({
+        start: cache.window.start, end: cache.window.end,
+        settings: { efficiencyPct: Number(el.effNum.value), slPct: Number(el.slNum.value), targetSec: c.targetSec, patienceSec: c.patienceSec },
+        sourceLabel: cache.source ? cache.source.label : "", caveat: cache.window.caveat || "",
+        generatedAt: localStamp(new Date()), hours: computed, days: judged,
+      });
+    } catch (err) {
+      el.error.hidden = false; el.error.textContent = `The report could not be built (${err.message}).`; return;
+    }
+    const name = `v4w-staffing-report-${cache.window.start}-to-${cache.window.end}`;
+    const w = window.open("", "_blank");
+    if (!w) { download(`${name}.html`, new Blob([html], { type: "text/html" })); return; }
+    w.document.open(); w.document.write(html); w.document.close();
+    w.focus();
+    setTimeout(() => w.print(), PRINT_DELAY_MS);
+  }
+  el.exportReport.addEventListener("click", exportReport);
   el.exportCsv.addEventListener("click", exportCsv);
   el.exportPng.addEventListener("click", exportPng);
 
@@ -478,7 +582,10 @@
   function debounced(fn) { clearTimeout(timer); timer = setTimeout(fn, DEBOUNCE_MS); }
   const onLocal = () => { renderControlFeedback(); debounced(recompute); };
   el.eff.addEventListener("input", () => { el.effNum.value = el.eff.value; onLocal(); });
-  el.effNum.addEventListener("input", () => { el.eff.value = clampInt(el.effNum.value, 0, 100, 65); onLocal(); });
+  el.effNum.addEventListener("input", () => { el.eff.value = clampTenth(el.effNum.value, 0, 100, DEFAULT_EFF_PCT); onLocal(); });
+  [el.rosterO, el.rosterD, el.rosterE].forEach((input) => input.addEventListener("input", onRoster));
+  el.rosterRec.addEventListener("click", () => setRoster(recommendedRoster()));
+  el.rosterReal.addEventListener("click", () => setRoster(CURRENT_ROSTER));
   el.effNum.addEventListener("change", () => { el.effNum.value = el.eff.value; onLocal(); });
   el.sl.addEventListener("input", () => { el.slNum.value = el.sl.value; onLocal(); });
   el.slNum.addEventListener("input", () => { el.sl.value = clampInt(el.slNum.value, SL_MIN, SL_MAX, SL_MIN); onLocal(); });
@@ -501,7 +608,8 @@
   function init() {
     const today = new Date(), end = new Date(today); end.setDate(end.getDate() + DEFAULT_HORIZON_DAYS - 1);
     el.start.value = isoDate(today); el.end.value = isoDate(end);
-    el.eff.value = "65"; el.effNum.value = "65"; el.sl.value = "80"; el.slNum.value = "80"; el.tsec.value = "30";
+    el.eff.value = String(DEFAULT_EFF_PCT); el.effNum.value = String(DEFAULT_EFF_PCT); el.sl.value = "80";
+    paintRoster(CURRENT_ROSTER); el.slNum.value = "80"; el.tsec.value = "30";
     el.hFrom.value = "0"; el.hTo.value = "23"; el.holidays.checked = true;
     const at = (v) => (v - SL_MIN) / (SL_MAX - SL_MIN);
     el.slTrack.querySelectorAll(".band, .tick").forEach((n) => n.remove());
