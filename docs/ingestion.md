@@ -1,4 +1,4 @@
-# Monthly call-file validation (phase 1)
+# Monthly call-file validation
 
 This document describes the standalone validator. The ingestion-only draft
 import service and handoff to the teammate's admin/monitoring branch are
@@ -8,6 +8,54 @@ itself still performs no database writes; staging/imports are separate.
 This phase reads and validates `.xlsx` workbooks only. It never loads `.env`,
 connects to Supabase, inserts records, or trains a model. CSV, upload endpoints,
 and deployment changes are outside this phase.
+
+## Supplied partner workbook
+
+The partner profile reads the observed six-column `Call Log` worksheet:
+
+| Excel header | Normalized field |
+| --- | --- |
+| Call Date/Time | start_ts |
+| Inqueue Time | in_queue_sec |
+| Routing Time | routing_sec |
+| Agent Time | agent_sec |
+| Abandon | abandoned |
+| Abandon Time | abandon_sec |
+
+`Y` maps to true and `N` to false (case/outer whitespace are normalized).
+Numeric durations mean seconds, confirmed by the user. Excel timestamps are
+preserved without conversion or a claim that their timezone has been verified.
+This supplied layout differs from the split date/time layout used by
+`db/load_week.py`; that loader and the fine-tuned model code are unchanged.
+
+Validate a full historical workbook without a monthly restriction:
+
+```sh
+.venv/bin/python -m db.ingest --profile partner --file /path/to/export.xlsx --dry-run
+```
+
+For a monthly upload, add its reporting month:
+
+```sh
+.venv/bin/python -m db.ingest --profile partner --file /path/to/month.xlsx --month 2026-09 --dry-run
+```
+
+`parse_partner_excel(binary_stream, month="2026-09")` provides the same checks
+for the future backend endpoint, returning the same result/report classes as
+the generic parser. It flags out-of-month rows with their original Excel row
+numbers and rejects malformed month selections. This is validation only:
+no configuration, credentials, database, login or model is needed.
+
+The file has no source call ID. This profile does not require or invent one,
+and does not remove identical rows. Reports warn that source-ID duplicate
+detection was not performed. Passing checks cannot prove a complete export or
+that a file is safe to insert. No-ID database importing remains unimplemented
+and is explicitly blocked by `commit_import()` even for a confirmed profile.
+
+The partner profile is tested with synthetic workbooks. A read-only check of
+the supplied 2021–2025 workbook passed all 93,407 rows; its bytes were unchanged.
+This verifies that file's structure/values, not monthly completeness or safe
+database insertion. The real workbook remains outside the repository.
 
 ## How `db/ingest.py` works
 
@@ -103,7 +151,7 @@ changes remain unverified.
 |---|---|---|---|
 | `id` | bigint | Primary key, not null | Not assigned; source ID meaning is unknown |
 | `start_ts` | timestamp without time zone | Not null | Required timestamp |
-| `abandoned` | boolean | Not null | Required true/false or 1/0 |
+| `abandoned` | boolean | Not null | Required Y/N, true/false, or 1/0 |
 | `in_queue_sec` | double precision | Nullable | Required header; value required for answered calls |
 | `agent_sec` | double precision | Nullable | Required header; value required for answered calls |
 | `abandon_sec` | double precision | Nullable | Required header; value required for abandoned calls |
@@ -134,7 +182,8 @@ parsing or cleaning function was found to reuse in this phase.
 
 ## Input contract and unknown export mappings
 
-Default headers are the normalized names above, **not claimed sponsor headers**.
+The generic parser's default headers are the normalized names above. Select the
+partner profile for the observed six-column headers listed earlier.
 Unknown extra columns are ignored and never copied into normalized records.
 The five required headers are `start_ts`, `abandoned`, `in_queue_sec`,
 `agent_sec`, and `abandon_sec`. Relevant durations are required per call outcome
@@ -148,12 +197,11 @@ null durations. Zero durations are allowed, including zero agent time.
 * Native Excel datetime cells or ISO text such as `2026-09-01 13:45:00` are
   accepted. Other text formats require `timestamp_format`. Date-only text and
   unformatted numeric serial dates are rejected.
-* The README defines timestamps as naive Eastern local wall-clock time.
-  Timezone-aware values are rejected, not silently shifted or stripped.
-  This phase does not change the existing daylight-saving convention or verify
-  whether the sponsor exports timestamps in that convention.
+* Naive timestamps are preserved as supplied. Timezone-aware values are rejected,
+  not silently shifted or stripped. The model owner must verify compatibility
+  with the application's existing Eastern convention before live integration.
 * Abandonment accepts booleans, numeric 0/1, or case-insensitive text
-  `true`, `false`, `0`, `1`. Missing or other labels are rejected. Additional
+  `Y`, `N`, `true`, `false`, `0`, `1`. Missing or other labels are rejected. Additional
   outcome relationships cannot be inferred until export semantics are known.
 * Header names must be unique text on row 1. Blank data rows within the
   worksheet are retained as invalid. Completely empty and header-only files
@@ -205,8 +253,9 @@ uv run python -m db.ingest --file data/monthly_calls.xlsx --dry-run \
   --timestamp-format "%m/%d/%Y %H:%M:%S" --sheet "Calls"
 ```
 
-For a future backend, call `parse_excel(binary_stream, column_map=..., ...)`
-or `validate_rows(headers, rows, ...)` directly. `result.report()` is suitable
+For a future backend, call `parse_partner_excel(binary_stream, month=...)` for
+the supplied layout, or `parse_excel(binary_stream, column_map=..., ...)` /
+`validate_rows(headers, rows, ...)` for generic input. `result.report()` is suitable
 for error display; `result.rows` retains each row and its issues;
 `result.valid_records` contains schema-shaped records excluding invalid and
 duplicate rows. Always check `result.ok` before any future batch operation.
@@ -241,7 +290,7 @@ database `id` is invented.
 
 `@pytest.mark.parametrize` runs a test repeatedly with different inputs. For
 example, the duration test checks six invalid values against four duration
-fields, producing 24 cases from one test function. The suite currently has
+fields, producing 24 cases from one test function. The generic suite has
 74 cases; the count is larger than the number of test functions for this reason.
 
 CLI tests call `main()` directly with argument lists. Pytest's `tmp_path` fixture
@@ -256,16 +305,17 @@ Run this focused suite from the repository root:
 uv run python -m pytest tests/test_ingest.py -q
 ```
 
-No database credentials, server, or real call records are needed. A passing suite
-confirms the implemented input contract; a sanitized sponsor sample is still
-needed to confirm that the eventual column mapping and business rules are right.
+No database credentials, server, or real call records are needed for these tests.
+The supplied workbook has also passed a separate read-only check using the
+partner profile. Neither check establishes complete monthly coverage or safe
+database importing.
 
 ## Needed before insertion
 
-Obtain a sanitized real export and confirm sheet/header names, timestamp format
-and timezone/DST handling, duration units/blank conventions, and abandonment
-codes. Confirm whether files contain one row per call or multiple legs, whether
-they include outbound calls, and how to identify a complete month. Establish a
-stable source ID and its relationship to `calls.id`, then agree on overlapping
-exports, corrections, and duplicate conflict handling. Confirm destination data
-provenance and database defaults/constraints before implementing writes.
+The observed sheet/headers, Y/N values and confirmed seconds are now supported.
+Still confirm one row represents one inbound call and agree on complete-month
+replacement/correction handling. The model owner must verify timestamp
+compatibility before live integration. A source call ID is absent: implement a
+month-based import policy rather than invent an identifier from timestamps.
+Confirm destination data provenance and generated-ID defaults/constraints before
+enabling writes. The current draft importer remains blocked for no-ID profiles.

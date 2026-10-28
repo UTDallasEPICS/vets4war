@@ -15,7 +15,8 @@ in commit `e73f0bb` for reference.
 | `db/pipeline.py` | Draft monthly staging, transactional import, correction rollback, upload history, staged-record expiry and data revision |
 | `db/migrations/001_ingestion.sql` | Backend-only ingestion ledger tables, explicitly applied |
 | `tests/test_pipeline.py` | Synthetic PostgreSQL import/rollback/history tests |
-| `config/export-contract.example.json` | Unconfirmed configuration example; not the verified partner format |
+| `config/export-contract.example.json` | Observed sheet/header mapping and seconds; import approval and source-ID policy remain unconfirmed |
+| `tests/test_partner_ingest.py` | Synthetic six-column partner workbooks, Y/N, month checks and timestamp preservation |
 
 The model, its artifacts, forecast API and staffing dashboard match
 `origin/forecast-mvp` at `37aca07`. No ingestion code automatically trains or
@@ -33,9 +34,9 @@ Their `db/monitor.py` and monitoring/accuracy code remain theirs.
 
 For the first integration, the UI should send a workbook and selected reporting
 month to a **validation-only** backend endpoint. That endpoint is not yet
-implemented in this trimmed branch. It should call `parse_excel(binary_stream,
-column_map=..., sheet=..., identifier_column=None)` and return `result.report()`
-plus reporting-month validation. Do not send normalized call records back to
+implemented in this trimmed branch. It should call
+`parse_partner_excel(binary_stream, month=selected_month)` and return
+`result.report()`. Do not send normalized call records back to
 the browser. This step needs no database connection or migration.
 
 Agree on the final route and request/response format with the frontend owner
@@ -45,17 +46,17 @@ no new unauthenticated import, history, or migration HTTP route.
 
 ## Known ingestion work remaining
 
-1. Configure the actual `Call Log` sheet and the six partner headers and add an
-   explicit `Y`/`N` adapter. Durations have been confirmed as seconds. Preserve
-   timestamps as supplied; their source timezone remains unconfirmed.
-2. Allow the real six-column export to validate without a source call ID. The
-   standalone validator already allows identifiers to be omitted, but the draft
-   pipeline configuration/import service still requires reliable identifiers.
-3. Implement/test the agreed complete-month duplicate/replacement policy without
+Partner validation is implemented: `--profile partner` selects the actual
+`Call Log` sheet and six headers, accepts Y/N and seconds, and needs no call ID.
+`--month YYYY-MM` optionally enforces a selected month. Timestamps are preserved;
+their source timezone remains unconfirmed. The provided historical workbook
+passed all 93,407 rows in a read-only check.
+
+1. Implement/test the agreed complete-month duplicate/replacement policy without
    assuming timestamps or generated database IDs identify the same source call.
    Current source-ID import tests do not establish this future behavior.
-4. Add the validation-only HTTP boundary and connect the teammate's UI.
-5. Review the existing database's calls schema, generated ID default and
+2. Add the validation-only HTTP boundary and connect the teammate's UI.
+3. Review the existing database's calls schema, generated ID default and
    historical provenance; then test imports in an agreed isolated environment.
    Real database importing must not be enabled solely because synthetic tests pass.
 
@@ -68,6 +69,12 @@ Only a nonempty all-valid file is staged as importable. Display errors are
 bounded; input limits are 25 MB compressed, 100 MB expanded, 2,000 ZIP entries and
 100,000 rows. The caller must enforce the compressed request limit before reading
 an HTTP body; no upload HTTP implementation is supplied here.
+
+The example now deliberately has `identifier_column: null` and
+`timezone: "unconfirmed"`. Both the standalone partner validator and draft
+staging service can validate without IDs, but `commit_import()` explicitly
+blocks such profiles until month-based importing is implemented. Changing
+`confirmed` to true alone does not enable importing this six-column file.
 
 `commit_import()` requires a confirmed profile, stable source IDs, a matching
 source row count, and explicit selection of the current batch for replacements.
@@ -97,6 +104,7 @@ No migration or data change was run against the shared database during cleanup.
 
 ```sh
 V4W_DATABASE_URL= .venv/bin/python -m pytest tests/test_ingest.py -q
+V4W_DATABASE_URL= .venv/bin/python -m pytest tests/test_partner_ingest.py -q
 V4W_DATABASE_URL= .venv/bin/python -m pytest tests/test_pipeline.py -q
 ```
 

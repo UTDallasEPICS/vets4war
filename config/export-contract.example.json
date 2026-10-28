@@ -2,18 +2,18 @@
   "confirmed": false,
   "confirmed_by": "",
   "source_namespace": "jimmy-inbound",
-  "identifier_column": "Source Call ID",
-  "sheet": "Calls",
+  "identifier_column": null,
+  "sheet": "Call Log",
   "column_map": {
-    "start_ts": "start_ts",
-    "abandoned": "abandoned",
-    "in_queue_sec": "in_queue_sec",
-    "agent_sec": "agent_sec",
-    "abandon_sec": "abandon_sec",
-    "routing_sec": "routing_sec"
+    "start_ts": "Call Date/Time",
+    "abandoned": "Abandon",
+    "in_queue_sec": "Inqueue Time",
+    "agent_sec": "Agent Time",
+    "abandon_sec": "Abandon Time",
+    "routing_sec": "Routing Time"
   },
   "timestamp_format": null,
-  "timezone": "America/New_York",
+  "timezone": "unconfirmed",
   "duration_unit": "seconds",
   "one_row_per_inbound_call": true,
   "correction_policy": "replace_managed_month"

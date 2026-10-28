@@ -1,9 +1,9 @@
 """Validate .xlsx call exports without database access or environment loading.
 
-Default headers describe our normalized contract, not a verified sponsor export.
-Map database field names to Excel headers using column_map. Numeric durations
-are seconds; timestamps are naive Eastern wall-clock time as documented in the
-README. A configured source identifier is used ONLY for within-file duplicate
+Default headers describe our normalized contract. The partner profile supports
+the supplied six-column Call Log worksheet. Numeric durations are seconds;
+naive timestamps are preserved as supplied, without conversion or a timezone
+claim. A configured source identifier is used ONLY for within-file duplicate
 detection, never assigned to calls.id (its provenance is not yet confirmed).
 """
 
@@ -28,6 +28,15 @@ FIELDS = ("start_ts", "abandoned", *DURATION_FIELDS)
 # present, but may be blank when not applicable to that call's outcome.
 REQUIRED_FIELDS = ("start_ts", "abandoned", "in_queue_sec", "agent_sec", "abandon_sec")
 ISO_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?")
+PARTNER_SHEET = "Call Log"
+PARTNER_COLUMNS = {
+    "start_ts": "Call Date/Time",
+    "in_queue_sec": "Inqueue Time",
+    "routing_sec": "Routing Time",
+    "agent_sec": "Agent Time",
+    "abandoned": "Abandon",
+    "abandon_sec": "Abandon Time",
+}
 
 
 @dataclass(frozen=True)
@@ -84,7 +93,7 @@ class ValidationResult:
             "summary": self.summary,
             "duplicate_detection_enabled": self.duplicate_detection_enabled,
             "warnings": [] if self.duplicate_detection_enabled else [
-                "Duplicate detection was not performed; configure a reliable identifier column."
+                "Source-ID duplicate detection was not performed. Validation does not establish that this file is safe to import."
             ],
             "file_errors": [issue(error) for error in self.file_errors],
             "row_errors": [
@@ -136,8 +145,8 @@ def _abandoned(value) -> bool:
         return bool(value)
     if isinstance(value, str):
         normalized = value.strip().lower()
-        if normalized in ("true", "1", "false", "0"):
-            return normalized in ("true", "1")
+        if normalized in ("true", "1", "y", "false", "0", "n"):
+            return normalized in ("true", "1", "y")
     raise ValueError
 
 
@@ -245,7 +254,7 @@ def validate_rows(
         try:
             row.record["abandoned"] = _abandoned(cell(mapping["abandoned"]))
         except ValueError:
-            error("abandoned", "invalid_boolean", "Use true/false or 1/0 for abandonment.")
+            error("abandoned", "invalid_boolean", "Use Y/N, true/false, or 1/0 for abandonment.")
         for name in DURATION_FIELDS:
             try:
                 row.record[name] = _duration(cell(mapping[name]))
@@ -307,11 +316,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate .xlsx call records locally; never connects to a database.")
     parser.add_argument("--file", required=True, type=Path)
     parser.add_argument("--dry-run", action="store_true", required=True, help="Validation only; required to make intent explicit.")
+    parser.add_argument("--profile", choices=("normalized", "partner"), default="normalized",
+                        help="partner: supplied six-column Call Log worksheet; normalized: generic headers/options.")
+    parser.add_argument("--month", help="Optional YYYY-MM month check for the partner profile. Does not certify completeness.")
     parser.add_argument("--sheet", help="Worksheet name (default: first sheet).")
     parser.add_argument("--column-map", type=Path, help="JSON object mapping normalized fields to Excel headers.")
     parser.add_argument("--identifier-column", help="Reliable source ID header; enables within-file duplicate detection.")
     parser.add_argument("--timestamp-format", help="Explicit strptime format for non-ISO text timestamps.")
     args = parser.parse_args(argv)
+    if args.profile == "partner":
+        if any((args.sheet, args.column_map, args.identifier_column, args.timestamp_format)):
+            parser.error("The partner profile supplies the sheet, headers, and no source identifier. Use normalized for custom options.")
+        result = parse_partner_excel(args.file, month=args.month)
+        print(json.dumps(result.report(), indent=2))
+        return 0 if result.ok else 1
+    if args.month is not None:
+        parser.error("--month is available with --profile partner.")
     mapping = None
     if args.column_map:
         try:
@@ -324,6 +344,32 @@ def main(argv: list[str] | None = None) -> int:
                          identifier_column=args.identifier_column, timestamp_format=args.timestamp_format)
     print(json.dumps(result.report(), indent=2))
     return 0 if result.ok else 1
+
+
+def parse_partner_excel(source: str | Path | BinaryIO, *, month: str | None = None,
+                        max_rows: int = 100_000) -> ValidationResult:
+    """Validate the observed partner layout without IDs, credentials or writes.
+
+    All five years can be checked without month. Monthly uploads can specify
+    YYYY-MM to flag out-of-month records. Passing checks cannot prove the
+    original export included all calls or identify duplicate calls without IDs.
+    """
+    selected = None
+    if month is not None:
+        try:
+            if not isinstance(month, str) or not re.fullmatch(r"\d{4}-\d{2}", month):
+                raise ValueError
+            selected = datetime.strptime(month, "%Y-%m")
+        except ValueError:
+            return ValidationResult(file_errors=[ValidationIssue(None, "invalid_month", "Select a reporting month using YYYY-MM.")])
+    result = parse_excel(source, sheet=PARTNER_SHEET, column_map=PARTNER_COLUMNS,
+                         identifier_column=None, max_rows=max_rows)
+    if selected is not None:
+        for row in result.rows:
+            timestamp = row.record.get("start_ts")
+            if timestamp is not None and (timestamp.year, timestamp.month) != (selected.year, selected.month):
+                row.errors.append(ValidationIssue("start_ts", "outside_month", "This call is outside the selected reporting month."))
+    return result
 
 
 if __name__ == "__main__":

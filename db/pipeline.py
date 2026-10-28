@@ -44,11 +44,11 @@ class ExportContract(BaseModel):
     confirmed: bool = False
     confirmed_by: str = ""
     source_namespace: str = Field(min_length=1, max_length=100)
-    identifier_column: str = Field(min_length=1)
+    identifier_column: str | None = Field(default=None, min_length=1)
     sheet: str | None = None
     column_map: dict[str, str] = Field(default_factory=dict)
     timestamp_format: str | None = None
-    timezone: Literal["America/New_York"] = "America/New_York"
+    timezone: Literal["unconfirmed", "America/New_York"] = "unconfirmed"
     duration_unit: Literal["seconds"] = "seconds"
     one_row_per_inbound_call: Literal[True] = True
     correction_policy: Literal["replace_managed_month"] = "replace_managed_month"
@@ -153,6 +153,8 @@ def preview(conn, content, month, uploader, profile):
 def commit_import(conn, batch_id, profile, *, expected_rows, replace_batch_id=None, actor=None):
     if not profile.confirmed or not profile.confirmed_by.strip():
         raise PipelineError("Confirm the historical export format and stable call identifier before enabling imports.")
+    if profile.identifier_column is None:
+        raise PipelineError("Validation without call IDs is supported. Monthly importing without source IDs is not implemented yet.")
     with conn.transaction():
         lock_import(conn)
         batch = conn.execute("SELECT *, expires_at > now() AS fresh FROM pipeline_batches WHERE id=%s FOR UPDATE",

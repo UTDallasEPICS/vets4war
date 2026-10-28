@@ -119,6 +119,16 @@ def test_unconfirmed_contract_count_and_changed_contract_block_import(db, profil
     assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 0
 
 
+def test_no_identifier_profile_can_validate_but_cannot_import_yet(db, profile):
+    no_id = profile.model_copy(update={"identifier_column": None})
+    batch = stage(db, no_id)
+    assert batch["validation"]["ok"]
+    assert not batch["validation"]["duplicate_detection_enabled"]
+    with pytest.raises(pipeline.PipelineError, match="Monthly importing without source IDs is not implemented"):
+        pipeline.commit_import(db, batch["id"], no_id, expected_rows=1)
+    assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 0
+
+
 def test_cross_file_duplicates_rollback_entire_transaction(db, profile):
     import_one(db, profile)
     rows = [[datetime(2026, 8, 1, 12), False, 10, 200, None, 2, "new-id"],
