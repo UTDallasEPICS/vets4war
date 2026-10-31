@@ -32,17 +32,14 @@ integration branch rather than maintain two competing copies. Their preview
 currently checks local file selection/extension/size; it does not parse Excel.
 Their `db/monitor.py` and monitoring/accuracy code remain theirs.
 
-For the first integration, the UI should send a workbook and selected reporting
-month to a **validation-only** backend endpoint. That endpoint is not yet
-implemented in this trimmed branch. It should call
-`parse_partner_excel(binary_stream, month=selected_month)` and return
-`result.report()`. Do not send normalized call records back to
-the browser. This step needs no database connection or migration.
-
-Agree on the final route and request/response format with the frontend owner
-before wiring their page. Authentication for any database-writing endpoint is
-a separate shared integration responsibility. This branch deliberately exposes
-no new unauthenticated import, history, or migration HTTP route.
+The HTTP routes, admin flow, and how imported rows reach the forecast are
+documented in [Admin monthly upload pipeline](admin-upload-pipeline.md).
+`POST /api/admin/validate` returns `parse_partner_excel(...).report()` and
+stores nothing. `POST /api/admin/uploads` stages a batch;
+`POST /api/admin/uploads/{id}/import` copies it into `calls`;
+`GET /api/admin/uploads` returns history. The three uploads routes require
+`require_admin` (Auth0 check still a placeholder). Do not send normalized
+call records back to the browser.
 
 ## Known ingestion work remaining
 
