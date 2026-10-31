@@ -9,6 +9,8 @@ numpy==2.5.3
 lightgbm==4.7.0
 fastapi==0.141.1
 uvicorn==0.52.4
+# FastAPI needs this to accept multipart uploads (the admin Excel upload routes).
+python-multipart==0.0.33
 pytest==9.1.1
 # Reads the partner's monthly call-records Excel files (db/load_week.py).
 openpyxl==3.1.5

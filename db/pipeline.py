@@ -98,7 +98,8 @@ def lock_import(conn):
         raise PipelineError("Another import is running. Try again when it finishes.")
 
 
-def preview(conn, content, month, uploader, profile):
+def check_archive(content):
+    """Refuse oversized or non-ZIP uploads before any worksheet is parsed."""
     if not content or len(content) > MAX_BYTES:
         raise PipelineError("Upload a nonempty Excel file no larger than 25 MB.", 413)
     try:
@@ -108,6 +109,10 @@ def preview(conn, content, month, uploader, profile):
                 raise PipelineError("The expanded workbook is too large.", 413)
     except BadZipFile:
         raise PipelineError("Upload a valid .xlsx workbook.", 400) from None
+
+
+def preview(conn, content, month, uploader, profile):
+    check_archive(content)
     result = parse_excel(BytesIO(content), sheet=profile.sheet, column_map=profile.column_map,
                          timestamp_format=profile.timestamp_format, identifier_column=profile.identifier_column,
                          max_rows=MAX_ROWS)
