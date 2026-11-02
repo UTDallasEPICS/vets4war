@@ -66,6 +66,7 @@ except ImportError:
     sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
 
 from db import pipeline  # noqa: E402
+from api.auth import require_permissions  # noqa: E402
 from db.aht import DEFAULT_RECENCY, RECENCY_OPTIONS  # noqa: E402
 from db.features import SATURDAY_ISODOW, load_holidays  # noqa: E402
 from db.forecast import aht_table, holiday_coverage  # noqa: E402
@@ -576,16 +577,8 @@ def api_model():
 # Admin: monthly Excel uploads
 # =============================================================================
 
-def require_admin() -> dict:
-    """Placeholder until Auth0 token verification lands (api/auth.py).
-
-    Refuses every request unless V4W_INSECURE_DEV_ADMIN names a local
-    developer. Never set that variable on a shared or deployed server: it
-    lets anyone who can reach the API import into the calls table."""
-    dev_user = os.environ.get("V4W_INSECURE_DEV_ADMIN", "").strip()
-    if not dev_user:
-        raise HTTPException(401, "Admin sign-in is not connected to this server yet.")
-    return {"sub": dev_user}
+require_admin = require_permissions("read:admin")
+require_import = require_permissions("read:admin", "import:calls")
 
 
 def _read_upload(file: UploadFile) -> bytes:
@@ -612,17 +605,25 @@ class ImportRequest(BaseModel):
 
 @app.post("/api/admin/validate")
 def api_admin_validate(file: UploadFile = File(...), month: str = Form(...)):
-    """Check a workbook against the partner Call Log layout. Nothing is
+    """Check the configured export layout (default: partner Call Log). Nothing is
     stored, and normalized call records are never sent back to the browser."""
     month_value = pipeline.month_start(month)
     content = _read_upload(file)
     pipeline.check_archive(content)
+    # Match staging's explicit sheet/mapping without opening a DB connection.
+    # An invalid configured contract fails closed; never guess another sheet.
+    options = {}
+    if os.environ.get("V4W_EXPORT_CONTRACT"):
+        profile = pipeline.contract()
+        options = {"sheet": profile.sheet, "column_map": profile.column_map,
+                   "timestamp_format": profile.timestamp_format,
+                   "identifier_column": profile.identifier_column}
     return parse_partner_excel(BytesIO(content), month=month_value.strftime("%Y-%m"),
-                               max_rows=pipeline.MAX_ROWS).report()
+                               max_rows=pipeline.MAX_ROWS, **options).report()
 
 
 @app.post("/api/admin/uploads", status_code=201)
-def api_admin_upload(file: UploadFile = File(...), month: str = Form(...), user: dict = Depends(require_admin)):
+def api_admin_upload(file: UploadFile = File(...), month: str = Form(...), user: dict = Depends(require_import)):
     month_value = pipeline.month_start(month)
     content = _read_upload(file)
     profile = pipeline.contract()
@@ -631,7 +632,7 @@ def api_admin_upload(file: UploadFile = File(...), month: str = Form(...), user:
 
 
 @app.post("/api/admin/uploads/{batch_id}/import")
-def api_admin_import(batch_id: uuid.UUID, body: ImportRequest, user: dict = Depends(require_admin)):
+def api_admin_import(batch_id: uuid.UUID, body: ImportRequest, user: dict = Depends(require_import)):
     profile = pipeline.contract()
     with _pipeline_connection() as conn:
         return pipeline.commit_import(conn, batch_id, profile, expected_rows=body.expected_rows,
@@ -646,6 +647,9 @@ def api_admin_history(user: dict = Depends(require_admin)):
 
 # Mount the static UI only after defining the API routes so `/api/*` requests
 # continue to resolve to their handlers rather than the frontend file server.
+from api.admin import router as admin_router  # noqa: E402
+
+app.include_router(admin_router)
 app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
 
 

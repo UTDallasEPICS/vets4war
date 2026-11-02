@@ -9,9 +9,9 @@ Related docs: [Excel validation](ingestion.md), [ingestion ledger](ingestion-int
 ## Four stages
 
 ```
-1. Sign in          Auth0 in the browser; API must check the token
-2. Upload           File is checked and parked in pipeline_batches
-3. Import           Parked rows are copied into the real calls table
+1. Sign in          Auth0 in the browser; API verifies token and permissions
+2. Validate/review  Validate upload stages a batch and shows its results
+3. Confirm/import  Confirm the source row count, then import the batch
 4. Forecast         Some numbers update on restart; volume needs make train
 ```
 
@@ -24,32 +24,47 @@ The admin opens `/admin.html` and logs in with Auth0. Auth0 returns an
 access token (audience `https://api.vets4warriors.admin`). That token is
 proof of who they are.
 
-The page currently uses the token only to show or hide the admin UI.
-Hiding the page is not security: anyone can call the API directly, so the
-server must check the token too.
+The frontend sends the access token as `Authorization: Bearer <token>` to
+the same-origin API. `api/auth.py` verifies RS256 signatures using cached
+Auth0 JWKS, the configured issuer/audience, expiration, and required claims
+(`exp`, `iss`, `aud`, `sub`). The subject must be nonempty. JWT validation
+allows 30 seconds of clock skew; `iat`, `nbf`, and expiration checks remain
+enabled. Rejection logs contain only allowlisted categories/class labels.
 
-`require_admin()` in `api/main.py` is a placeholder. It returns 401 unless
-`V4W_INSECURE_DEV_ADMIN` is set, in which case every request is treated as
-that user. **Never set that variable on a shared or deployed server.**
-Step 3 replaces this with a real Auth0 check in `api/auth.py` that returns
-`{"sub": ...}`. The three `/api/admin/uploads*` routes already call
-`require_admin`; they do not need to change when the real check lands.
+`GET /api/admin/me` in `api/admin.py` and upload history require
+`read:admin`. Staging and import additionally require `import:calls`.
+Permissions come from the verified token's `permissions` array; roles or
+scope strings do not substitute for it. There is no development auth bypass.
+Configure `AUTH0_DOMAIN` and `AUTH0_AUDIENCE` on the server, and enable RBAC
+and permissions in access tokens for the Auth0 API.
+
+The signed-in header and admin content appear only after `/api/admin/me`
+succeeds. Tokens stay in SDK memory with refresh tokens disabled. Reload
+attempts silent token acquisition; transient acquisition errors get one retry,
+and `login_required` can trigger one guarded top-level silent redirect.
+Failed callbacks do not loop. API 401/403 responses keep admin content hidden.
+If logout fails, content stays hidden and Log out becomes usable for a retry.
+See [Dashboard troubleshooting](admin-dashboard-troubleshooting.md).
 
 `POST /api/admin/validate` does not require sign-in. It stores nothing.
 
 ## Stage 2: Upload (staging)
 
 The admin picks a **completed** reporting month (`YYYY-MM`) and one `.xlsx`
-file. The page sends both to `POST /api/admin/uploads`.
+file. The page defaults to the previous completed month and sets it as the
+maximum selectable month. **Validate upload** sends FormData containing `file`
+and `month` directly to `POST /api/admin/uploads`, using an Auth0 Bearer access
+token. This primary action validates and stages a batch; there is no separate
+Stage upload button. It stores the validation report and, for a valid batch,
+normalized staged records, but does not change `calls`.
 
 The server then:
 
-1. Checks sign-in (`require_admin`).
-2. Rejects the current month and any future month. In October 2026 the
-   latest allowed month is September. Default the month picker to last month.
+1. Verifies `read:admin` and `import:calls` (`require_import`).
+2. Rejects the current month and any future month using the Eastern calendar.
 3. Rejects empty files, files over 25 MB, non-`.xlsx` archives, and
    workbooks that expand past 100 MB / 2,000 ZIP entries / 100,000 rows.
-4. Reads the `Call Log` sheet using the export contract mapping, and
+4. Reads the explicitly configured sheet using the export contract mapping, and
    checks every row (timestamps, Y/N abandon, numeric seconds, all calls
    inside the selected month).
 5. Writes a **batch** to `pipeline_batches`: who uploaded, the month, a
@@ -57,24 +72,47 @@ The server then:
    the cleaned rows. The original workbook is never stored.
 
 Response: `{id, status, validation}` where `status` is `validated` or
-`invalid`. `validation` is the same report shape as
-`parse_partner_excel(...).report()`: `ok`, `summary` (valid / invalid /
-duplicate counts), `file_errors`, `row_errors` (capped at 200),
-`days_without_calls`, `warnings`. Normalized call records are never sent
-back to the browser.
+`invalid` for a new batch; repeat uploads can return an existing batch's state.
+`validation` extends the basic validation report: `ok`, `summary` (valid /
+invalid / duplicate counts), `file_errors`, `row_errors` (capped at 200),
+`month`, `contract_confirmed`, `days_without_calls`, and `warnings`.
+The page retains the returned batch ID for import and displays valid, invalid,
+and duplicate counts, file errors, up to 200 row-error entries, the
+`row_errors_truncated` notice, `days_without_calls`, and warnings. Warnings and
+coverage notices remain visible even when the row-error limit is reached.
+The upload badge reports the actual validation/batch state. Normalized call
+records are never sent back to the browser.
 
 At this point **`calls` is unchanged**. A batch that is not imported
 within 7 days expires. Re-uploading the exact same bytes for the same
 month returns the existing batch.
 
-`POST /api/admin/validate` runs the same checks and stores nothing. Use it
-for a quick "is this file OK?" check.
+**Check without staging** is an optional, separate action that calls
+`POST /api/admin/validate`; it checks archive limits, rows, and reporting month
+without storing a batch or connecting to a database. It remains available to
+signed-in readers without import permission. Passing this optional check does
+not enable import: an importer must use **Validate upload** to obtain a batch.
+It uses the same configured sheet/mapping as staging; without a configured
+contract it uses the standalone `Call Log` partner defaults. An invalid
+configured contract fails closed. Unlike staging, this route returns the
+basic parser report and does not add the staging completeness/contract fields.
+Neither validation success nor date coverage proves a complete monthly export.
 
 ## Stage 3: Import
 
-The admin reads the report, confirms the row count, and clicks **Import**.
-The page sends `POST /api/admin/uploads/{id}/import` with
-`{expected_rows, replace_batch_id?}`.
+The normal workflow is **Validate upload -> review results -> confirm -> import**.
+After reviewing the report, the admin enters the authoritative source export's
+row count and checks the completeness/row-count confirmation box. The
+**Validate & Import** button is enabled only when the retained batch has
+`status === "validated"`, the server contract is confirmed, the entered count
+matches `validation.summary.total_rows`, and the user has import permission.
+Invalid, expired, imported, and superseded batch states cannot enable this button.
+
+Clicking it sends `POST /api/admin/uploads/{id}/import` using the retained batch
+ID and JSON `{expected_rows, replace_batch_id?}`. It does not upload the file
+again. A changed file or reporting month clears the browser's batch/confirmation
+state and requires validation again. No import is sent automatically after
+validation, and mutation requests are never automatically retried.
 
 The server refuses unless all of these hold:
 
@@ -93,9 +131,25 @@ row came from in `pipeline_call_links`, marks the batch `imported`, and
 increments `pipeline_state.revision`. If anything fails, all of it is
 undone.
 
-`GET /api/admin/uploads` returns the last 100 batches for a history table.
-The admin never types their name or email; the server records `uploader`
-and `imported_by` from `require_admin`.
+### Replacement and upload history
+
+An import HTTP 409 does not trigger automatic replacement. The page refreshes
+history, clears the confirmation, and displays the server's conflict detail.
+When history contains the selected month's current imported batch, it offers
+**Replace Current Batch**. Selecting this offer populates the replacement batch
+selector; it does not send a write request. The admin must review the current
+batch, verify the row count, and confirm again. The import action then reads
+**Replace Current Batch** and sends the new staged batch's import request with
+the selected existing batch ID as `replace_batch_id`. The server remains
+authoritative for contract, overlap, expiry, count, and replacement checks.
+
+The history table uses `GET /api/admin/uploads` and shows the last 100 batches:
+month, status, uploader, importer, and batch ID. It refreshes after sign-in,
+validation/staging, successful import, and import conflicts; a Refresh history
+button also reloads it. The admin never types their name or email; the server
+records `uploader` and `imported_by` from the verified JWT subject. Review this
+history after a lost import response before deciding whether another action
+is necessary.
 
 ### Two different switches
 
@@ -106,11 +160,14 @@ and `imported_by` from `require_admin`.
 | How often | Every monthly upload | Once |
 | What it does | Copies that month into `calls` | Allows the Import button to work at all |
 
-The example file `config/export-contract.example.json` is a template. Do
-not edit it. Copy it to `config/export-contract.json`, set `"confirmed":
-true` and `"confirmed_by"` (who flipped the switch, and when), and point
-`V4W_EXPORT_CONTRACT` at the copy. The file is read from disk; the
-browser never sends it.
+The example file `config/export-contract.example.json` is an unconfirmed
+template for the normalized six-column `Call Log` format. Copy it to a
+reviewed server-side contract and point `V4W_EXPORT_CONTRACT` at that file.
+For local testing, `config/export-contract.local.json` is gitignored.
+The contract is read from disk; the browser never supplies it. Keep
+`confirmed: false` and `confirmed_by` empty during unapproved testing.
+Only after team approval should an operator record confirmation and enable
+imports. Setting a worksheet name is not partner approval.
 
 Leave `"confirmed": false` on the real project until the team agrees that
 imports are safe. Uploading and validating still work while it is false.
@@ -153,29 +210,32 @@ project until these are answered):
 
 ## API
 
-All four routes live in `api/main.py`, above the static-file mount.
+The ingestion routes live in `api/main.py`; `/me` is registered from
+`api/admin.py`. All resolve before the static-file mount.
 
 | Method | Path | Auth | Body | Returns |
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/admin/validate` | No | multipart `file` + `month=YYYY-MM` | validation report |
-| `POST` | `/api/admin/uploads` | Yes | multipart `file` + `month=YYYY-MM` | `{id, status, validation}` (201) |
-| `POST` | `/api/admin/uploads/{id}/import` | Yes | JSON `{expected_rows, replace_batch_id?}` | `{id, status: "imported"}` |
-| `GET` | `/api/admin/uploads` | Yes | none | last 100 batches |
+| `GET` | `/api/admin/me` | `read:admin` | none | verified subject and permissions |
+| `POST` | `/api/admin/uploads` | `read:admin` + `import:calls` | multipart `file` + `month=YYYY-MM` | `{id, status, validation}` (201) |
+| `POST` | `/api/admin/uploads/{id}/import` | `read:admin` + `import:calls` | JSON `{expected_rows, replace_batch_id?}` | `{id, status: "imported"}` |
+| `GET` | `/api/admin/uploads` | `read:admin` | none | last 100 batches |
 
-Send the Auth0 token as `Authorization: Bearer <token>` once step 3 lands.
+The frontend sends the Auth0 access token with its API requests.
 Error responses use `{"detail": "..."}` with the pipeline's status:
 
 | Code | Meaning |
 | --- | --- |
 | 400 | Bad month, not a valid `.xlsx` |
-| 401 | Not signed in |
+| 401 | Missing or invalid access token; client detail remains generic |
+| 403 | Required permissions missing |
 | 404 | Batch not found |
 | 409 | Invalid/expired batch, wrong row count, month already imported, contract unconfirmed or changed, unmanaged overlap |
 | 413 | Empty or larger than 25 MB |
-| 503 | Database or export contract not configured |
+| 503 | Database/export contract/authentication configuration unavailable, or JWKS connection failure |
 
-File size limit is 25 MB. The frontend preview currently uses 10 MB; pick
-one when wiring the page.
+Frontend and backend file limits are both 25 MB. Oversized declared request
+bodies can receive 413 from middleware before route authentication/parsing.
 
 ## Database tables
 
@@ -190,9 +250,9 @@ Row-level security is on with no browser policies. The backend connects
 as a privileged role via `V4W_DATABASE_URL` (Supabase **session pooler**,
 port 5432, not the transaction pooler on 6543).
 
-Months already loaded with `db/load_week.py` cannot be imported: those
-rows have no batch link. Only months after the last loaded month import
-cleanly.
+Months containing records loaded outside this ledger, including through
+`db/load_week.py`, are blocked as unmanaged overlap. Reconcile their provenance
+before a separate backfill/correction process; do not remove this safeguard.
 
 Apply explicitly:
 
@@ -225,9 +285,9 @@ on the real project until the team signs off.
 ## Local try
 
 ```sh
-# .env: V4W_DATABASE_URL, V4W_EXPORT_CONTRACT=config/export-contract.example.json
-# LOCAL ONLY:
-V4W_INSECURE_DEV_ADMIN=you@example.com .venv/bin/uvicorn api.main:app --reload
+# Configure Auth0 and an unconfirmed server export contract in local .env.
+# The database is unnecessary for validation-only requests.
+.venv/bin/uvicorn api.main:app --reload
 
 curl -F month=2026-09 -F file=@calls.xlsx http://127.0.0.1:8000/api/admin/validate
 ```
@@ -244,19 +304,37 @@ Never commit partner `.xlsx` files; `.gitignore` already blocks `*.xlsx`,
 | --- | --- | --- |
 | Merge onto `feature/admin-integration` | Done | Backend |
 | Upload / validate / import / history routes | Done (`api/main.py`, `tests/test_admin_api.py`) | Backend |
-| Auth0 token check (`require_admin`) | Placeholder | Frontend / Auth0 |
-| `admin.js` calling the routes | Not connected | Frontend |
-| Supabase migration | Not applied | Backend + Supabase owner |
-| `"confirmed": true` on the real project | Off on purpose | Team decision |
+| Auth0 token and permission checks | Implemented (`api/auth.py`, `api/admin.py`) | Backend / Auth0 |
+| `admin.js` validation, staging, confirmation, replacement, history | Connected | Frontend |
+| Supabase migration | Explicit operator action; deployment status must be checked | Backend + Supabase owner |
+| Production contract approval | Separate team decision; never inferred from a test | Team decision |
 | Retrain after import | Manual `make train` | Model owner |
 
-Frontend notes for wiring `admin.js`:
+Current frontend behavior:
 
-- Default the upload month to **last month**, not the current month.
-- Send `Authorization: Bearer` + the Auth0 token.
-- Fill valid / invalid / duplicate from `validation.summary`.
-- Enable Import only when `status === "validated"`.
-- Confirm `expected_rows` against the source export.
-- If import returns 409 "already imported", offer replace with
-  `replace_batch_id`.
-- Show `detail` from error responses on the page.
+- Defaults the upload month to the previous completed month.
+- Validates/stages through `/api/admin/uploads` with FormData and a Bearer token;
+  Check without staging remains an optional `/api/admin/validate` action.
+- Displays counts, file errors, up to 200 row errors, truncation, coverage,
+  warnings, and dynamic upload/import status badges.
+- Enables Import only for a validated, contract-confirmed batch with a matching
+  source row count and explicit user confirmation.
+- On a 409 conflict, refreshes history and requires explicit replacement
+  selection and renewed confirmation. The replacement request includes
+  `replace_batch_id`; it never automatically repeats an import.
+- Displays pipeline error details and distinguishes API rejection from SDK
+  session-restoration errors. Reports/model-health cards remain unconnected.
+
+## Source-format boundary
+
+The normalized `Call Log` format expects a combined timestamp and headers
+`Call Date/Time`, `Inqueue Time`, `Routing Time`, `Agent Time`, `Abandon`, and
+`Abandon Time`. Routing is optional in the validator. Jim's original exports
+instead use split `Start_Date`/`start_time`, underscore-based duration headers,
+and varying record-sheet names. Changing the sheet alone does not normalize
+those exports. The admin parser currently cannot compose two timestamp fields.
+
+Weekly exports do not establish full-month completeness. Historical multi-sheet
+workbooks and overlapping weekly files require a separate reviewed normalization
+and backfill/reconciliation workflow. Never feed a partial week into whole-month
+replacement or silently select a summary/pivot worksheet.

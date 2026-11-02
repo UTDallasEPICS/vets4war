@@ -1,230 +1,369 @@
-/* Auth0-gated administration preview. Only Auth0 receives authentication calls.
- * Backend authorization, validation, imports, reports, and training remain
- * unconnected; never treat local selection checks as workbook validation.
- */
+﻿/* Same-origin admin client. Access tokens stay in the SDK's memory cache. */
 "use strict";
-
 (() => {
-  const get = (id) => document.getElementById(id);
-  const workbook = get("workbook");
-  const uploadMonth = get("uploadMonth");
-  const reportMonth = get("reportMonth");
-  const status = get("fileStatus");
-  const check = get("checkFile");
-  const clear = get("clearFile");
-  const dropzone = get("dropzone");
-  const maxBytes = 10 * 1024 * 1024;
-  let selectedFile = null;
-
-  // Calendar inputs use the operator's local month, with no UTC conversion.
-  const now = new Date();
-  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-  uploadMonth.value = currentMonth;
-  reportMonth.value = currentMonth;
-
-  function message(text, error = false) {
-    status.textContent = text;
-    status.classList.toggle("error", error);
-  }
-
-  function selectionError(file) {
-    if (!/\.xlsx$/i.test(file.name)) return "Choose an .xlsx workbook. Other file formats are not supported by this preview.";
-    if (file.size === 0) return "The selected file is empty. Choose a nonempty .xlsx workbook.";
-    if (file.size > maxBytes) return "The selected file exceeds the 10 MB preview limit.";
-    return null;
-  }
-
-  function syncButtons() {
-    check.disabled = !selectedFile || !/^\d{4}-\d{2}$/.test(uploadMonth.value) || !uploadMonth.checkValidity();
-    clear.disabled = !selectedFile && !workbook.value;
-  }
-
-  function selectFiles(files) {
-    selectedFile = null;
-    if (files.length !== 1) {
-      workbook.value = "";
-      message(files.length ? "Choose exactly one workbook at a time." : "No file selected. Nothing has been uploaded.", files.length > 0);
-      syncButtons();
-      return;
-    }
-    const file = files[0];
-    const error = selectionError(file);
-    if (error) {
-      workbook.value = "";
-      message(error, true);
-    } else {
-      selectedFile = file;
-      message(`${file.name} · ${(file.size / 1024).toFixed(1)} KB selected locally. Workbook validation has not run.`);
-    }
-    syncButtons();
-  }
-
-  workbook.addEventListener("change", () => selectFiles(workbook.files));
-  uploadMonth.addEventListener("input", () => {
-    syncButtons();
-    if (selectedFile) message("Reporting month changed. Check the file selection again; workbook contents remain unvalidated.");
-  });
-  check.addEventListener("click", () => {
-    if (!selectedFile || check.disabled) return;
-    const error = selectionError(selectedFile);
-    if (error) { message(error, true); return; }
-    message(`Local selection checks passed for ${uploadMonth.value}: .xlsx extension and file size only. Workbook contents, row dates, and duplicates have NOT been validated. Nothing was uploaded.`);
-  });
-  clear.addEventListener("click", () => {
-    selectedFile = null;
-    workbook.value = "";
-    message("File cleared. Nothing has been uploaded or stored.");
-    syncButtons();
-  });
-
-  // Dropping files never reads their contents or sends them to a server.
-  let dragDepth = 0;
-  dropzone.addEventListener("dragenter", (event) => {
-    event.preventDefault();
-    dragDepth += 1;
-    dropzone.classList.add("dragging");
-  });
-  dropzone.addEventListener("dragover", (event) => event.preventDefault());
-  dropzone.addEventListener("dragleave", () => {
-    dragDepth = Math.max(0, dragDepth - 1);
-    if (dragDepth === 0) dropzone.classList.remove("dragging");
-  });
-  dropzone.addEventListener("drop", (event) => {
-    event.preventDefault();
-    dragDepth = 0;
-    dropzone.classList.remove("dragging");
-    workbook.value = "";
-    selectFiles(event.dataTransfer.files);
-  });
-  // Prevent accidental browser navigation if a file misses the drop target.
-  window.addEventListener("dragover", (event) => event.preventDefault());
-  window.addEventListener("drop", (event) => event.preventDefault());
-
-  function updateReport() {
-    const month = reportMonth.value;
-    get("reportMonthLabel").textContent = month || "Select a month";
-    get("reportStatus").textContent = month
-      ? `No report is connected for ${month}. All accuracy values are placeholders; no request was sent.`
-      : "Select a reporting month. Monthly reports are not connected.";
-  }
-  reportMonth.addEventListener("input", updateReport);
-  syncButtons();
-  updateReport();
-
-  // Public SPA configuration, not credentials. Never add a client secret here.
-  const authConfig = {
+  const get = id => document.getElementById(id);
+  const config = {
     domain: "dev-f1eoazec4c5dukjs.us.auth0.com",
     clientId: "OrI6PaDntfNRXjZ0xYFjukTKgZr8qWwN",
-    cacheLocation: "memory",
-    useRefreshTokens: false,
-    authorizationParams: {
-      audience: "https://api.vets4warriors.admin",
-      scope: "openid profile email",
-      redirect_uri: `${window.location.origin}/admin.html`,
-    },
+    cacheLocation: "memory", useRefreshTokens: false,
+    authorizationParams: { audience: "https://api.vets4warriors.admin", scope: "openid profile email",
+      redirect_uri: `${window.location.origin}/admin.html` },
   };
-  const login = get("login");
-  const logout = get("logout");
-  const authStatus = get("authStatus");
-  const content = get("adminContent");
-  const gate = get("authGate");
-  const email = get("userEmail");
-  let client = null;
-
+  let client, selectedFile, batch;
+  let authorized = false, canImport = false, busy = false, generation = 0;
+  let replacementOffered = false;
+  const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+  let history = [];
+  let historyLoaded = false, historyLoading = false, historyRequest = 0;
+  const requests = new Set();
+  let restoring = false;
+  // Nonsecret loop guard only: tokens remain exclusively in SDK memory.
+  const recoveryKey = "v4w.admin.silent-recovery";
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric", month: "2-digit" }).formatToParts(new Date());
+  const year = Number(parts.find(p => p.type === "year").value);
+  const month = Number(parts.find(p => p.type === "month").value);
+  const previousMonth = `${month === 1 ? year - 1 : year}-${String(month === 1 ? 12 : month - 1).padStart(2,"0")}`;
+  get("uploadMonth").value = previousMonth; get("uploadMonth").max = previousMonth;
+  get("reportMonth").value = previousMonth; get("reportMonth").max = previousMonth;
+  const message = (id, text) => { get(id).textContent = text; };
+  const current = version => version === generation;
+  function syncButtons() {
+    const validMonth = /^\d{4}-\d{2}$/.test(get("uploadMonth").value) && get("uploadMonth").checkValidity();
+    get("checkFile").disabled = busy || !authorized || !canImport || !selectedFile || !validMonth;
+    get("stageFile").disabled = busy || !authorized || !selectedFile || !validMonth;
+    const count = Number(get("expectedRows").value);
+    get("importFile").disabled = busy || !authorized || !canImport || !batch || batch.status !== "validated" ||
+      !batch.validation.contract_confirmed || !get("confirmImport").checked ||
+      !Number.isInteger(count) || count < 1 || count !== batch.validation.summary.total_rows;
+    get("importFile").textContent = get("replaceBatch").value ? "Replace Current Batch" : "Validate & Import";
+    const previous = currentImportedBatch();
+    get("replaceCurrentBatch").hidden = !replacementOffered || !previous || get("replaceBatch").value === previous.id;
+    get("replaceCurrentBatch").disabled = busy || !authorized || !canImport || !batch || batch.status !== "validated";
+    get("clearFile").disabled = busy || !selectedFile;
+    get("workbook").disabled = busy; get("uploadMonth").disabled = busy;
+    get("refreshHistory").disabled = busy || !authorized || historyLoading;
+  }
+  function currentImportedBatch() {
+    return history.find(row => row.status === "imported" && row.month.slice(0,7) === get("uploadMonth").value);
+  }
+  function uploadStatus(text, pending = true) {
+    message("uploadStatus",text); get("uploadStatus").classList.toggle("pending",pending);
+  }
+  function renderReplacements() {
+    const select = get("replaceBatch"), previous = select.value;
+    const rows = history.filter(row => row.status === "imported" && row.month.slice(0,7) === get("uploadMonth").value);
+    select.replaceChildren();
+    const none = document.createElement("option"); none.value = ""; none.textContent = "No replacement"; select.append(none);
+    for (const row of rows) {
+      const option = document.createElement("option"); option.value = row.id;
+      option.textContent = `${row.month.slice(0,7)} · ${row.id}`; select.append(option);
+    }
+    if (rows.some(row => row.id === previous)) select.value = previous;
+  }
+  function resetValidation() {
+    batch = null; replacementOffered = false; get("confirmImport").checked = false; get("expectedRows").value = "";
+    uploadStatus("Not validated");
+    message("validationState","Not run"); message("validationCounts","— / — / —");
+    get("validationIssues").replaceChildren(); message("importStatus",""); renderReplacements(); syncButtons();
+  }
   function hideContent() {
-    content.hidden = true;
-    gate.hidden = false;
-    email.hidden = true;
-    email.textContent = "";
+    authorized = false; canImport = false; get("adminContent").hidden = true;
+    get("logout").hidden = true;
+    get("authGate").hidden = false; get("userEmail").hidden = true; message("userEmail",""); syncButtons();
   }
-
-  function authMessage(text) {
-    // Never display SDK errors, callback parameters, profiles, or tokens.
-    authStatus.textContent = text;
+  function expireSession() {
+    generation++;
+    for (const controller of requests) controller.abort();
+    hideContent(); selectedFile = null; get("workbook").value = "";
+    message("apiStatus",""); get("login").hidden = false; get("retrySession").hidden = true;
+    history = []; get("historyRows").replaceChildren(); resetValidation();
+    historyLoaded = false; historyLoading = false;
+    message("refreshHistory","Refresh history"); message("historyRefreshedAt","Not refreshed yet.");
   }
-
-  function clearCallbackParameters() {
-    const url = new URL(window.location.href);
-    for (const key of ["code", "state", "error", "error_description", "error_uri", "iss", "session_state"]) {
-      url.searchParams.delete(key);
-    }
-    window.history.replaceState({}, document.title, url.pathname + url.search + url.hash);
+  function authError(error) {
+    const code = error && error.error;
+    const allowed = ["login_required", "consent_required", "interaction_required", "timeout", "network_error", "request_error"];
+    const safeCode = allowed.includes(code) ? code : error && error.name === "TypeError" ? "network_error" : "unknown";
+    const result = new Error("Session verification failed.");
+    result.authCode = safeCode;
+    return result;
   }
-
-  login.addEventListener("click", async () => {
-    if (!client || login.disabled) return;
-    login.disabled = true;
-    authMessage("Redirecting to Auth0…");
-    try {
-      // The official SPA SDK handles PKCE, state, and nonce verification.
-      await client.loginWithRedirect();
-    } catch (_) {
-      hideContent();
-      login.disabled = false;
-      authMessage("Sign-in could not start. Please try again.");
-    }
-  });
-
-  logout.addEventListener("click", async () => {
-    hideContent();
-    selectedFile = null;
-    workbook.value = "";
-    syncButtons();
-    message("File cleared. Nothing has been uploaded or stored.");
-    login.disabled = true;
-    logout.disabled = true;
-    authMessage("Signing out…");
-    try {
-      await client.logout({ logoutParams: { returnTo: authConfig.authorizationParams.redirect_uri } });
-    } catch (_) {
-      // Keep content hidden even when Auth0 logout cannot complete.
-      logout.disabled = false;
-      login.disabled = false;
-      authMessage("Sign-out could not complete. Try logging out again to end the Auth0 session.");
-    }
-  });
-
-  async function initializeAuth() {
-    hideContent();
-    const params = new URLSearchParams(window.location.search);
-    const callback = params.has("code") || params.has("error") || params.has("state");
-    try {
-      if (!window.auth0 || typeof window.auth0.Auth0Client !== "function") {
-        authMessage("Auth0 could not load. Check your connection and reload this page.");
-        return;
+  function transient(error) {
+    return ["timeout", "network_error", "request_error"].includes(error.authCode);
+  }
+  async function accessToken(version) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const token = await client.getTokenSilently();
+        if (!token) throw {error: "login_required"};
+        return token;
+      } catch (error) {
+        const failure = authError(error);
+        // Retry token acquisition only. Never automatically repeat an upload
+        // or import whose transaction may already have completed.
+        if (!current(version) || attempt || !transient(failure)) throw failure;
       }
-      client = new window.auth0.Auth0Client(authConfig);
-      if (callback) {
-        try {
-          await client.handleRedirectCallback();
-        } finally {
-          clearCallbackParameters();
+    }
+  }
+  function showSessionFailure(error) {
+    const interactive = ["login_required", "consent_required", "interaction_required"].includes(error.authCode) || error.status === 401;
+    const denied = error.status === 403;
+    message("authTitle", denied ? "Admin access denied" : interactive ? "Staff sign-in" : "Session check unavailable");
+    message("authStatus", denied ? "Your account does not have the required admin permissions." :
+      error.status === 401 ? "The admin API rejected the access token (401). Log in again to continue." :
+      error.authCode === "login_required" ? "Sign in to continue." :
+      interactive ? `Auth0 requires a sign-in or consent check (${error.authCode || "invalid_token"}). Use Log in to continue.` :
+      error.authCode ? `Silent restoration could not complete (${error.authCode}). Retry the session check; this does not necessarily mean your session expired.` :
+      "The admin API could not verify access. Retry the session check when the connection or service is available.");
+    get("retrySession").hidden = interactive || denied;
+    get("login").hidden = !interactive && !denied;
+  }
+  function clearRecovery() {
+    try { window.sessionStorage.removeItem(recoveryKey); } catch (_) { /* Storage is optional. */ }
+  }
+  async function recoverTopLevel(error) {
+    if (error.authCode !== "login_required") return;
+    try {
+      // A top-level prompt=none request can use the Auth0 session cookie when
+      // the hidden iframe cannot. Allow one attempt, never a redirect loop.
+      if (window.sessionStorage.getItem(recoveryKey)) return;
+      window.sessionStorage.setItem(recoveryKey,"attempted");
+    } catch (_) { return; } // No loop guard available: use explicit login.
+    try { await client.loginWithRedirect({authorizationParams:{prompt:"none"}}); }
+    catch (_) { showSessionFailure(error); }
+  }
+  async function api(path, options = {}) {
+    const version = generation;
+    const token = await accessToken(version);
+    if (!current(version)) throw new Error("Request cancelled.");
+    const controller = new AbortController(); requests.add(controller);
+    try {
+      const response = await fetch(path, { ...options,
+        headers: { ...options.headers, Authorization: `Bearer ${token}` },
+        cache: "no-store", redirect: "error", signal: controller.signal });
+      if (!current(version)) throw new Error("Request cancelled.");
+      let body = null;
+      try { body = await response.json(); } catch (_) { /* HTTP auth status still applies. */ }
+      if (!current(version)) throw new Error("Request cancelled.");
+      if (!response.ok) {
+        const error = new Error(body && typeof body.detail === "string" ? body.detail : `Request failed (${response.status}).`);
+        error.status = response.status; throw error;
+      }
+      if (body === null) throw new Error("Invalid API response.");
+      return body;
+    } catch (error) {
+      if (error.status) throw error;
+      const failure = new Error("The request could not complete. Check your connection and try again.");
+      failure.apiFailure = true;
+      throw failure;
+    } finally { requests.delete(controller); }
+  }
+  async function refreshHistory() {
+    const version = generation, request = ++historyRequest;
+    historyLoading = true;
+    message("refreshHistory","Refreshing..."); message("historyStatus","Loading upload history..."); syncButtons();
+    try {
+      const rows = await api("/api/admin/uploads");
+      if (!current(version) || request !== historyRequest) return;
+      // Compare response data without depending on JSON object key order.
+      const canonical = value => Array.isArray(value) ? value.map(canonical) :
+        value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key,canonical(value[key])])) : value;
+      const unchanged = historyLoaded && JSON.stringify(canonical(rows)) === JSON.stringify(canonical(history));
+      history = rows; historyLoaded = true;
+      const table = get("historyRows"); table.replaceChildren();
+      for (const item of rows) {
+        const row = document.createElement("tr");
+        for (const value of [item.month.slice(0,7),item.status,item.uploader,item.imported_by || "—",item.id]) {
+          const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
         }
-      } else {
-        await client.checkSession();
+        table.append(row);
       }
-      if (!(await client.isAuthenticated())) {
-        authMessage("Sign in to view the admin interface.");
-        return;
-      }
-      logout.hidden = false;
-      // Request a token for the configured API. It stays in the SDK's memory
-      // cache: never log, render, persist, or send it to an unconnected backend.
-      await client.getTokenSilently();
-      const user = await client.getUser();
-      email.textContent = user && typeof user.email === "string" ? user.email : "Signed in (email unavailable)";
-      email.hidden = false;
-      gate.hidden = true;
-      content.hidden = false;
-    } catch (_) {
-      hideContent();
-      authMessage("Sign-in or API token request failed. Try logging in again; if this continues, ask an administrator to check Auth0 configuration.");
+      renderReplacements();
+      const count = rows.length ? `${rows.length} uploads shown.` : "No uploads yet.";
+      message("historyStatus",unchanged ? `No changes. ${count}` : count);
+      message("historyRefreshedAt",`Last refreshed: ${new Date().toLocaleString(undefined,{timeZoneName:"short"})}`);
     } finally {
-      // Clean even an error callback received while the SDK was unavailable.
-      if (callback) clearCallbackParameters();
-      login.disabled = !client;
+      if (current(version) && request === historyRequest) {
+        historyLoading = false; message("refreshHistory","Refresh history"); syncButtons();
+      }
     }
   }
-
-  initializeAuth();
+  function showReport(report) {
+    const summary = report.summary;
+    message("validationState",report.ok ? "Passed" : "Failed");
+    message("validationCounts",`${summary.valid_rows} / ${summary.invalid_rows} / ${summary.duplicate_rows}`);
+    const list = get("validationIssues"); list.replaceChildren();
+    function issue(text) { const li = document.createElement("li"); li.textContent = text; list.append(li); }
+    for (const error of report.file_errors || []) issue(error.message);
+    const rows = report.row_errors || [];
+    for (const row of rows.slice(0,200)) issue(`Row ${row.row_number}: ${row.errors.map(error => error.message).join("; ")}`);
+    if (report.row_errors_truncated || rows.length > 200) issue("Only the first 200 row errors are shown.");
+    if (report.days_without_calls && report.days_without_calls.length) issue(`Days without calls: ${report.days_without_calls.join(", ")}. Verify completeness.`);
+    for (const warning of report.warnings || []) issue(warning);
+  }
+  function selectFiles(files) {
+    if (busy) return;
+    selectedFile = null; resetValidation();
+    const file = files.length === 1 ? files[0] : null;
+    if (!file || !/\.xlsx$/i.test(file.name) || !file.size || file.size > MAX_UPLOAD_BYTES) {
+      get("workbook").value = ""; message("fileStatus","Choose exactly one nonempty .xlsx workbook, up to 25 MB.");
+    } else { selectedFile = file; message("fileStatus",canImport ? `${file.name} selected. Validate upload to stage a batch for review.` : `${file.name} selected. Use Check without staging; uploading requires import permission.`); }
+    syncButtons();
+  }
+  async function action(id, operation) {
+    if (busy || !authorized) return;
+    busy = true; syncButtons(); const version = generation;
+    try { await operation(version); }
+    catch (error) {
+      if (current(version)) {
+        if (error.authCode || error.status === 401 || error.status === 403) {
+          expireSession(); showSessionFailure(error);
+        } else {
+          message(id,error.message);
+          if (id === "fileStatus") uploadStatus("Validation unavailable");
+          if (id === "importStatus") uploadStatus(error.status ? "Import rejected" : "Import status unknown");
+        }
+      }
+    }
+    finally { busy = false; syncButtons(); }
+  }
+  function workbookBody() {
+    const form = new FormData(); form.append("file",selectedFile); form.append("month",get("uploadMonth").value); return form;
+  }
+  get("workbook").addEventListener("change",() => selectFiles(get("workbook").files));
+  get("uploadMonth").addEventListener("input",() => {
+    resetValidation();
+    if (selectedFile) message("fileStatus","Reporting month changed. Validate the workbook again before staging.");
+  });
+  get("clearFile").addEventListener("click",() => { selectedFile = null; get("workbook").value = ""; resetValidation(); message("fileStatus","File cleared."); });
+  for (const name of ["dragenter","dragover"]) get("dropzone").addEventListener(name,event => event.preventDefault());
+  get("dropzone").addEventListener("drop",event => { event.preventDefault(); selectFiles(event.dataTransfer.files); });
+  for (const name of ["dragover","drop"]) window.addEventListener(name,event => event.preventDefault());
+  for (const id of ["expectedRows","confirmImport"]) get(id).addEventListener("input",syncButtons);
+  get("replaceBatch").addEventListener("change",() => { get("confirmImport").checked = false; syncButtons(); });
+  get("replaceCurrentBatch").addEventListener("click",() => {
+    if (get("replaceCurrentBatch").disabled) return;
+    const previous = currentImportedBatch();
+    if (!previous) return;
+    get("replaceBatch").value = previous.id; get("confirmImport").checked = false;
+    message("importStatus",`Selected current batch ${previous.id} for replacement. Verify the source row count and confirm again before replacing its calls.`);
+    syncButtons();
+  });
+  get("checkFile").addEventListener("click",() => {
+    if (get("checkFile").disabled) return;
+    return action("fileStatus",async version => {
+      resetValidation();
+      uploadStatus("Validating upload...");
+      const result = await api("/api/admin/uploads",{method:"POST",body:workbookBody()});
+      if (!current(version)) return;
+      batch = result; showReport(batch.validation);
+      uploadStatus(batch.status === "validated" ? "Validated batch" : batch.status === "invalid" ? "Validation failed" : `Batch ${batch.status}`,batch.status !== "validated");
+      message("fileStatus",`Batch ${batch.id}: ${batch.status}. This request did not change calls.`);
+      message("importStatus",batch.status !== "validated" ? "This batch cannot be imported. Select a fresh workbook." :
+        batch.validation.contract_confirmed ? "Verify the source row count and confirm before importing." : "Import is disabled until the team confirms the server export contract.");
+      await refreshHistory();
+    });
+  });
+  get("stageFile").addEventListener("click",() => {
+    if (get("stageFile").disabled) return;
+    return action("fileStatus",async version => {
+      resetValidation(); uploadStatus("Checking without staging...");
+      const report = await api("/api/admin/validate",{method:"POST",body:workbookBody()});
+      if (!current(version)) return;
+      showReport(report); uploadStatus(report.ok ? "Checked, not staged" : "Validation failed");
+      message("fileStatus",report.ok ? "Checks passed. Nothing stored. Validate upload to stage a batch before importing." : "Validation failed. Correct the workbook and try again.");
+    });
+  });
+  get("importFile").addEventListener("click",() => {
+    if (get("importFile").disabled) return;
+    return action("importStatus",async version => {
+      const body = {expected_rows:Number(get("expectedRows").value)}, replacement = get("replaceBatch").value;
+      if (replacement) body.replace_batch_id = replacement;
+      get("confirmImport").checked = false;
+      try {
+        const result = await api(`/api/admin/uploads/${encodeURIComponent(batch.id)}/import`,{
+          method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+        if (!current(version)) return;
+        batch.status = result.status;
+        replacementOffered = false; uploadStatus("Imported",false);
+        message("importStatus","Import completed. Calls updated; retraining remains manual. Call-derived caches update after an API restart.");
+      } catch (error) {
+        if (current(version) && error.status === 409) {
+          await refreshHistory();
+          replacementOffered = true;
+          uploadStatus("Import conflict");
+          message("importStatus",`${error.message} Review history and explicitly choose a replacement if needed, then confirm again.`); return;
+        }
+        throw error;
+      }
+      await refreshHistory();
+    });
+  });
+  get("refreshHistory").addEventListener("click",() => action("historyStatus",refreshHistory));
+  function updateReport() {
+    const value = get("reportMonth").value; message("reportMonthLabel",value || "Select a month");
+    message("reportStatus",value ? `No report is connected for ${value}. Accuracy values remain unavailable.` : "Select a reporting month. Monthly reports are not connected.");
+  }
+  get("reportMonth").addEventListener("input",updateReport);
+  get("login").addEventListener("click",async () => {
+    if (!client || get("login").disabled) return;
+    get("login").disabled = true;
+    clearRecovery();
+    try { await client.loginWithRedirect(); }
+    catch (_) { message("authStatus","Sign-in could not start. Please try again."); get("login").disabled = false; }
+  });
+  get("logout").addEventListener("click",async () => {
+    clearRecovery();
+    expireSession(); message("apiStatus",""); get("logout").disabled = true; get("login").disabled = true;
+    try { await client.logout({logoutParams:{returnTo:config.authorizationParams.redirect_uri}}); }
+    catch (_) { message("authStatus","Sign-out could not complete. Try logging out again to end the Auth0 session."); get("logout").hidden = false; get("logout").disabled = false; get("login").disabled = false; }
+  });
+  function clearCallback() {
+    const url = new URL(window.location.href);
+    for (const key of ["code","state","error","error_description","error_uri","iss","session_state"]) url.searchParams.delete(key);
+    window.history.replaceState({},document.title,url.pathname+url.search+url.hash);
+  }
+  async function initializeAuth() {
+    if (restoring) return;
+    restoring = true;
+    get("retrySession").disabled = true; get("retrySession").hidden = true;
+    get("login").disabled = true;
+    hideContent(); const params = new URLSearchParams(window.location.search);
+    const callback = params.has("code") || params.has("error") || params.has("state"), version = generation;
+    try {
+      if (!window.auth0 || typeof window.auth0.Auth0Client !== "function") { message("authStatus","Auth0 could not load. Check your connection and reload."); return; }
+      if (!client) client = new window.auth0.Auth0Client(config);
+      if (callback) { try { await client.handleRedirectCallback(); } finally { clearCallback(); } }
+      // Direct silent acquisition attempts restoration even without the optional
+      // checkSession marker cookie. Interactive fallback requires a user click.
+      const identity = await api("/api/admin/me"), user = await client.getUser();
+      if (!current(version)) return;
+      clearRecovery();
+      canImport = identity.permissions.includes("import:calls"); authorized = true;
+      message("apiStatus","Admin API access verified."); message("userEmail",user && user.email || "Signed in");
+      get("userEmail").hidden = false; get("logout").hidden = false;
+      get("authGate").hidden = true; get("adminContent").hidden = false; syncButtons();
+      try { await refreshHistory(); }
+      catch (error) {
+        if (!current(version)) return;
+        if (error.authCode || error.status === 401 || error.status === 403) {
+          expireSession(); showSessionFailure(error);
+        } else message("historyStatus",error.message);
+      }
+    } catch (error) {
+      if (current(version)) {
+        expireSession();
+        const failure = error.authCode || error.status || error.apiFailure ? error : authError(error);
+        showSessionFailure(failure);
+        // Never retry an error callback or a backend authorization denial.
+        if (!callback) await recoverTopLevel(failure);
+      }
+    } finally {
+      if (callback) clearCallback();
+      restoring = false;
+      get("login").disabled = !client; get("retrySession").disabled = !client;
+    }
+  }
+  get("retrySession").addEventListener("click",initializeAuth);
+  updateReport(); syncButtons(); initializeAuth();
 })();

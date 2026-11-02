@@ -18,6 +18,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from api.main import app
+from api.auth import verify_token
 from db import pipeline
 from db.ingest import PARTNER_COLUMNS
 
@@ -27,9 +28,9 @@ SEPTEMBER = [datetime(2026, 9, 1, 12), 10, 2, 300, "N", 0]
 client = TestClient(app)
 
 
-def workbook(rows=(SEPTEMBER,)):
+def workbook(rows=(SEPTEMBER,), *, sheet="Call Log"):
     wb = Workbook()
-    wb.active.title = "Call Log"
+    wb.active.title = sheet
     wb.active.append(["Call Date/Time", "Inqueue Time", "Routing Time", "Agent Time", "Abandon", "Abandon Time"])
     for row in rows:
         wb.active.append(list(row))
@@ -46,6 +47,7 @@ def post_file(path, content, month="2026-09"):
 @pytest.fixture(autouse=True)
 def no_dev_admin(monkeypatch):
     monkeypatch.delenv("V4W_INSECURE_DEV_ADMIN", raising=False)
+    monkeypatch.delenv("V4W_EXPORT_CONTRACT", raising=False)
 
 
 # --- validation only: no database, no sign-in --------------------------------
@@ -118,7 +120,18 @@ def test_dsn():
 
 
 @pytest.fixture
-def admin_db(test_dsn, monkeypatch):
+def authorized_actor():
+    # Domain tests bypass only signature retrieval; real JWT route tests live in test_auth.py.
+    app.dependency_overrides[verify_token] = lambda: {
+        "sub": "auth0|test-admin", "permissions": ["read:admin", "import:calls"]}
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(verify_token, None)
+
+
+@pytest.fixture
+def admin_db(test_dsn, monkeypatch, authorized_actor):
     schema = "admin_api_test_" + uuid.uuid4().hex
     with psycopg.connect(test_dsn, autocommit=True, row_factory=dict_row) as conn:
         conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
@@ -133,7 +146,6 @@ def admin_db(test_dsn, monkeypatch):
         monkeypatch.setattr(pipeline, "contract", lambda: profile)
         monkeypatch.setattr(pipeline, "connect", lambda: psycopg.connect(
             test_dsn, row_factory=dict_row, options=f"-c search_path={schema}"))
-        monkeypatch.setenv("V4W_INSECURE_DEV_ADMIN", "dev-admin@example.test")
         try:
             yield conn
         finally:
@@ -159,7 +171,7 @@ def test_upload_import_and_history(admin_db):
     history = client.get("/api/admin/uploads").json()
     assert history[0]["id"] == batch["id"]
     assert history[0]["status"] == "imported"
-    assert history[0]["uploader"] == history[0]["imported_by"] == "dev-admin@example.test"
+    assert history[0]["uploader"] == history[0]["imported_by"] == "auth0|test-admin"
 
 
 def test_invalid_workbook_is_staged_as_invalid_and_cannot_import(admin_db):
@@ -195,7 +207,52 @@ def test_unknown_batch_is_not_found(admin_db):
     assert response.status_code == 404
 
 
-def test_missing_database_configuration_is_a_service_error(monkeypatch):
-    monkeypatch.setenv("V4W_INSECURE_DEV_ADMIN", "dev-admin@example.test")
+def test_missing_database_configuration_is_a_service_error(monkeypatch, authorized_actor):
     monkeypatch.delenv("V4W_DATABASE_URL", raising=False)
     assert client.get("/api/admin/uploads").status_code == 503
+
+
+def test_configured_worksheet_validation_is_explicit_and_database_free(tmp_path, monkeypatch):
+    import json
+    contract = tmp_path / "synthetic-contract.json"
+    contract.write_text(json.dumps({
+        "source_namespace": "synthetic", "sheet": "Synthetic Export", "column_map": PARTNER_COLUMNS,
+        "confirmed": False,
+    }))
+    monkeypatch.setenv("V4W_EXPORT_CONTRACT", str(contract))
+    def no_database():
+        pytest.fail("Validation must not connect to a database")
+    monkeypatch.setattr(pipeline, "connect", no_database)
+    wrong = post_file("/api/admin/validate", workbook())
+    assert wrong.status_code == 200
+    assert wrong.json()["file_errors"][0]["code"] == "missing_sheet"
+    response = post_file("/api/admin/validate", workbook(sheet="Synthetic Export"))
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert "records" not in response.json()
+    outside = post_file("/api/admin/validate", workbook(
+        [[datetime(2026, 8, 1), 10, 2, 300, "N", 0]], sheet="Synthetic Export"))
+    assert outside.json()["ok"] is False
+    assert outside.json()["row_errors"][0]["errors"][0]["code"] == "outside_month"
+
+
+def test_invalid_configured_contract_does_not_fall_back_to_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("V4W_EXPORT_CONTRACT", str(tmp_path / "missing-contract.json"))
+    response = post_file("/api/admin/validate", workbook())
+    assert response.status_code == 503
+
+
+def test_configured_validation_and_staging_use_the_same_worksheet(admin_db, monkeypatch):
+    profile = pipeline.contract().model_copy(update={"sheet": "Synthetic Export", "confirmed": False})
+    monkeypatch.setattr(pipeline, "contract", lambda: profile)
+    monkeypatch.setenv("V4W_EXPORT_CONTRACT", "synthetic-test-contract")
+    content = workbook(sheet="Synthetic Export")
+    validation = post_file("/api/admin/validate", content)
+    staged = stage(content)
+    assert validation.json()["ok"] is True
+    assert staged["validation"]["ok"] is True
+    assert staged["validation"]["summary"] == validation.json()["summary"]
+    assert staged["validation"]["contract_confirmed"] is False
+    response = client.post(f"/api/admin/uploads/{staged['id']}/import", json={"expected_rows": 1})
+    assert response.status_code == 409
+    assert admin_db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 0

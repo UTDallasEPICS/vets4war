@@ -347,7 +347,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def parse_partner_excel(source: str | Path | BinaryIO, *, month: str | None = None,
-                        max_rows: int = 100_000) -> ValidationResult:
+                        max_rows: int = 100_000, sheet: str | None = PARTNER_SHEET,
+                        column_map: dict[str, str] | None = None,
+                        timestamp_format: str | None = None,
+                        identifier_column: str | None = None) -> ValidationResult:
     """Validate the observed partner layout without IDs, credentials or writes.
 
     All five years can be checked without month. Monthly uploads can specify
@@ -362,8 +365,12 @@ def parse_partner_excel(source: str | Path | BinaryIO, *, month: str | None = No
             selected = datetime.strptime(month, "%Y-%m")
         except ValueError:
             return ValidationResult(file_errors=[ValidationIssue(None, "invalid_month", "Select a reporting month using YYYY-MM.")])
-    result = parse_excel(source, sheet=PARTNER_SHEET, column_map=PARTNER_COLUMNS,
-                         identifier_column=None, max_rows=max_rows)
+    # The HTTP validator can use the same explicit server export contract as
+    # staging. Standalone partner validation retains its original defaults.
+    result = parse_excel(source, sheet=sheet,
+                         column_map=PARTNER_COLUMNS if column_map is None else column_map,
+                         timestamp_format=timestamp_format,
+                         identifier_column=identifier_column, max_rows=max_rows)
     if selected is not None:
         for row in result.rows:
             timestamp = row.record.get("start_ts")
