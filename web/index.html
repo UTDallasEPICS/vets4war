@@ -7,23 +7,26 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<script src="theme.js"></script>
 <style>
   /* Layout: a calm, near-solid grid is the work surface; liquid glass is kept
      for the floating chrome (top bar, control dock, detail sheet) that sits
      over a soft colour field. Blur never sits behind the numbers. */
   :root {
     color-scheme: light;
-    --field: #eef2fb;
-    --blob-a: #7aa7ff; --blob-b: #b9a6ff; --blob-c: #a8f0e0;
+    --field: #f3f4f6;
+    --blob-a: #ffffff; --blob-b: #e5e7eb; --blob-c: #f5f0e8;
     --ink: #0f172a; --ink-2: #475569; --ink-3: #64748b;
     --accent: #3b82f6; --accent-ink: #1d4ed8; --accent-soft: rgba(59,130,246,0.14);
-    --glass: rgba(255,255,255,0.55); --glass-strong: rgba(255,255,255,0.86);
-    --glass-edge: rgba(255,255,255,0.7); --glass-hi: rgba(255,255,255,0.9);
+    --glass: rgba(255,255,255,0.42); --glass-strong: rgba(255,255,255,0.72);
+    --glass-edge: rgba(255,255,255,0.85); --glass-hi: rgba(255,255,255,1);
+    --glass-blur: blur(28px) saturate(140%);
+    --sticky: #f7f7f8; /* solid: grid headers must hide rows scrolling under them */
     --hairline: rgba(15,23,42,0.08); --hairline-2: rgba(15,23,42,0.14);
-    --shine: linear-gradient(135deg, rgba(255,255,255,0.45) 0%, rgba(255,255,255,0) 42%);
-    --shadow: 0 1px 2px rgba(15,23,42,0.06), 0 8px 24px -8px rgba(30,41,90,0.18), 0 24px 48px -24px rgba(30,41,90,0.18);
+    --shine: linear-gradient(135deg, rgba(255,255,255,0.6) 0%, rgba(255,255,255,0) 45%);
+    --shadow: 0 1px 2px rgba(0,0,0,0.05), 0 8px 24px -8px rgba(0,0,0,0.12), 0 24px 48px -24px rgba(0,0,0,0.12);
     --heat-lo: #f3f6fd; --heat-hi: #3b82f6; --heat-max: 55%; --deep-ink: var(--ink);
-    --cell: #f6f8fc; --weekend: rgba(15,23,42,0.03);
+    --cell: #fafafa; --weekend: rgba(0,0,0,0.025);
     --amber: #f59e0b; --amber-ink: #b45309; --amber-soft: #fef3c7;
     --red: #dc2626; --red-ink: #b91c1c; --red-soft: #fee2e2;
     --green-ink: #047857; --green-soft: #d1fae5;
@@ -33,9 +36,10 @@
     --ease: cubic-bezier(0.2, 0.8, 0.2, 1); --t: 180ms;
     --sheet: 380px;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
+  :root[data-theme="dark"] {
       color-scheme: dark;
+      --glass-blur: blur(20px) saturate(180%);
+      --sticky: rgb(17,24,45);
       --field: #0b1020;
       --blob-a: #1e3a8a; --blob-b: #4c1d95; --blob-c: #134e4a;
       --ink: #e2e8f0; --ink-2: #a3b0c4; --ink-3: #8391a7;
@@ -50,7 +54,6 @@
       --amber: #fbbf24; --amber-ink: #fbbf24; --amber-soft: rgba(251,191,36,0.14);
       --red: #dc2626; --red-ink: #f87171; --red-soft: rgba(248,113,113,0.14);
       --green-ink: #34d399; --green-soft: rgba(52,211,153,0.14);
-    }
   }
 
   * { box-sizing: border-box; }
@@ -67,7 +70,7 @@
   .field i:nth-child(2) { width: 44vw; height: 44vw; right: -12vw; top: 6vh; background: var(--blob-b); }
   .field i:nth-child(3) { width: 40vw; height: 40vw; left: 30vw; bottom: -22vw; background: var(--blob-c); }
 
-  .glass { position: relative; background: var(--glass); backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
+  .glass { position: relative; background: var(--glass); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
     border: 1px solid var(--glass-edge); box-shadow: inset 0 1px 0 var(--glass-hi), var(--shadow); }
   .glass::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--shine); pointer-events: none; }
   .surface { background: var(--glass-strong); border: 1px solid var(--glass-edge); box-shadow: inset 0 1px 0 var(--glass-hi), var(--shadow); }
@@ -162,7 +165,7 @@
   .board { border-radius: var(--r-xl); overflow: hidden; }
   .grid-scroll { overflow: auto; max-height: calc(100vh - 210px); user-select: none; -webkit-user-select: none; padding: 0 var(--s3) var(--s3); }
   table.grid { border-collapse: separate; border-spacing: 3px; width: max-content; }
-  .grid thead th { position: sticky; z-index: 3; background: var(--glass-strong); font-weight: 500; font-size: 11px; color: var(--ink-3); padding: 0; }
+  .grid thead th { position: sticky; z-index: 3; background: var(--sticky); font-weight: 500; font-size: 11px; color: var(--ink-3); padding: 0; }
   .grid thead tr:first-child th { top: 0; height: 36px; }
   .grid thead tr:last-child th { top: 39px; height: 22px; }
   .grid th.group { text-align: left; padding: 0 var(--s1); font-size: 13px; font-weight: 600; color: var(--ink); white-space: nowrap; }
@@ -171,7 +174,7 @@
   .grid th.hh.major { color: var(--ink); font-weight: 600; }
   .grid th.hh.peak { color: var(--accent-ink); font-weight: 600; background-image: radial-gradient(circle, var(--accent) 2px, transparent 2.5px); background-position: center bottom; background-size: 6px 6px; background-repeat: no-repeat; }
   .grid th.roster { width: 84px; min-width: 84px; text-align: center; color: var(--ink-2); }
-  .grid th.date, .grid td.date { position: sticky; left: 0; z-index: 2; background: var(--glass-strong); text-align: left; min-width: 116px; width: 116px; padding: 0; }
+  .grid th.date, .grid td.date { position: sticky; left: 0; z-index: 2; background: var(--sticky); text-align: left; min-width: 116px; width: 116px; padding: 0; }
   .grid thead th.date { z-index: 4; }
   .date-btn { display: block; width: 100%; height: 44px; padding: 0 var(--s2); border: 0; border-radius: var(--r-sm); background: transparent; text-align: left; cursor: pointer; position: relative; }
   .date-btn:hover { background: var(--accent-soft); }
@@ -301,6 +304,7 @@
     </div>
     <span class="badge src-unlabeled" id="sourceBadge">Checking data source</span>
     <span class="spacer"></span>
+    <button type="button" class="pill" id="themeToggle" aria-pressed="false" title="Switch to dark mode"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.25" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg><span class="theme-label">Dark</span></button>
     <button type="button" class="pill" id="exportReport" title="Printable summary of the selected period; save it as a PDF from the print dialog">Export report</button>
     <button type="button" class="pill" id="exportCsv" title="Every hour, with your planned staff and verdicts">Export CSV</button>
     <button type="button" class="pill primary" id="exportPng" title="The grid as currently computed">Export image</button>
