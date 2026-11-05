@@ -150,10 +150,13 @@ def test_partner_cli_rejects_conflicting_overrides(capsys):
 
 def test_draft_contract_matches_observed_headers_without_claiming_import_readiness():
     from db.pipeline import ExportContract
+    from db.ingest import CALL_RECORD_COLUMNS
     example = Path(__file__).resolve().parents[1] / "config/export-contract.example.json"
     profile = ExportContract.model_validate_json(example.read_text())
-    assert profile.sheet == "Call Log"
-    assert profile.column_map == PARTNER_COLUMNS
+    assert profile.sheet is None
+    assert profile.auto_detect_sheet and profile.skip_blank_rows
+    assert profile.timestamp_time_column == "start_time"
+    assert profile.column_map == CALL_RECORD_COLUMNS
     assert profile.identifier_column is None
     assert not profile.confirmed
     assert profile.timezone == "unconfirmed"

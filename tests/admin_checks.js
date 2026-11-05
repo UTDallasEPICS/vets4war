@@ -189,7 +189,10 @@ function environment(options={}) {
     assert.equal(calendar.get("uploadMonth").value,expected);assert.equal(calendar.get("uploadMonth").max,expected);
     assert.equal(calendar.get("reportMonth").max,expected);await calendar.choose();
     calendar.get("uploadMonth").value="2027-02";await calendar.event("uploadMonth","input");
-    assert(calendar.get("checkFile").disabled);assert(calendar.get("stageFile").disabled);count++;
+    assert(calendar.get("checkFile").disabled);assert(!calendar.get("stageFile").disabled);
+    await calendar.event("stageFile");
+    const validation=calendar.calls.find(c=>c.url==="/api/admin/validate");
+    assert(!validation.settings.body.values.has("month"));assert(calendar.get("importFile").disabled);count++;
   }
   const backendSource=fs.readFileSync(path.join(__dirname,"../db/pipeline.py"),"utf8");
   const backendMegabytes=Number(backendSource.match(/^MAX_BYTES = (\d+) \* 1024 \* 1024/m)[1]);

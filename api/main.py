@@ -20,7 +20,7 @@
         the recommendation, the verdict (under / on target / over / exceeds
         capacity) and the Erlang service level at the PLANNED number.
     GET /api/model                                          models/metadata.json
-    POST /api/admin/validate                                multipart file + month=YYYY-MM;
+    POST /api/admin/validate                                multipart file + optional month=YYYY-MM;
         validation report only (db.ingest.parse_partner_excel); no database.
     POST /api/admin/uploads                                 multipart file + month=YYYY-MM;
         validates and stages a batch (db.pipeline.preview): {id, status, validation}
@@ -604,10 +604,12 @@ class ImportRequest(BaseModel):
 
 
 @app.post("/api/admin/validate")
-def api_admin_validate(file: UploadFile = File(...), month: str = Form(...)):
+def api_admin_validate(file: UploadFile = File(...), month: str | None = Form(None)):
     """Check the configured export layout (default: partner Call Log). Nothing is
     stored, and normalized call records are never sent back to the browser."""
-    month_value = pipeline.month_start(month)
+    # Omit month for format-only testing, including cross-month weekly exports.
+    # Explicit month checks remain available; staging/import always require one.
+    month_value = pipeline.month_start(month) if month is not None else None
     content = _read_upload(file)
     pipeline.check_archive(content)
     # Match staging's explicit sheet/mapping without opening a DB connection.
@@ -615,11 +617,22 @@ def api_admin_validate(file: UploadFile = File(...), month: str = Form(...)):
     options = {}
     if os.environ.get("V4W_EXPORT_CONTRACT"):
         profile = pipeline.contract()
-        options = {"sheet": profile.sheet, "column_map": profile.column_map,
-                   "timestamp_format": profile.timestamp_format,
-                   "identifier_column": profile.identifier_column}
-    return parse_partner_excel(BytesIO(content), month=month_value.strftime("%Y-%m"),
-                               max_rows=pipeline.MAX_ROWS, **options).report()
+        options = profile.parser_options()
+    result = parse_partner_excel(BytesIO(content), month=month_value.strftime("%Y-%m") if month_value else None,
+                                 max_rows=pipeline.MAX_ROWS, **options)
+    report = result.report()
+    months = {}
+    for row in result.rows:
+        stamp = row.record.get("start_ts")
+        if stamp is not None:
+            key = stamp.strftime("%Y-%m")
+            months[key] = months.get(key, 0) + 1
+    report["months_found"] = dict(sorted(months.items()))
+    report["validation_scope"] = "single_month" if month_value else "format_only"
+    report["warnings"].append("Validation only: no records were staged or imported. Import requires a complete export for one completed reporting month.")
+    report["row_errors_truncated"] = len(report["row_errors"]) > 200
+    report["row_errors"] = report["row_errors"][:200]
+    return report
 
 
 @app.post("/api/admin/uploads", status_code=201)

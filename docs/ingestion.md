@@ -11,6 +11,23 @@ and deployment changes are outside this phase.
 
 ## Supplied partner workbook
 
+**Current actual export:** use `--profile call-records`, which reads
+`Skill_Name`, `Start_Date`, `start_time`, `InQueue`, `Agent_Time`, `Abandon_Time`,
+`Routing_Time`, `Abandon`. It combines date/time, skips blank rows, and identifies
+a single data tab by headers, regardless of tab name. Reference tabs and extra
+columns are allowed. Multiple matching call-data tabs require `--sheet`.
+The example server contract now uses this layout; legacy contracts still work.
+
+```sh
+.venv/bin/python -m db.ingest --profile call-records --file /path/to/month.xlsx --month 2026-09 --dry-run
+```
+
+For multi-year/multi-tab workbooks use `python -m db.prepare_history` as described
+in [Admin monthly upload pipeline](admin-upload-pipeline.md). Do not pass the
+full historical workbook through the single-month uploader.
+
+The following six-column profile is retained for legacy normalized exports:
+
 The partner profile reads the observed six-column `Call Log` worksheet:
 
 | Excel header | Normalized field |

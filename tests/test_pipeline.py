@@ -3,7 +3,7 @@
 CI supplies V4W_TEST_DATABASE_URL. Locally, optional pgserver starts a temporary
 cluster. The application's V4W_DATABASE_URL is never used by these fixtures.
 """
-from datetime import date, datetime
+from datetime import date, datetime, time
 from io import BytesIO
 import json
 import os
@@ -106,6 +106,30 @@ def test_validation_import_history_and_replay(db, profile):
     with pytest.raises(pipeline.PipelineError):
         pipeline.commit_import(db, batch["id"], profile, expected_rows=1)
     assert db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 1
+
+
+def test_actual_partner_layout_stages_and_imports_combined_timestamp(db):
+    profile = pipeline.ExportContract.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "config/export-contract.example.json").read_text())
+    profile.confirmed = True
+    profile.confirmed_by = "Synthetic fixture"
+    wb = Workbook()
+    wb.active.title = "Definitions"
+    wb.active.append(["Description"])
+    ws = wb.create_sheet("An arbitrary export tab")
+    ws.append(["Skill_Name", "Start_Date", "start_time", "InQueue", "Agent_Time",
+               "Abandon_Time", "Routing_Time", "Abandon", None])
+    ws.append([None] * 9)
+    ws.append(["Test", datetime(2026, 9, 1), time(14, 5), 30, 240, 0, 5, "N"])
+    out = BytesIO()
+    wb.save(out)
+    wb.close()
+    batch = pipeline.preview(db, out.getvalue(), date(2026, 9, 1), "test", profile)
+    assert batch["validation"]["summary"]["valid_rows"] == 1
+    pipeline.commit_import(db, batch["id"], profile, expected_rows=1)
+    call = db.execute("SELECT * FROM calls").fetchone()
+    assert call["start_ts"] == datetime(2026, 9, 1, 14, 5)
+    assert call["in_queue_sec"] == 30 and call["routing_sec"] == 5
 
 
 def test_invalid_dates_and_bad_rows_never_stage_records(db, profile):

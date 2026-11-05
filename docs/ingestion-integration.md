@@ -71,6 +71,12 @@ keeps content hidden but allows another logout attempt.
 
 ## Known ingestion work remaining
 
+Update: the actual split-date/time export is now supported by the example
+contract, including header-based single-sheet selection and blank-row skipping.
+`db.prepare_history` provides a separate read-only multi-year audit and optional
+monthly file preparation. It does not reconcile or mutate existing database rows.
+The older six-column profile described below remains supported for compatibility.
+
 Standalone `--profile partner` validation defaults to the normalized `Call Log`
 sheet and its six headers, accepts Y/N and numeric seconds, and needs no source
 call ID. Routing is optional. `--month YYYY-MM` optionally checks every record's

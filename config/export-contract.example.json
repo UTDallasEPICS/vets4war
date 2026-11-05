@@ -3,14 +3,17 @@
   "confirmed_by": "",
   "source_namespace": "jimmy-inbound",
   "identifier_column": null,
-  "sheet": "Call Log",
+  "sheet": null,
+  "auto_detect_sheet": true,
+  "skip_blank_rows": true,
+  "timestamp_time_column": "start_time",
   "column_map": {
-    "start_ts": "Call Date/Time",
+    "start_ts": "Start_Date",
     "abandoned": "Abandon",
-    "in_queue_sec": "Inqueue Time",
-    "agent_sec": "Agent Time",
-    "abandon_sec": "Abandon Time",
-    "routing_sec": "Routing Time"
+    "in_queue_sec": "InQueue",
+    "agent_sec": "Agent_Time",
+    "abandon_sec": "Abandon_Time",
+    "routing_sec": "Routing_Time"
   },
   "timestamp_format": null,
   "timezone": "unconfirmed",

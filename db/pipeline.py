@@ -49,6 +49,9 @@ class ExportContract(BaseModel):
     sheet: str | None = None
     column_map: dict[str, str] = Field(default_factory=dict)
     timestamp_format: str | None = None
+    timestamp_time_column: str | None = Field(default=None, min_length=1)
+    auto_detect_sheet: bool = False
+    skip_blank_rows: bool = False
     timezone: Literal["unconfirmed", "America/New_York"] = "unconfirmed"
     duration_unit: Literal["seconds"] = "seconds"
     one_row_per_inbound_call: Literal[True] = True
@@ -57,6 +60,11 @@ class ExportContract(BaseModel):
     @property
     def fingerprint(self):
         return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
+
+    def parser_options(self):
+        return {name: getattr(self, name) for name in (
+            "sheet", "column_map", "timestamp_format", "identifier_column",
+            "timestamp_time_column", "auto_detect_sheet", "skip_blank_rows")}
 
 
 def contract():
@@ -113,9 +121,7 @@ def check_archive(content):
 
 def preview(conn, content, month, uploader, profile):
     check_archive(content)
-    result = parse_excel(BytesIO(content), sheet=profile.sheet, column_map=profile.column_map,
-                         timestamp_format=profile.timestamp_format, identifier_column=profile.identifier_column,
-                         max_rows=MAX_ROWS)
+    result = parse_excel(BytesIO(content), **profile.parser_options(), max_rows=MAX_ROWS)
     report = result.report()
     report["month"] = month.strftime("%Y-%m")
     report["contract_confirmed"] = profile.confirmed and bool(profile.confirmed_by.strip())

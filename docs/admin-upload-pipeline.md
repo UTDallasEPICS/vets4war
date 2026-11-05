@@ -1,5 +1,40 @@
 # Admin monthly upload pipeline
 
+The current example contract accepts the actual partner export: `Skill_Name`,
+`Start_Date`, `start_time`, `InQueue`, `Agent_Time`, `Abandon_Time`, `Routing_Time`,
+`Abandon`. It combines the native Excel date and clock, ignores fully blank rows,
+and finds exactly one call-data worksheet by its required headers. Extra columns
+and reference tabs are allowed. Multiple matching tabs require an explicit
+`sheet` in the contract; they are never silently combined by the monthly uploader.
+Existing explicitly configured six-column contracts remain supported.
+
+`InQueue` already includes `Routing_Time`; both are retained without adding them.
+`Agent_Time` measures talk time, not after-call work. Timestamps remain naive
+wall-clock values; confirm the source timezone before production use.
+
+For the multi-year workbook, use the separate read-only audit/preparation tool:
+
+```sh
+.venv/bin/python -m db.prepare_history /path/to/history.xlsx
+# Optional: create a NEW directory of monthly files plus a hash/count manifest.
+.venv/bin/python -m db.prepare_history /path/to/history.xlsx --output-dir /path/to/monthly-files
+```
+
+This reads all call-data tabs, skips `Definitions`, validates every populated
+row, preserves repeated records, and publishes no files if validation fails.
+It never connects to the database. Prepared months still require completeness,
+source-row-count, and existing-database overlap review before explicit import.
+The 25 MB/100,000-row monthly upload limits and month replacement rules remain.
+Changing the configured layout invalidates staged batches; validate again.
+
+**Cross-month testing:** the admin's **Check without staging** action omits the
+reporting month and validates format/rows across all dates, including the current
+month. Its report includes `validation_scope: "format_only"` and `months_found`
+(timestamp-bearing row counts per month). It never creates an importable batch.
+API clients can still supply `month` to `/api/admin/validate` for strict completed-
+month validation. **Validate upload**, staging, and import remain single-month
+operations; a format-only pass does not establish full-month completeness.
+
 How a partner admin goes from signing in, to uploading a monthly Excel
 file, to that data reaching the forecast. This is the team handoff for
 the `feature/admin-integration` work.
@@ -88,7 +123,7 @@ within 7 days expires. Re-uploading the exact same bytes for the same
 month returns the existing batch.
 
 **Check without staging** is an optional, separate action that calls
-`POST /api/admin/validate`; it checks archive limits, rows, and reporting month
+`POST /api/admin/validate`; it checks archive limits and rows across all dates
 without storing a batch or connecting to a database. It remains available to
 signed-in readers without import permission. Passing this optional check does
 not enable import: an importer must use **Validate upload** to obtain a batch.
@@ -215,7 +250,7 @@ The ingestion routes live in `api/main.py`; `/me` is registered from
 
 | Method | Path | Auth | Body | Returns |
 | --- | --- | --- | --- | --- |
-| `POST` | `/api/admin/validate` | No | multipart `file` + `month=YYYY-MM` | validation report |
+| `POST` | `/api/admin/validate` | No | multipart `file`; optional `month=YYYY-MM` for strict month checking | validation report with months found |
 | `GET` | `/api/admin/me` | `read:admin` | none | verified subject and permissions |
 | `POST` | `/api/admin/uploads` | `read:admin` + `import:calls` | multipart `file` + `month=YYYY-MM` | `{id, status, validation}` (201) |
 | `POST` | `/api/admin/uploads/{id}/import` | `read:admin` + `import:calls` | JSON `{expected_rows, replace_batch_id?}` | `{id, status: "imported"}` |

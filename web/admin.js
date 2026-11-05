@@ -30,7 +30,7 @@
   function syncButtons() {
     const validMonth = /^\d{4}-\d{2}$/.test(get("uploadMonth").value) && get("uploadMonth").checkValidity();
     get("checkFile").disabled = busy || !authorized || !canImport || !selectedFile || !validMonth;
-    get("stageFile").disabled = busy || !authorized || !selectedFile || !validMonth;
+    get("stageFile").disabled = busy || !authorized || !selectedFile;
     const count = Number(get("expectedRows").value);
     get("importFile").disabled = busy || !authorized || !canImport || !batch || batch.status !== "validated" ||
       !batch.validation.contract_confirmed || !get("confirmImport").checked ||
@@ -199,6 +199,7 @@
     for (const row of rows.slice(0,200)) issue(`Row ${row.row_number}: ${row.errors.map(error => error.message).join("; ")}`);
     if (report.row_errors_truncated || rows.length > 200) issue("Only the first 200 row errors are shown.");
     if (report.days_without_calls && report.days_without_calls.length) issue(`Days without calls: ${report.days_without_calls.join(", ")}. Verify completeness.`);
+    if (report.months_found) issue(`Months found: ${Object.entries(report.months_found).map(([month,count]) => `${month}: ${count} calls`).join("; ") || "none"}.`);
     for (const warning of report.warnings || []) issue(warning);
   }
   function selectFiles(files) {
@@ -227,8 +228,10 @@
     }
     finally { busy = false; syncButtons(); }
   }
-  function workbookBody() {
-    const form = new FormData(); form.append("file",selectedFile); form.append("month",get("uploadMonth").value); return form;
+  function workbookBody(includeMonth = true) {
+    const form = new FormData(); form.append("file",selectedFile);
+    if (includeMonth) form.append("month",get("uploadMonth").value);
+    return form;
   }
   get("workbook").addEventListener("change",() => selectFiles(get("workbook").files));
   get("uploadMonth").addEventListener("input",() => {
@@ -268,10 +271,10 @@
     if (get("stageFile").disabled) return;
     return action("fileStatus",async version => {
       resetValidation(); uploadStatus("Checking without staging...");
-      const report = await api("/api/admin/validate",{method:"POST",body:workbookBody()});
+      const report = await api("/api/admin/validate",{method:"POST",body:workbookBody(false)});
       if (!current(version)) return;
       showReport(report); uploadStatus(report.ok ? "Checked, not staged" : "Validation failed");
-      message("fileStatus",report.ok ? "Checks passed. Nothing stored. Validate upload to stage a batch before importing." : "Validation failed. Correct the workbook and try again.");
+      message("fileStatus",report.ok ? "Format checks passed across all dates. Nothing stored. Staging and import require a complete export for one completed month." : "Validation failed. Correct the workbook and try again.");
     });
   });
   get("importFile").addEventListener("click",() => {

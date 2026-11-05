@@ -1,7 +1,9 @@
 """Validate .xlsx call exports without database access or environment loading.
 
-Default headers describe our normalized contract. The partner profile supports
-the supplied six-column Call Log worksheet. Numeric durations are seconds;
+Default headers describe our normalized contract. The legacy partner profile
+supports six-column Call Log exports; call-records supports the actual eight-column
+split date/time exports and identifies a single data tab by its headers.
+Numeric durations are seconds;
 naive timestamps are preserved as supplied, without conversion or a timezone
 claim. A configured source identifier is used ONLY for within-file duplicate
 detection, never assigned to calls.id (its provenance is not yet confirmed).
@@ -12,7 +14,7 @@ from __future__ import annotations
 import argparse
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, time
 import json
 import math
 from pathlib import Path
@@ -37,6 +39,22 @@ PARTNER_COLUMNS = {
     "abandoned": "Abandon",
     "abandon_sec": "Abandon Time",
 }
+CALL_RECORD_COLUMNS = {
+    "start_ts": "Start_Date", "in_queue_sec": "InQueue",
+    "routing_sec": "Routing_Time", "agent_sec": "Agent_Time",
+    "abandoned": "Abandon", "abandon_sec": "Abandon_Time",
+}
+
+
+def _split_timestamp(day, clock) -> datetime:
+    # Never silently discard a missing/invalid clock or an existing date's time.
+    if not isinstance(day, datetime) or day.time() != time() or day.tzinfo is not None:
+        raise ValueError
+    if isinstance(clock, str) and re.fullmatch(r"\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?", clock.strip()):
+        clock = time.fromisoformat(clock.strip())
+    if not isinstance(clock, time) or clock.tzinfo is not None:
+        raise ValueError
+    return datetime.combine(day.date(), clock)
 
 
 @dataclass(frozen=True)
@@ -168,6 +186,8 @@ def validate_rows(
     identifier_column: str | None = None,
     timestamp_format: str | None = None,
     max_rows: int | None = None,
+    timestamp_time_column: str | None = None,
+    skip_blank_rows: bool = False,
 ) -> ValidationResult:
     """Validate rows following a header on Excel row 1; retain every data row.
 
@@ -228,11 +248,15 @@ def validate_rows(
             file_error("missing_column", "A required call column is missing; check the mapping.", name)
     if identifier_column is not None and identifier_column not in positions:
         file_error("missing_column", "The configured identifier column is missing.", "identifier")
+    if timestamp_time_column is not None and timestamp_time_column not in positions:
+        file_error("missing_column", "The call start time column is missing.", "start_ts")
     if result.file_errors:
         return structural_failure()
 
     identifier_rows = defaultdict(list)
     for row_number, values in enumerate(rows, start=2):
+        if skip_blank_rows and all(_blank(value) for value in values):
+            continue
         row = ValidatedRow(row_number, {})
         result.rows.append(row)
 
@@ -248,7 +272,9 @@ def validate_rows(
             error("start_ts", "required", "A call timestamp is required.")
         else:
             try:
-                row.record["start_ts"] = _timestamp(timestamp, timestamp_format)
+                row.record["start_ts"] = (_split_timestamp(timestamp, cell(timestamp_time_column))
+                                          if timestamp_time_column is not None
+                                          else _timestamp(timestamp, timestamp_format))
             except (ValueError, TypeError, OverflowError):
                 error("start_ts", "invalid_timestamp", "Use an Excel datetime or the configured text format, without a timezone offset.")
         try:
@@ -284,10 +310,12 @@ def validate_rows(
     return result
 
 
-def parse_excel(source: str | Path | BinaryIO, *, sheet: str | None = None, **validation_options) -> ValidationResult:
+def parse_excel(source: str | Path | BinaryIO, *, sheet: str | None = None,
+                auto_detect_sheet: bool = False, **validation_options) -> ValidationResult:
     """Read a local .xlsx path or binary upload stream; perform no writes.
 
-    Only the first sheet is read unless a sheet name is provided. Formula cells
+    By default the first sheet is read; explicit sheet names and unambiguous
+    header-based selection are supported. Formula cells
     are not evaluated. Exceptions from workbook parsing never expose cell data.
     """
     if isinstance(source, (str, Path)) and Path(source).suffix.lower() != ".xlsx":
@@ -299,7 +327,23 @@ def parse_excel(source: str | Path | BinaryIO, *, sheet: str | None = None, **va
     try:
         if sheet is not None and sheet not in workbook.sheetnames:
             return ValidationResult(file_errors=[ValidationIssue(None, "missing_sheet", "The selected worksheet does not exist.")])
-        worksheet = workbook[sheet] if sheet is not None else workbook.worksheets[0]
+        if sheet is None and auto_detect_sheet:
+            mapping = {name: name for name in FIELDS}
+            mapping.update(validation_options.get("column_map") or {})
+            required = {mapping[name] for name in REQUIRED_FIELDS}
+            if validation_options.get("timestamp_time_column"):
+                required.add(validation_options["timestamp_time_column"])
+            matches = [ws for ws in workbook if required.issubset(
+                {v for v in next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+                 if isinstance(v, str)})]
+            if len(matches) != 1:
+                return ValidationResult(file_errors=[ValidationIssue(
+                    None, "ambiguous_sheets" if matches else "missing_data_sheet",
+                    "Multiple call-data worksheets match; configure a specific worksheet. Historical multi-year files need the separate backfill workflow."
+                    if matches else "No worksheet has the required call columns; check the export layout.")])
+            worksheet = matches[0]
+        else:
+            worksheet = workbook[sheet] if sheet is not None else workbook.worksheets[0]
         rows = worksheet.iter_rows(values_only=True)
         headers = next(rows, ())
         if not headers or all(_blank(value) for value in headers):
@@ -316,14 +360,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate .xlsx call records locally; never connects to a database.")
     parser.add_argument("--file", required=True, type=Path)
     parser.add_argument("--dry-run", action="store_true", required=True, help="Validation only; required to make intent explicit.")
-    parser.add_argument("--profile", choices=("normalized", "partner"), default="normalized",
-                        help="partner: supplied six-column Call Log worksheet; normalized: generic headers/options.")
+    parser.add_argument("--profile", choices=("normalized", "partner", "call-records"), default="normalized",
+                        help="call-records: actual split date/time export; partner: legacy six-column Call Log; normalized: generic headers/options.")
     parser.add_argument("--month", help="Optional YYYY-MM month check for the partner profile. Does not certify completeness.")
     parser.add_argument("--sheet", help="Worksheet name (default: first sheet).")
     parser.add_argument("--column-map", type=Path, help="JSON object mapping normalized fields to Excel headers.")
     parser.add_argument("--identifier-column", help="Reliable source ID header; enables within-file duplicate detection.")
     parser.add_argument("--timestamp-format", help="Explicit strptime format for non-ISO text timestamps.")
     args = parser.parse_args(argv)
+    if args.profile == "call-records":
+        if any((args.column_map, args.identifier_column, args.timestamp_format)):
+            parser.error("The call-records profile supplies its own columns and split timestamp format.")
+        result = parse_partner_excel(args.file, month=args.month, sheet=args.sheet,
+                                     column_map=CALL_RECORD_COLUMNS, timestamp_time_column="start_time",
+                                     auto_detect_sheet=True, skip_blank_rows=True)
+        print(json.dumps(result.report(), indent=2))
+        return 0 if result.ok else 1
     if args.profile == "partner":
         if any((args.sheet, args.column_map, args.identifier_column, args.timestamp_format)):
             parser.error("The partner profile supplies the sheet, headers, and no source identifier. Use normalized for custom options.")
@@ -350,7 +402,10 @@ def parse_partner_excel(source: str | Path | BinaryIO, *, month: str | None = No
                         max_rows: int = 100_000, sheet: str | None = PARTNER_SHEET,
                         column_map: dict[str, str] | None = None,
                         timestamp_format: str | None = None,
-                        identifier_column: str | None = None) -> ValidationResult:
+                        identifier_column: str | None = None,
+                        timestamp_time_column: str | None = None,
+                        auto_detect_sheet: bool = False,
+                        skip_blank_rows: bool = False) -> ValidationResult:
     """Validate the observed partner layout without IDs, credentials or writes.
 
     All five years can be checked without month. Monthly uploads can specify
@@ -370,7 +425,9 @@ def parse_partner_excel(source: str | Path | BinaryIO, *, month: str | None = No
     result = parse_excel(source, sheet=sheet,
                          column_map=PARTNER_COLUMNS if column_map is None else column_map,
                          timestamp_format=timestamp_format,
-                         identifier_column=identifier_column, max_rows=max_rows)
+                         identifier_column=identifier_column, max_rows=max_rows,
+                         timestamp_time_column=timestamp_time_column,
+                         auto_detect_sheet=auto_detect_sheet, skip_blank_rows=skip_blank_rows)
     if selected is not None:
         for row in result.rows:
             timestamp = row.record.get("start_ts")
