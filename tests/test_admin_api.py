@@ -50,8 +50,9 @@ def no_dev_admin(monkeypatch):
     monkeypatch.delenv("V4W_EXPORT_CONTRACT", raising=False)
 
 
-# --- validation only: no database, no sign-in --------------------------------
+# --- validation only: no database (a signed-in admin, see conftest) ----------
 
+@pytest.mark.usefixtures("signed_in_admin")
 def test_validate_returns_report_without_records():
     response = post_file("/api/admin/validate", workbook())
     assert response.status_code == 200
@@ -61,6 +62,7 @@ def test_validate_returns_report_without_records():
     assert "records" not in body and "300" not in response.text
 
 
+@pytest.mark.usefixtures("signed_in_admin")
 def test_validate_flags_calls_outside_the_selected_month():
     response = post_file("/api/admin/validate", workbook([[datetime(2026, 8, 31, 23), 10, 2, 300, "N", 0]]))
     assert response.status_code == 200
@@ -69,6 +71,7 @@ def test_validate_flags_calls_outside_the_selected_month():
     assert body["row_errors"][0]["errors"][0]["code"] == "outside_month"
 
 
+@pytest.mark.usefixtures("signed_in_admin")
 @pytest.mark.parametrize("month", ["2026-9", "not-a-month", "9999-12"])
 def test_validate_rejects_bad_or_incomplete_months(month):
     response = post_file("/api/admin/validate", workbook(), month=month)
@@ -76,11 +79,13 @@ def test_validate_rejects_bad_or_incomplete_months(month):
     assert "completed reporting month" in response.json()["detail"]
 
 
+@pytest.mark.usefixtures("signed_in_admin")
 def test_validate_rejects_non_workbook_and_empty_files():
     assert post_file("/api/admin/validate", b"not a workbook").status_code == 400
     assert post_file("/api/admin/validate", b"").status_code == 413
 
 
+@pytest.mark.usefixtures("signed_in_admin")
 def test_oversized_upload_is_rejected(monkeypatch):
     monkeypatch.setattr(pipeline, "MAX_BYTES", 100)
     response = post_file("/api/admin/validate", workbook())
@@ -212,6 +217,7 @@ def test_missing_database_configuration_is_a_service_error(monkeypatch, authoriz
     assert client.get("/api/admin/uploads").status_code == 503
 
 
+@pytest.mark.usefixtures("signed_in_admin")
 def test_configured_worksheet_validation_is_explicit_and_database_free(tmp_path, monkeypatch):
     import json
     contract = tmp_path / "synthetic-contract.json"
@@ -236,6 +242,7 @@ def test_configured_worksheet_validation_is_explicit_and_database_free(tmp_path,
     assert outside.json()["row_errors"][0]["errors"][0]["code"] == "outside_month"
 
 
+@pytest.mark.usefixtures("signed_in_admin")
 def test_invalid_configured_contract_does_not_fall_back_to_default(monkeypatch, tmp_path):
     monkeypatch.setenv("V4W_EXPORT_CONTRACT", str(tmp_path / "missing-contract.json"))
     response = post_file("/api/admin/validate", workbook())

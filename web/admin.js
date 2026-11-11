@@ -2,13 +2,23 @@
 "use strict";
 (() => {
   const get = id => document.getElementById(id);
-  const config = {
-    domain: "dev-f1eoazec4c5dukjs.us.auth0.com",
-    clientId: "OrI6PaDntfNRXjZ0xYFjukTKgZr8qWwN",
-    cacheLocation: "memory", useRefreshTokens: false,
-    authorizationParams: { audience: "https://api.vets4warriors.admin", scope: "openid profile email",
-      redirect_uri: `${window.location.origin}/admin.html` },
-  };
+  const redirectUri = `${window.location.origin}/admin.html`;
+  // The tenant, application and API come from the server's settings
+  // (GET /api/admin/config), so none of them is written into this file.
+  async function loadConfig() {
+    // 503 means the server has no Auth0 settings; anything else that fails
+    // (no network, a cold start) is worth retrying.
+    let response;
+    try { response = await fetch("/api/admin/config", { headers: { Accept: "application/json" }, cache: "no-store" }); }
+    catch (error) { throw Object.assign(new Error("Settings request failed"), { notConfigured: false }); }
+    if (!response.ok) throw Object.assign(new Error("Settings request refused"), { notConfigured: response.status === 503 });
+    const settings = await response.json();
+    return {
+      domain: settings.domain, clientId: settings.clientId,
+      cacheLocation: "memory", useRefreshTokens: false,
+      authorizationParams: { audience: settings.audience, scope: "openid profile email", redirect_uri: redirectUri },
+    };
+  }
   let client, selectedFile, batch;
   let authorized = false, canImport = false, busy = false, generation = 0;
   let replacementOffered = false;
@@ -318,7 +328,7 @@
   get("logout").addEventListener("click",async () => {
     clearRecovery();
     expireSession(); message("apiStatus",""); get("logout").disabled = true; get("login").disabled = true;
-    try { await client.logout({logoutParams:{returnTo:config.authorizationParams.redirect_uri}}); }
+    try { await client.logout({logoutParams:{returnTo:redirectUri}}); }
     catch (_) { message("authStatus","Sign-out could not complete. Try logging out again to end the Auth0 session."); get("logout").hidden = false; get("logout").disabled = false; get("login").disabled = false; }
   });
   function clearCallback() {
@@ -330,12 +340,24 @@
     if (restoring) return;
     restoring = true;
     get("retrySession").disabled = true; get("retrySession").hidden = true;
+    let configFailed = false;
     get("login").disabled = true;
     hideContent(); const params = new URLSearchParams(window.location.search);
     const callback = params.has("code") || params.has("error") || params.has("state"), version = generation;
     try {
       if (!window.auth0 || typeof window.auth0.Auth0Client !== "function") { message("authStatus","Auth0 could not load. Check your connection and reload."); return; }
-      if (!client) client = new window.auth0.Auth0Client(config);
+      if (!client) {
+        let config;
+        try { config = await loadConfig(); }
+        catch (error) {
+          configFailed = true;
+          message("authStatus", error.notConfigured
+            ? "Admin sign-in is not configured on this server. Tell the site owner."
+            : "Could not reach the server to start sign-in. Check your connection and retry.");
+          return;
+        }
+        client = new window.auth0.Auth0Client(config);
+      }
       if (callback) { try { await client.handleRedirectCallback(); } finally { clearCallback(); } }
       // Direct silent acquisition attempts restoration even without the optional
       // checkSession marker cookie. Interactive fallback requires a user click.
@@ -364,7 +386,9 @@
     } finally {
       if (callback) clearCallback();
       restoring = false;
-      get("login").disabled = !client; get("retrySession").disabled = !client;
+      get("login").disabled = !client; get("retrySession").disabled = !client && !configFailed;
+      // Without settings there is no client yet, so Retry is the only way forward short of a reload.
+      if (configFailed) get("retrySession").hidden = false;
     }
   }
   get("retrySession").addEventListener("click",initializeAuth);

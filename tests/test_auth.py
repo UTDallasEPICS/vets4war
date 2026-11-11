@@ -151,14 +151,14 @@ def test_main_registers_admin_before_static_mount(security):
 ])
 def test_real_jwt_permissions_on_ingestion_routes(security, monkeypatch, permissions, history_status, write_status):
     from contextlib import nullcontext
-    from api import main
+    from api import admin, main
     _, key, _, _ = security
     actors = []
     connections = []
     def connect():
         connections.append(True)
         return nullcontext(object())
-    monkeypatch.setattr(main, "_pipeline_connection", connect)
+    monkeypatch.setattr(admin, "_pipeline_connection", connect)
     monkeypatch.setattr(main.pipeline, "contract", lambda: object())
     monkeypatch.setattr(main.pipeline, "history", lambda conn: [])
     monkeypatch.setattr(main.pipeline, "preview", lambda conn, content, month, actor, profile:
@@ -179,11 +179,11 @@ def test_real_jwt_permissions_on_ingestion_routes(security, monkeypatch, permiss
 
 
 def test_insecure_environment_variable_cannot_bypass_authentication(monkeypatch):
-    from api import main
+    from api import admin, main
     monkeypatch.setenv("V4W_INSECURE_DEV_ADMIN", "intruder")
     def forbidden(*args, **kwargs):
         pytest.fail("Unauthorized request reached ingestion")
-    monkeypatch.setattr(main, "_pipeline_connection", forbidden)
+    monkeypatch.setattr(admin, "_pipeline_connection", forbidden)
     monkeypatch.setattr(main.pipeline, "contract", forbidden)
     with TestClient(main.app) as client:
         assert client.get("/api/admin/uploads").status_code == 401

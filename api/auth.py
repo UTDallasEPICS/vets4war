@@ -2,12 +2,13 @@
 
 import logging
 import os
-import re
 from functools import lru_cache
 
 import jwt
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from api.auth0_config import auth0_audience, auth0_domain
 
 bearer = HTTPBearer(auto_error=False)
 log = logging.getLogger(__name__)
@@ -57,9 +58,8 @@ def verify_token(
     if credentials is None:
         log.warning("missing_bearer")
         raise unauthorized
-    domain = os.environ.get("AUTH0_DOMAIN", "").strip()
-    audience = os.environ.get("AUTH0_AUDIENCE", "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", domain) or not audience:
+    domain, audience = auth0_domain(os.environ), auth0_audience(os.environ)
+    if not domain or not audience:
         raise HTTPException(503, "Authentication is not configured")
     token = credentials.credentials
     try:

@@ -20,18 +20,15 @@
         the recommendation, the verdict (under / on target / over / exceeds
         capacity) and the Erlang service level at the PLANNED number.
     GET /api/model                                          models/metadata.json
-    POST /api/admin/validate                                multipart file + optional month=YYYY-MM;
-        validation report only (db.ingest.parse_partner_excel); no database.
-    POST /api/admin/uploads                                 multipart file + month=YYYY-MM;
-        validates and stages a batch (db.pipeline.preview): {id, status, validation}
-    POST /api/admin/uploads/{id}/import                     {expected_rows, replace_batch_id?};
-        imports a staged batch into calls (db.pipeline.commit_import)
-    GET /api/admin/uploads                                  the last 100 batches (db.pipeline.history)
-        The three /api/admin/uploads routes require an admin (require_admin).
+    /api/admin/*                                            the admin API (api/admin.py):
+        Auth0 access tokens, not the shared-password session.
     GET /                                                   web/index.html (static)
     POST /api/login, POST /api/logout, GET /api/session     shared-password sign-in
-        (api/site_auth.py). Everything above needs a session unless sign-in is
-        switched off for local work with V4W_AUTH_DISABLED=1.
+        (api/site_auth.py). Everything above needs a session unless sign-in
+        is switched off for local work with V4W_AUTH_DISABLED=1, except the
+        admin side: /api/admin/*, admin.html, admin.js and the Auth0 library
+        under vendor/ are reached without one, and the admin API checks an
+        Auth0 access token instead.
 
     Every response carries data_source: which data (partner / synthetic,
     from $V4W_DATA_SOURCE) and its date range, so the page can say so.
@@ -49,14 +46,12 @@ import math
 import logging
 import os
 import sys
-import uuid
 from datetime import date, timedelta
-from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -69,11 +64,11 @@ except ImportError:
     sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
 
 from db import pipeline  # noqa: E402
-from api.auth import require_permissions  # noqa: E402
+from api.admin import TOO_LARGE, UPLOAD_ENVELOPE_BYTES, UPLOAD_PATHS  # noqa: E402
+from api.admin import router as admin_router  # noqa: E402
 from db.aht import DEFAULT_RECENCY, RECENCY_OPTIONS  # noqa: E402
 from db.features import SATURDAY_ISODOW, load_holidays  # noqa: E402
 from db.forecast import aht_table, holiday_coverage  # noqa: E402
-from db.ingest import parse_partner_excel  # noqa: E402
 from db.patience import cached_patience  # noqa: E402
 from db.quick_abandon import quick_hangups  # noqa: E402
 from db.source import describe_source  # noqa: E402
@@ -122,8 +117,24 @@ WEB_DIR = REPO_ROOT / "web"
 # No interactive API docs: this is served to the public internet behind a sign-in.
 app = FastAPI(title="Vets4Warriors staffing forecast", version="0.1.0",
               docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.middleware("http")
+async def reject_oversized_uploads(request, call_next):
+    """FastAPI spools the whole multipart body before a route runs, so a route
+    cannot refuse an oversized workbook early. Refuse it here from the declared
+    Content-Length instead. Bodies without one are still capped in api.admin._read_upload."""
+    if request.method == "POST" and request.url.path in UPLOAD_PATHS:
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > pipeline.MAX_BYTES + UPLOAD_ENVELOPE_BYTES:
+            return JSONResponse({"detail": TOO_LARGE}, status_code=413)
+    return await call_next(request)
+
+
 # Shared-password sign-in in front of every route and static file (api/site_auth.py).
 # Installed before any route so /api/login is matched ahead of the static mount.
+# Added after the upload-size check above, so it wraps it: a refused upload
+# still gets the security headers.
 install_auth(app)
 
 
@@ -138,24 +149,6 @@ async def revalidate_page_files(request, call_next):
     if not request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
-
-
-# Room for the multipart boundaries and the month field around the workbook.
-UPLOAD_ENVELOPE_BYTES = 64 * 1024
-UPLOAD_PATHS = ("/api/admin/validate", "/api/admin/uploads")
-TOO_LARGE = "Upload a nonempty Excel file no larger than 25 MB."
-
-
-@app.middleware("http")
-async def reject_oversized_uploads(request, call_next):
-    """FastAPI spools the whole multipart body before a route runs, so a route
-    cannot refuse an oversized workbook early. Refuse it here from the declared
-    Content-Length instead. Bodies without one are still capped in _read_upload."""
-    if request.method == "POST" and request.url.path in UPLOAD_PATHS:
-        declared = request.headers.get("content-length")
-        if declared and declared.isdigit() and int(declared) > pipeline.MAX_BYTES + UPLOAD_ENVELOPE_BYTES:
-            return JSONResponse({"detail": TOO_LARGE}, status_code=413)
-    return await call_next(request)
 
 
 @app.exception_handler(pipeline.PipelineError)
@@ -586,95 +579,8 @@ def api_model():
     return {**metadata, "data_source": source}
 
 
-# =============================================================================
-# Admin: monthly Excel uploads
-# =============================================================================
-
-require_admin = require_permissions("read:admin")
-require_import = require_permissions("read:admin", "import:calls")
-
-
-def _read_upload(file: UploadFile) -> bytes:
-    content = file.file.read(pipeline.MAX_BYTES + 1)
-    if not content or len(content) > pipeline.MAX_BYTES:
-        raise HTTPException(413, TOO_LARGE)
-    return content
-
-
-def _pipeline_connection():
-    try:
-        return pipeline.connect()
-    except psycopg.OperationalError as exc:
-        log.exception("pipeline database connection failed")
-        raise HTTPException(503, "The application database is unavailable. Try again later.") from exc
-
-
-class ImportRequest(BaseModel):
-    # The row count the admin confirms from the source export; must match the batch.
-    expected_rows: int = Field(ge=1, le=pipeline.MAX_ROWS)
-    # Required only to replace a month that is already imported.
-    replace_batch_id: uuid.UUID | None = None
-
-
-@app.post("/api/admin/validate")
-def api_admin_validate(file: UploadFile = File(...), month: str | None = Form(None)):
-    """Check the configured export layout (default: partner Call Log). Nothing is
-    stored, and normalized call records are never sent back to the browser."""
-    # Omit month for format-only testing, including cross-month weekly exports.
-    # Explicit month checks remain available; staging/import always require one.
-    month_value = pipeline.month_start(month) if month is not None else None
-    content = _read_upload(file)
-    pipeline.check_archive(content)
-    # Match staging's explicit sheet/mapping without opening a DB connection.
-    # An invalid configured contract fails closed; never guess another sheet.
-    options = {}
-    if os.environ.get("V4W_EXPORT_CONTRACT"):
-        profile = pipeline.contract()
-        options = profile.parser_options()
-    result = parse_partner_excel(BytesIO(content), month=month_value.strftime("%Y-%m") if month_value else None,
-                                 max_rows=pipeline.MAX_ROWS, **options)
-    report = result.report()
-    months = {}
-    for row in result.rows:
-        stamp = row.record.get("start_ts")
-        if stamp is not None:
-            key = stamp.strftime("%Y-%m")
-            months[key] = months.get(key, 0) + 1
-    report["months_found"] = dict(sorted(months.items()))
-    report["validation_scope"] = "single_month" if month_value else "format_only"
-    report["warnings"].append("Validation only: no records were staged or imported. Import requires a complete export for one completed reporting month.")
-    report["row_errors_truncated"] = len(report["row_errors"]) > 200
-    report["row_errors"] = report["row_errors"][:200]
-    return report
-
-
-@app.post("/api/admin/uploads", status_code=201)
-def api_admin_upload(file: UploadFile = File(...), month: str = Form(...), user: dict = Depends(require_import)):
-    month_value = pipeline.month_start(month)
-    content = _read_upload(file)
-    profile = pipeline.contract()
-    with _pipeline_connection() as conn:
-        return pipeline.preview(conn, content, month_value, user["sub"], profile)
-
-
-@app.post("/api/admin/uploads/{batch_id}/import")
-def api_admin_import(batch_id: uuid.UUID, body: ImportRequest, user: dict = Depends(require_import)):
-    profile = pipeline.contract()
-    with _pipeline_connection() as conn:
-        return pipeline.commit_import(conn, batch_id, profile, expected_rows=body.expected_rows,
-                                      replace_batch_id=body.replace_batch_id, actor=user["sub"])
-
-
-@app.get("/api/admin/uploads")
-def api_admin_history(user: dict = Depends(require_admin)):
-    with _pipeline_connection() as conn:
-        return pipeline.history(conn)
-
-
 # Mount the static UI only after defining the API routes so `/api/*` requests
 # continue to resolve to their handlers rather than the frontend file server.
-from api.admin import router as admin_router  # noqa: E402
-
 app.include_router(admin_router)
 app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
 

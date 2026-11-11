@@ -93,6 +93,7 @@ def test_skipped_blanks_do_not_hide_bad_row_numbers_or_row_limit():
     assert not parse(workbook([ROW, [None] * 8, ROW]), max_rows=2).ok
 
 
+@pytest.mark.usefixtures("signed_in_admin")
 def test_http_validation_uses_same_contract_without_database(monkeypatch):
     from fastapi.testclient import TestClient
     from api.main import app
@@ -104,6 +105,7 @@ def test_http_validation_uses_same_contract_without_database(monkeypatch):
     assert "records" not in response.json()
 
 
+@pytest.mark.usefixtures("signed_in_admin")
 def test_cross_month_http_format_check_passes_without_enabling_monthly_import(monkeypatch):
     from fastapi.testclient import TestClient
     from api.main import app
@@ -132,6 +134,7 @@ def test_cross_month_http_format_check_passes_without_enabling_monthly_import(mo
     assert report["row_errors"][0]["errors"][0]["code"] == "outside_month"
 
 
+@pytest.mark.usefixtures("signed_in_admin")
 def test_format_check_caps_errors_but_keeps_total_counts(monkeypatch):
     from fastapi.testclient import TestClient
     from api.main import app

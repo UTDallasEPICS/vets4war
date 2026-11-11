@@ -55,6 +55,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
+from api.auth0_config import auth0_domain
+
 SESSION_COOKIE = "v4w_session"
 SESSION_TTL_SEC = 12 * 60 * 60          # one working day, then sign in again
 SESSION_VERSION = "v1"
@@ -83,22 +85,63 @@ VERIFY_SLOTS = 2                        # password checks allowed at once (each 
 BUSY_RETRY_SEC = 2
 
 LOGIN_PAGE = "/login.html"
-# Everything not listed here needs a session. Exact matches only.
-PUBLIC_PATHS = frozenset({LOGIN_PAGE, "/login.js", "/api/login", "/api/logout"})
+ADMIN_PAGE = "/admin.html"
+# Everything not listed here needs a session. Exact matches only. The admin
+# page's three files carry nothing private: what it shows comes from the
+# admin API, which Auth0 guards.
+PUBLIC_PATHS = frozenset({LOGIN_PAGE, "/login.js", "/api/login", "/api/logout",
+                          ADMIN_PAGE, "/admin.js", "/vendor/auth0-spa-js.production.js"})
+# Routes under these prefixes are guarded by Auth0 access tokens (api/auth.py),
+# not by the session cookie. The trailing slash matters: "/api/administrator"
+# is not one of them.
+TOKEN_GUARDED_PREFIXES = ("/api/admin/",)
 
 # Generated passwords: 20 characters from 31 look-alike-free symbols, about 99 bits.
 PASSWORD_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
 PASSWORD_GROUPS = 4
 PASSWORD_GROUP_CHARS = 5
 
-CONTENT_SECURITY_POLICY = (
-    "default-src 'self'; script-src 'self'; "
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-    "font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; "
-    "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
-    "frame-ancestors 'none'"
-)
+def _policy(connect_to: str = "'self'", frames_from: str | None = None) -> str:
+    """One Content-Security-Policy. Everything is this site only, except the
+    fonts, and whatever `connect_to` and `frames_from` add."""
+    frames = f"frame-src {frames_from}; " if frames_from else ""
+    return (
+        "default-src 'self'; script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; "
+        f"connect-src {connect_to}; {frames}object-src 'none'; base-uri 'none'; form-action 'self'; "
+        "frame-ancestors 'none'"
+    )
+
+
+CONTENT_SECURITY_POLICY = _policy()
 HSTS = "max-age=31536000; includeSubDomains"
+PATH_STEPS = ("", ".", "..")
+
+
+def _is_plain(path: str) -> bool:
+    """True when the path means exactly what it says: no "..", ".", empty
+    segment or backslash. The static file server tidies such paths AFTER the
+    gate has looked at them, so "/api/admin/../../index.html" would otherwise
+    pass the gate as an admin path and then be served as "/index.html"."""
+    return "\\" not in path and not any(segment in PATH_STEPS for segment in path.split("/")[1:])
+
+
+def needs_session(path: str) -> bool:
+    """False for the sign-in files, the admin page's files and the admin API."""
+    if path in PUBLIC_PATHS:
+        return False
+    return not (path.startswith(TOKEN_GUARDED_PREFIXES) and _is_plain(path))
+
+
+def content_security_policy(path: str, auth0_domain: str | None) -> str:
+    """The policy for one response. Only the admin page may reach beyond this
+    site, and only to the configured Auth0 tenant: to exchange the sign-in
+    code for a token, and to renew it in a hidden frame."""
+    if path != ADMIN_PAGE or not auth0_domain:
+        return CONTENT_SECURITY_POLICY
+    tenant = f"https://{auth0_domain}"
+    return _policy(connect_to=f"'self' {tenant}", frames_from=tenant)
 
 
 # =============================================================================
@@ -180,6 +223,7 @@ class AuthSettings:
     password_hash: str = ""
     secret: str = ""
     deployed: bool = False  # behind the host's proxy: the off-switch is ignored, proxy headers are trusted
+    auth0_domain: str | None = None  # the admin page's Auth0 tenant, when one is configured
 
     @property
     def signing_key(self) -> str:
@@ -193,11 +237,12 @@ def load_settings(env: Mapping[str, str]) -> AuthSettings:
     password_hash = env.get("V4W_APP_PASSWORD_HASH", "").strip()
     secret = env.get("V4W_SESSION_SECRET", "").strip()
     configured = password_hash.startswith("scrypt$") and len(secret) >= MIN_SECRET_CHARS
+    tenant = auth0_domain(env)
     if env.get("V4W_AUTH_DISABLED") == "1" and not deployed:
-        return AuthSettings("off", deployed=deployed)
+        return AuthSettings("off", deployed=deployed, auth0_domain=tenant)
     if configured:
-        return AuthSettings("on", password_hash, secret, deployed)
-    return AuthSettings("misconfigured", deployed=deployed)
+        return AuthSettings("on", password_hash, secret, deployed, tenant)
+    return AuthSettings("misconfigured", deployed=deployed, auth0_domain=tenant)
 
 
 # =============================================================================
@@ -301,7 +346,7 @@ def _harden(response: Response, request: Request, settings: AuthSettings) -> Res
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
-    response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+    response.headers["Content-Security-Policy"] = content_security_policy(request.url.path, settings.auth0_domain)
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
     if _is_https(request, settings):
@@ -335,7 +380,7 @@ def install_auth(app: FastAPI, env: Mapping[str, str] | None = None,
                 return _harden(too_big, request, settings)
         signed_in = settings.mode == "off" or session_is_valid(
             request.cookies.get(SESSION_COOKIE), settings.signing_key, clock())
-        if signed_in or path in PUBLIC_PATHS:
+        if signed_in or not needs_session(path):
             return _harden(await call_next(request), request, settings)
         if path.startswith("/api/"):
             return _harden(JSONResponse({"detail": "Sign in required"}, status_code=401), request, settings)

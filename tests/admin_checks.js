@@ -19,7 +19,7 @@ function environment(options={}) {
   }
   for (const id of ids) elements.set(id,element());
   const get = id => { assert(elements.has(id),`Missing real HTML element: ${id}`); return elements.get(id); };
-  let configuration;
+  let configuration, configRequests = 0;
   let tokenAttempt = 0;
   const storage = options.storage || new Map();
   const TestDate=options.now ? class extends Date {constructor(...args){super(...(args.length ? args : [options.now]));}} : Date;
@@ -51,6 +51,14 @@ function environment(options={}) {
         async logout(){actions.push("logout");if(options.logoutError)throw Error("private error");}
       }}},
     async fetch(url,settings){
+      // Start-up settings request: sent before sign-in, so it carries no token and is not one of the recorded API calls.
+      if(url==="/api/admin/config") {
+        assert.equal(settings.headers.Authorization,undefined);
+        configRequests++;
+        if(options.configDown && configRequests <= options.configDown) throw Error("network down");
+        if(options.noConfig) return {ok:false,status:503,async json(){return {detail:"Admin sign-in is not configured on this server."};}};
+        return {ok:true,status:200,async json(){return {domain:"tenant.example.test",clientId:"client-id",audience:"https://api.example.test"};}};
+      }
       calls.push({url,settings});
       if(url==="/api/admin/me" && options.mePromise) await options.mePromise;
       if(url==="/api/admin/uploads" && !settings.method && options.historyPromise) await options.historyPromise;
@@ -91,6 +99,8 @@ function environment(options={}) {
       assert(!e.get("authStatus").textContent.includes("invalid_token"));
     }
     assert.equal(e.config().cacheLocation,"memory");assert.equal(e.config().useRefreshTokens,false);count++;
+    assert.equal(e.config().domain,"tenant.example.test");assert.equal(e.config().clientId,"client-id");
+    assert.equal(e.config().authorizationParams.audience,"https://api.example.test");
   }
   for(const options of [{tokenError:true},{networkError:true},{noSdk:true},{search:"?error=access_denied&state=test",callbackError:true}]) {
     const e=environment(options);await settle();assert(e.get("adminContent").hidden);assert(e.get("logout").hidden);assert(e.get("userEmail").hidden);assert(!e.actions.includes("login"));e.noSecrets();count++;
@@ -281,5 +291,16 @@ function environment(options={}) {
   finishLateHistory();await settle();
   assert(historyLogout.get("adminContent").hidden);assert.equal(historyLogout.get("historyRefreshedAt").textContent,"Not refreshed yet.");
   assert.equal(historyLogout.get("historyRows").children.length,0);count++;
+  // Server without Auth0 settings: the page says so and never calls the admin API or builds a client.
+  const unconfigured=environment({noConfig:true});await settle();
+  assert.equal(unconfigured.get("authStatus").textContent,"Admin sign-in is not configured on this server. Tell the site owner.");
+  assert(unconfigured.get("adminContent").hidden);assert.equal(unconfigured.calls.length,0);assert.equal(unconfigured.config(),undefined);
+  assert(!unconfigured.get("retrySession").hidden);assert(!unconfigured.get("retrySession").disabled);count++;
+  // Settings request fails once (no network): the page says so, offers Retry, and Retry signs the admin in.
+  const flaky=environment({configDown:1});await settle();
+  assert.equal(flaky.get("authStatus").textContent,"Could not reach the server to start sign-in. Check your connection and retry.");
+  assert(flaky.get("adminContent").hidden);assert(!flaky.get("retrySession").hidden);assert(!flaky.get("retrySession").disabled);
+  await flaky.event("retrySession");
+  assert(!flaky.get("adminContent").hidden);assert.equal(flaky.calls[0].url,"/api/admin/me");count++;
   console.log(`Admin checks passed (${count} scenarios).`);
 })().catch(error=>{console.error(error);process.exitCode=1;});
