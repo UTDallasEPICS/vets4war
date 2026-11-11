@@ -20,6 +20,14 @@
         the recommendation, the verdict (under / on target / over / exceeds
         capacity) and the Erlang service level at the PLANNED number.
     GET /api/model                                          models/metadata.json
+    POST /api/admin/validate                                multipart file + optional month=YYYY-MM;
+        validation report only (db.ingest.parse_partner_excel); no database.
+    POST /api/admin/uploads                                 multipart file + month=YYYY-MM;
+        validates and stages a batch (db.pipeline.preview): {id, status, validation}
+    POST /api/admin/uploads/{id}/import                     {expected_rows, replace_batch_id?};
+        imports a staged batch into calls (db.pipeline.commit_import)
+    GET /api/admin/uploads                                  the last 100 batches (db.pipeline.history)
+        The three /api/admin/uploads routes require an admin (require_admin).
     GET /                                                   web/index.html (static)
     POST /api/login, POST /api/logout, GET /api/session     shared-password sign-in
         (api/site_auth.py). Everything above needs a session unless sign-in is
@@ -41,12 +49,15 @@ import math
 import logging
 import os
 import sys
+import uuid
 from datetime import date, timedelta
+from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -57,9 +68,12 @@ try:
 except ImportError:
     sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
 
+from db import pipeline  # noqa: E402
+from api.auth import require_permissions  # noqa: E402
 from db.aht import DEFAULT_RECENCY, RECENCY_OPTIONS  # noqa: E402
 from db.features import SATURDAY_ISODOW, load_holidays  # noqa: E402
 from db.forecast import aht_table, holiday_coverage  # noqa: E402
+from db.ingest import parse_partner_excel  # noqa: E402
 from db.patience import cached_patience  # noqa: E402
 from db.quick_abandon import quick_hangups  # noqa: E402
 from db.source import describe_source  # noqa: E402
@@ -118,10 +132,37 @@ async def revalidate_page_files(request, call_next):
     """Browsers must re-check the page's HTML/JS/CSS on every load (a cheap
     304 when unchanged). Without this a browser can run a cached old script
     against new HTML, which breaks the page silently."""
+    # Apply cache policy after the route has produced its response so static
+    # assets are revalidated without imposing this policy on JSON API results.
     response = await call_next(request)
     if not request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+# Room for the multipart boundaries and the month field around the workbook.
+UPLOAD_ENVELOPE_BYTES = 64 * 1024
+UPLOAD_PATHS = ("/api/admin/validate", "/api/admin/uploads")
+TOO_LARGE = "Upload a nonempty Excel file no larger than 25 MB."
+
+
+@app.middleware("http")
+async def reject_oversized_uploads(request, call_next):
+    """FastAPI spools the whole multipart body before a route runs, so a route
+    cannot refuse an oversized workbook early. Refuse it here from the declared
+    Content-Length instead. Bodies without one are still capped in _read_upload."""
+    if request.method == "POST" and request.url.path in UPLOAD_PATHS:
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > pipeline.MAX_BYTES + UPLOAD_ENVELOPE_BYTES:
+            return JSONResponse({"detail": TOO_LARGE}, status_code=413)
+    return await call_next(request)
+
+
+@app.exception_handler(pipeline.PipelineError)
+async def pipeline_error(request, exc: pipeline.PipelineError):
+    # PipelineError messages are written for the admin page; status is chosen
+    # in db.pipeline (400 bad input, 409 conflict, 413 too large, 503 setup).
+    return JSONResponse({"detail": str(exc)}, status_code=exc.status)
 
 
 # =============================================================================
@@ -129,11 +170,15 @@ async def revalidate_page_files(request, call_next):
 # =============================================================================
 
 def _default_range() -> tuple[date, date]:
+    # Use an inclusive 30-day window, matching the forecast endpoint's
+    # documented default horizon.
     start = date.today()
     return start, start + timedelta(days=DEFAULT_HORIZON_DAYS - 1)
 
 
 def _validate_range(start: date | None, end: date | None) -> tuple[date, date]:
+    # Apply the same defaults and maximum horizon to each forecast endpoint
+    # before doing any database work.
     default_start, default_end = _default_range()
     start = start or default_start
     end = end or default_end
@@ -149,6 +194,8 @@ def _connection():
     dsn = os.environ.get("V4W_DATABASE_URL")
     if not dsn:
         raise HTTPException(503, "V4W_DATABASE_URL is not set")
+    # Convert an unavailable database into an explicit service error while
+    # retaining the original exception in server logs for diagnosis.
     try:
         return psycopg.connect(dsn)
     except psycopg.Error as exc:
@@ -161,6 +208,8 @@ def _connection():
 def _queue_params(conn, queue_model: str, patience_sec: float | None) -> dict:
     """What the run actually used: the model, the patience in seconds, and
     where that patience came from (the data estimate, or the override)."""
+    # Resolve once and report the origin alongside the exact parameter used,
+    # so downstream calculations and the client-visible metadata agree.
     resolved = resolve_patience(conn, queue_model, patience_sec)
     if queue_model == "erlang_c":
         source = None
@@ -180,6 +229,8 @@ def _equal_weight_talk_sec(conn, start: date, end: date, recency: str, include_h
     calls are multiplied by the equal-weight AHT for each weekday and hour."""
     if recency == "equal":
         return _talk_seconds(hourly["offered_load_erlangs"].sum())
+    # Calls are unchanged by the AHT recency selector, so only recompute the
+    # AHT lookup and weight it by the already-produced hourly call forecast.
     equal = aht_table(conn, "equal")
     dow = hourly["hour_start"].dt.isocalendar().day.astype(int)
     hour = hourly["hour_start"].dt.hour
@@ -197,6 +248,8 @@ def _hourly_staffing(start: date, end: date, efficiency: float, target_pct: floa
     staff_for_range -> forecast_range builds the whole hourly grid once and
     runs the shared build_features on it once with the trained epoch. This
     is the only feature path; nothing here recomputes features."""
+    # Keep one connection around all related calculations so each response
+    # uses a consistent source and avoids reopening the database per helper.
     try:
         with _connection() as conn:
             queue = _queue_params(conn, queue_model, patience_sec)
@@ -242,6 +295,8 @@ def _hour_rows(hourly: pd.DataFrame) -> list[dict]:
     """One JSON row per hour with every link of the chain, unrounded, so a
     reader can recompute each number from the previous one. Scheduling
     fields are null at efficiency 0, with `reason` saying why."""
+    # Keep one stable JSON mapping per hourly row; `_opt` makes undefined
+    # staffing values JSON nulls instead of leaking NaN into the response.
     return [
         {
             "date": row.hour_start.strftime("%Y-%m-%d"),
@@ -278,6 +333,8 @@ def _abandoned_one_fewer(hourly: pd.DataFrame, efficiency: float, target_sec: fl
     buys. None under Erlang C (no abandonment) or at efficiency 0."""
     if patience_sec is None or efficiency == 0 or hourly["scheduled_needed"].isna().any():
         return None
+    # Convert the counterfactual scheduled headcount to productive agents and
+    # weight each hour's abandonment share by the forecast arrivals there.
     total = 0.0
     for row in hourly.itertuples(index=False):
         fewer = max(int(row.scheduled_needed) - 1, 0)
@@ -292,8 +349,12 @@ def _window_summary(hourly: pd.DataFrame, start: date, end: date, efficiency: fl
     """Totals over the whole requested window, in seconds and as text, next to
     the call total they came from. Carries the caveat so the number never
     travels without it."""
+    # Derive totals from the hourly frame already used for staffing, avoiding
+    # a second prediction pass and keeping summaries internally consistent.
     calls = float(hourly["predicted_offered"].sum())
     talk_sec = _talk_seconds(hourly["offered_load_erlangs"].sum())
+    # Erlang C intentionally has no abandonment estimate; omit its undefined
+    # values rather than representing them as zero hang-ups.
     known = hourly["abandon_share"].notna()
     abandoned = float((hourly["predicted_offered"] * hourly["abandon_share"])[known].sum()) if known.any() else None
     # recency_effect_pct: how far the chosen weighting moves expected talk
@@ -348,6 +409,8 @@ def _days_with_calendar(shifts: pd.DataFrame, holidays: pd.DataFrame,
 def _days_with_shifts(shifts: pd.DataFrame) -> list[dict]:
     """One entry per date, shifts nested by name, plus the daily call total."""
     days = []
+    # Grouping after rollup keeps shift calculations in db.staffing and limits
+    # this helper to formatting the API's nested day/shift response shape.
     for shift_date, group in shifts.groupby("shift_date", sort=True):
         by_name = {
             row.shift: {
@@ -395,7 +458,10 @@ def api_forecast(
     recency: str = Query(DEFAULT_RECENCY, pattern=RECENCY_PATTERN),
     include_holidays: bool = True,
 ):
+    # Validate user-controlled inputs before invoking shared domain logic.
     start, end = _validate_range(start, end)
+    # Compute one shared hourly frame, then derive both detailed hours and
+    # daily/shift summaries from those same rows.
     run = _hourly_staffing(start, end, efficiency, target_pct, target_sec, queue_model, patience_sec,
                            recency, include_holidays)
     hourly = run["hourly"]
@@ -425,6 +491,8 @@ def api_staffing(
     include_holidays: bool = True,
 ):
     start, end = _validate_range(start, end)
+    # This compact endpoint reuses the full forecast computation but returns
+    # only the shift/day output needed by simpler clients.
     run = _hourly_staffing(start, end, efficiency, target_pct, target_sec, queue_model, patience_sec,
                            recency, include_holidays)
     return {
@@ -464,11 +532,15 @@ def api_planned(body: PlannedRequest):
     run = _hourly_staffing(start, end, body.efficiency, body.target_pct, body.target_sec,
                            body.queue_model, body.patience_sec, body.recency, body.include_holidays)
     hourly, queue = run["hourly"], run["queue"]
+    # Index recommendations by the exact date/shift key used by each planned
+    # roster row, then evaluate the supervisor's chosen headcount separately.
     recommended = rollup_shifts(hourly).set_index(["shift_date", "shift"])["staff_needed"]
     memberships = shift_memberships(hourly)
     if body.efficiency == 0:
         raise HTTPException(400, "efficiency is 0: people to schedule is undefined, so there is no roster to judge")
 
+    # Evaluate each submitted roster row independently while reusing the
+    # same forecast, shift memberships and queue parameters for the request.
     results = []
     for item in body.planned:
         key = (pd.Timestamp(item.date), item.shift)
@@ -499,6 +571,8 @@ def api_planned(body: PlannedRequest):
 def api_model():
     if not METADATA_PATH.exists():
         raise HTTPException(404, f"{METADATA_PATH} not found; run `make train`")
+    # Return persisted metadata verbatim (plus source provenance), and surface
+    # malformed JSON or database failures as explicit HTTP errors.
     try:
         metadata = json.loads(METADATA_PATH.read_text())
     except json.JSONDecodeError as exc:
@@ -512,5 +586,108 @@ def api_model():
     return {**metadata, "data_source": source}
 
 
-# Static site last so /api/* routes win.
+# =============================================================================
+# Admin: monthly Excel uploads
+# =============================================================================
+
+require_admin = require_permissions("read:admin")
+require_import = require_permissions("read:admin", "import:calls")
+
+
+def _read_upload(file: UploadFile) -> bytes:
+    content = file.file.read(pipeline.MAX_BYTES + 1)
+    if not content or len(content) > pipeline.MAX_BYTES:
+        raise HTTPException(413, TOO_LARGE)
+    return content
+
+
+def _pipeline_connection():
+    try:
+        return pipeline.connect()
+    except psycopg.OperationalError as exc:
+        log.exception("pipeline database connection failed")
+        raise HTTPException(503, "The application database is unavailable. Try again later.") from exc
+
+
+class ImportRequest(BaseModel):
+    # The row count the admin confirms from the source export; must match the batch.
+    expected_rows: int = Field(ge=1, le=pipeline.MAX_ROWS)
+    # Required only to replace a month that is already imported.
+    replace_batch_id: uuid.UUID | None = None
+
+
+@app.post("/api/admin/validate")
+def api_admin_validate(file: UploadFile = File(...), month: str | None = Form(None)):
+    """Check the configured export layout (default: partner Call Log). Nothing is
+    stored, and normalized call records are never sent back to the browser."""
+    # Omit month for format-only testing, including cross-month weekly exports.
+    # Explicit month checks remain available; staging/import always require one.
+    month_value = pipeline.month_start(month) if month is not None else None
+    content = _read_upload(file)
+    pipeline.check_archive(content)
+    # Match staging's explicit sheet/mapping without opening a DB connection.
+    # An invalid configured contract fails closed; never guess another sheet.
+    options = {}
+    if os.environ.get("V4W_EXPORT_CONTRACT"):
+        profile = pipeline.contract()
+        options = profile.parser_options()
+    result = parse_partner_excel(BytesIO(content), month=month_value.strftime("%Y-%m") if month_value else None,
+                                 max_rows=pipeline.MAX_ROWS, **options)
+    report = result.report()
+    months = {}
+    for row in result.rows:
+        stamp = row.record.get("start_ts")
+        if stamp is not None:
+            key = stamp.strftime("%Y-%m")
+            months[key] = months.get(key, 0) + 1
+    report["months_found"] = dict(sorted(months.items()))
+    report["validation_scope"] = "single_month" if month_value else "format_only"
+    report["warnings"].append("Validation only: no records were staged or imported. Import requires a complete export for one completed reporting month.")
+    report["row_errors_truncated"] = len(report["row_errors"]) > 200
+    report["row_errors"] = report["row_errors"][:200]
+    return report
+
+
+@app.post("/api/admin/uploads", status_code=201)
+def api_admin_upload(file: UploadFile = File(...), month: str = Form(...), user: dict = Depends(require_import)):
+    month_value = pipeline.month_start(month)
+    content = _read_upload(file)
+    profile = pipeline.contract()
+    with _pipeline_connection() as conn:
+        return pipeline.preview(conn, content, month_value, user["sub"], profile)
+
+
+@app.post("/api/admin/uploads/{batch_id}/import")
+def api_admin_import(batch_id: uuid.UUID, body: ImportRequest, user: dict = Depends(require_import)):
+    profile = pipeline.contract()
+    with _pipeline_connection() as conn:
+        return pipeline.commit_import(conn, batch_id, profile, expected_rows=body.expected_rows,
+                                      replace_batch_id=body.replace_batch_id, actor=user["sub"])
+
+
+@app.get("/api/admin/uploads")
+def api_admin_history(user: dict = Depends(require_admin)):
+    with _pipeline_connection() as conn:
+        return pipeline.history(conn)
+
+
+# Mount the static UI only after defining the API routes so `/api/*` requests
+# continue to resolve to their handlers rather than the frontend file server.
+from api.admin import router as admin_router  # noqa: E402
+
+app.include_router(admin_router)
 app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+
+
+# This module exposes the forecasting and staffing domain through FastAPI.
+# It validates date ranges and query/body constraints, manages one database
+# connection per calculation, calls shared domain helpers, and serializes
+# hourly details, daily shift summaries, planned-roster outcomes, model
+# metadata, holiday coverage, and data-source provenance for clients.
+#
+# Numerical behavior deliberately remains in db/ modules: volume prediction
+# belongs to db.forecast, queueing and staffing to db.staffing/db.erlang, and
+# historical estimates to their focused helpers. This separation lets the
+# frontend API and command-line snapshot/scoring workflows use the same
+# calculations, while this module owns HTTP-specific validation, status codes,
+# response shape, static-file serving, and error logging.
