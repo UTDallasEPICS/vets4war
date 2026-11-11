@@ -159,16 +159,16 @@ def test_real_jwt_permissions_on_ingestion_routes(security, monkeypatch, permiss
         connections.append(True)
         return nullcontext(object())
     monkeypatch.setattr(admin, "_pipeline_connection", connect)
-    monkeypatch.setattr(main.pipeline, "contract", lambda: object())
+    monkeypatch.setenv("V4W_ADMIN_IMPORTS", "1")
     monkeypatch.setattr(main.pipeline, "history", lambda conn: [])
-    monkeypatch.setattr(main.pipeline, "preview", lambda conn, content, month, actor, profile:
+    monkeypatch.setattr(main.pipeline, "preview", lambda conn, content, actor:
                         actors.append(actor) or {"id": "batch", "status": "validated", "validation": {}})
-    monkeypatch.setattr(main.pipeline, "commit_import", lambda conn, batch, profile, **kwargs:
+    monkeypatch.setattr(main.pipeline, "commit_import", lambda conn, batch, **kwargs:
                         actors.append(kwargs["actor"]) or {"id": str(batch), "status": "imported"})
     headers = {"Authorization": f"Bearer {token(key, permissions=permissions)}"}
     with TestClient(main.app) as client:
         assert client.get("/api/admin/uploads", headers=headers).status_code == history_status
-        response = client.post("/api/admin/uploads", headers=headers, data={"month": "2026-09"},
+        response = client.post("/api/admin/uploads", headers=headers,
                                files={"file": ("calls.xlsx", b"synthetic")})
         assert response.status_code == write_status
         response = client.post("/api/admin/uploads/00000000-0000-0000-0000-000000000001/import",
@@ -184,10 +184,11 @@ def test_insecure_environment_variable_cannot_bypass_authentication(monkeypatch)
     def forbidden(*args, **kwargs):
         pytest.fail("Unauthorized request reached ingestion")
     monkeypatch.setattr(admin, "_pipeline_connection", forbidden)
-    monkeypatch.setattr(main.pipeline, "contract", forbidden)
+    monkeypatch.setattr(main.pipeline, "preview", forbidden)
+    monkeypatch.setattr(main.pipeline, "commit_import", forbidden)
     with TestClient(main.app) as client:
         assert client.get("/api/admin/uploads").status_code == 401
-        assert client.post("/api/admin/uploads", data={"month": "2026-09"},
+        assert client.post("/api/admin/uploads",
                            files={"file": ("calls.xlsx", b"synthetic")}).status_code == 401
         assert client.post("/api/admin/uploads/00000000-0000-0000-0000-000000000001/import",
                            json={"expected_rows": 1}).status_code == 401

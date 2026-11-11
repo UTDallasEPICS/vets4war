@@ -13,15 +13,17 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, time
 import json
 import math
 from pathlib import Path
 import re
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 
 from openpyxl import load_workbook
+from pydantic import BaseModel, ConfigDict, Field
 
 
 DURATION_FIELDS = ("in_queue_sec", "agent_sec", "abandon_sec", "routing_sec")
@@ -354,6 +356,39 @@ def parse_excel(source: str | Path | BinaryIO, *, sheet: str | None = None,
         return ValidationResult(file_errors=[ValidationIssue(None, "unreadable_file", "The worksheet could not be read completely; no records were accepted.")])
     finally:
         workbook.close()
+
+
+
+# Which sheet, columns and formats one export uses, as a checked JSON file
+# (config/export-contract.example.json). It feeds parse_excel through
+# parser_options(). It lived in db/pipeline.py while imports were month-based;
+# the day-range import reads client workbooks through db.client_files and no
+# longer needs a contract, so the class stays with the validator that uses it.
+class ExportContract(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmed: bool = False
+    confirmed_by: str = ""
+    source_namespace: str = Field(min_length=1, max_length=100)
+    identifier_column: str | None = Field(default=None, min_length=1)
+    sheet: str | None = None
+    column_map: dict[str, str] = Field(default_factory=dict)
+    timestamp_format: str | None = None
+    timestamp_time_column: str | None = Field(default=None, min_length=1)
+    auto_detect_sheet: bool = False
+    skip_blank_rows: bool = False
+    timezone: Literal["unconfirmed", "America/New_York"] = "unconfirmed"
+    duration_unit: Literal["seconds"] = "seconds"
+    one_row_per_inbound_call: Literal[True] = True
+    correction_policy: Literal["replace_managed_month"] = "replace_managed_month"
+
+    @property
+    def fingerprint(self):
+        return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
+
+    def parser_options(self):
+        return {name: getattr(self, name) for name in (
+            "sheet", "column_map", "timestamp_format", "identifier_column",
+            "timestamp_time_column", "auto_detect_sheet", "skip_blank_rows")}
 
 
 def main(argv: list[str] | None = None) -> int:

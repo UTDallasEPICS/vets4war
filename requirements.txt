@@ -18,3 +18,5 @@ openpyxl==3.1.5
 httpx==0.28.1
 # Auth0 RS256 access-token verification and cached JWKS retrieval.
 PyJWT[crypto]==2.15.1
+# openpyxl uses it automatically to parse uploaded workbooks' XML defensively.
+defusedxml==0.7.1

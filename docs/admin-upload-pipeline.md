@@ -1,5 +1,9 @@
 # Admin monthly upload pipeline
 
+> **Superseded in part (2026-11-11).** Uploads are no longer limited to one calendar month: a file may cover any
+> range of whole days, and replacement is per day. See [Loading call data](day-range-ingestion.md) for how imports
+> work now. The text below is kept as written for the month-based design and its reasoning.
+
 The current example contract accepts the actual partner export: `Skill_Name`,
 `Start_Date`, `start_time`, `InQueue`, `Agent_Time`, `Abandon_Time`, `Routing_Time`,
 `Abandon`. It combines the native Excel date and clock, ignores fully blank rows,

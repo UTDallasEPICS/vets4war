@@ -21,8 +21,8 @@
   }
   let client, selectedFile, batch;
   let authorized = false, canImport = false, busy = false, generation = 0;
-  let replacementOffered = false;
-  const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+  const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+  const MAX_DAYS_LISTED = 10;
   let history = [];
   let historyLoaded = false, historyLoading = false, historyRequest = 0;
   const requests = new Set();
@@ -33,48 +33,43 @@
   const year = Number(parts.find(p => p.type === "year").value);
   const month = Number(parts.find(p => p.type === "month").value);
   const previousMonth = `${month === 1 ? year - 1 : year}-${String(month === 1 ? 12 : month - 1).padStart(2,"0")}`;
-  get("uploadMonth").value = previousMonth; get("uploadMonth").max = previousMonth;
   get("reportMonth").value = previousMonth; get("reportMonth").max = previousMonth;
   const message = (id, text) => { get(id).textContent = text; };
   const current = version => version === generation;
+  // The days of the staged file whose stored calls differ from the file's.
+  // Importing replaces exactly these days, and only after the admin confirms.
+  function conflictDays() {
+    return batch && batch.validation.days ? batch.validation.days.filter(day => day.status === "conflict").map(day => day.day) : [];
+  }
+  function listDays(days) {
+    const more = days.length - MAX_DAYS_LISTED;
+    return days.slice(0,MAX_DAYS_LISTED).join(", ") + (more > 0 ? ` and ${more} more` : "");
+  }
   function syncButtons() {
-    const validMonth = /^\d{4}-\d{2}$/.test(get("uploadMonth").value) && get("uploadMonth").checkValidity();
-    get("checkFile").disabled = busy || !authorized || !canImport || !selectedFile || !validMonth;
+    get("checkFile").disabled = busy || !authorized || !canImport || !selectedFile;
     get("stageFile").disabled = busy || !authorized || !selectedFile;
-    const count = Number(get("expectedRows").value);
+    const count = Number(get("expectedRows").value), replacing = conflictDays().length;
     get("importFile").disabled = busy || !authorized || !canImport || !batch || batch.status !== "validated" ||
-      !batch.validation.contract_confirmed || !get("confirmImport").checked ||
+      batch.validation.nothing_to_import || !get("confirmImport").checked ||
       !Number.isInteger(count) || count < 1 || count !== batch.validation.summary.total_rows;
-    get("importFile").textContent = get("replaceBatch").value ? "Replace Current Batch" : "Validate & Import";
-    const previous = currentImportedBatch();
-    get("replaceCurrentBatch").hidden = !replacementOffered || !previous || get("replaceBatch").value === previous.id;
-    get("replaceCurrentBatch").disabled = busy || !authorized || !canImport || !batch || batch.status !== "validated";
+    get("importFile").textContent = replacing ? `Replace ${replacing} day${replacing === 1 ? "" : "s"} & import` : "Import";
     get("clearFile").disabled = busy || !selectedFile;
-    get("workbook").disabled = busy; get("uploadMonth").disabled = busy;
+    get("workbook").disabled = busy;
     get("refreshHistory").disabled = busy || !authorized || historyLoading;
   }
-  function currentImportedBatch() {
-    return history.find(row => row.status === "imported" && row.month.slice(0,7) === get("uploadMonth").value);
+  // What a batch covers: its days, or the month for batches staged before day ranges.
+  function period(item) {
+    if (item.first_day) return item.first_day === item.last_day ? item.first_day : `${item.first_day} to ${item.last_day}`;
+    return item.month ? item.month.slice(0,7) : "—";
   }
   function uploadStatus(text, pending = true) {
     message("uploadStatus",text); get("uploadStatus").classList.toggle("pending",pending);
   }
-  function renderReplacements() {
-    const select = get("replaceBatch"), previous = select.value;
-    const rows = history.filter(row => row.status === "imported" && row.month.slice(0,7) === get("uploadMonth").value);
-    select.replaceChildren();
-    const none = document.createElement("option"); none.value = ""; none.textContent = "No replacement"; select.append(none);
-    for (const row of rows) {
-      const option = document.createElement("option"); option.value = row.id;
-      option.textContent = `${row.month.slice(0,7)} · ${row.id}`; select.append(option);
-    }
-    if (rows.some(row => row.id === previous)) select.value = previous;
-  }
   function resetValidation() {
-    batch = null; replacementOffered = false; get("confirmImport").checked = false; get("expectedRows").value = "";
+    batch = null; get("confirmImport").checked = false; get("expectedRows").value = "";
     uploadStatus("Not validated");
     message("validationState","Not run"); message("validationCounts","— / — / —");
-    get("validationIssues").replaceChildren(); message("importStatus",""); renderReplacements(); syncButtons();
+    get("validationIssues").replaceChildren(); message("importStatus",""); syncButtons();
   }
   function hideContent() {
     authorized = false; canImport = false; get("adminContent").hidden = true;
@@ -183,12 +178,11 @@
       const table = get("historyRows"); table.replaceChildren();
       for (const item of rows) {
         const row = document.createElement("tr");
-        for (const value of [item.month.slice(0,7),item.status,item.uploader,item.imported_by || "—",item.id]) {
+        for (const value of [period(item),item.status,item.uploader,item.imported_by || "—",item.id]) {
           const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
         }
         table.append(row);
       }
-      renderReplacements();
       const count = rows.length ? `${rows.length} uploads shown.` : "No uploads yet.";
       message("historyStatus",unchanged ? `No changes. ${count}` : count);
       message("historyRefreshedAt",`Last refreshed: ${new Date().toLocaleString(undefined,{timeZoneName:"short"})}`);
@@ -201,15 +195,15 @@
   function showReport(report) {
     const summary = report.summary;
     message("validationState",report.ok ? "Passed" : "Failed");
-    message("validationCounts",`${summary.valid_rows} / ${summary.invalid_rows} / ${summary.duplicate_rows}`);
+    message("validationCounts",summary.days === undefined ? "— / — / —" : `${summary.new_days} / ${summary.identical_days} / ${summary.conflict_days}`);
     const list = get("validationIssues"); list.replaceChildren();
     function issue(text) { const li = document.createElement("li"); li.textContent = text; list.append(li); }
+    if (summary.days !== undefined) issue(`${summary.total_rows} calls, ${summary.first_day} to ${summary.last_day}.`);
     for (const error of report.file_errors || []) issue(error.message);
-    const rows = report.row_errors || [];
-    for (const row of rows.slice(0,200)) issue(`Row ${row.row_number}: ${row.errors.map(error => error.message).join("; ")}`);
-    if (report.row_errors_truncated || rows.length > 200) issue("Only the first 200 row errors are shown.");
-    if (report.days_without_calls && report.days_without_calls.length) issue(`Days without calls: ${report.days_without_calls.join(", ")}. Verify completeness.`);
-    if (report.months_found) issue(`Months found: ${Object.entries(report.months_found).map(([month,count]) => `${month}: ${count} calls`).join("; ") || "none"}.`);
+    const different = (report.days || []).filter(day => day.status === "conflict");
+    for (const day of different.slice(0,MAX_DAYS_LISTED)) issue(`${day.day}: the file has ${day.rows} calls, the database has ${day.existing_rows} and they differ.`);
+    if (different.length > MAX_DAYS_LISTED) issue(`${different.length - MAX_DAYS_LISTED} more days differ.`);
+    if (report.nothing_to_import) issue("Every day in this file is already loaded with the same calls. Nothing to import.");
     for (const warning of report.warnings || []) issue(warning);
   }
   function selectFiles(files) {
@@ -217,7 +211,7 @@
     selectedFile = null; resetValidation();
     const file = files.length === 1 ? files[0] : null;
     if (!file || !/\.xlsx$/i.test(file.name) || !file.size || file.size > MAX_UPLOAD_BYTES) {
-      get("workbook").value = ""; message("fileStatus","Choose exactly one nonempty .xlsx workbook, up to 25 MB.");
+      get("workbook").value = ""; message("fileStatus","Choose exactly one nonempty .xlsx workbook, up to 4 MB.");
     } else { selectedFile = file; message("fileStatus",canImport ? `${file.name} selected. Validate upload to stage a batch for review.` : `${file.name} selected. Use Check without staging; uploading requires import permission.`); }
     syncButtons();
   }
@@ -238,30 +232,16 @@
     }
     finally { busy = false; syncButtons(); }
   }
-  function workbookBody(includeMonth = true) {
+  function workbookBody() {
     const form = new FormData(); form.append("file",selectedFile);
-    if (includeMonth) form.append("month",get("uploadMonth").value);
     return form;
   }
   get("workbook").addEventListener("change",() => selectFiles(get("workbook").files));
-  get("uploadMonth").addEventListener("input",() => {
-    resetValidation();
-    if (selectedFile) message("fileStatus","Reporting month changed. Validate the workbook again before staging.");
-  });
   get("clearFile").addEventListener("click",() => { selectedFile = null; get("workbook").value = ""; resetValidation(); message("fileStatus","File cleared."); });
   for (const name of ["dragenter","dragover"]) get("dropzone").addEventListener(name,event => event.preventDefault());
   get("dropzone").addEventListener("drop",event => { event.preventDefault(); selectFiles(event.dataTransfer.files); });
   for (const name of ["dragover","drop"]) window.addEventListener(name,event => event.preventDefault());
   for (const id of ["expectedRows","confirmImport"]) get(id).addEventListener("input",syncButtons);
-  get("replaceBatch").addEventListener("change",() => { get("confirmImport").checked = false; syncButtons(); });
-  get("replaceCurrentBatch").addEventListener("click",() => {
-    if (get("replaceCurrentBatch").disabled) return;
-    const previous = currentImportedBatch();
-    if (!previous) return;
-    get("replaceBatch").value = previous.id; get("confirmImport").checked = false;
-    message("importStatus",`Selected current batch ${previous.id} for replacement. Verify the source row count and confirm again before replacing its calls.`);
-    syncButtons();
-  });
   get("checkFile").addEventListener("click",() => {
     if (get("checkFile").disabled) return;
     return action("fileStatus",async version => {
@@ -272,8 +252,11 @@
       batch = result; showReport(batch.validation);
       uploadStatus(batch.status === "validated" ? "Validated batch" : batch.status === "invalid" ? "Validation failed" : `Batch ${batch.status}`,batch.status !== "validated");
       message("fileStatus",`Batch ${batch.id}: ${batch.status}. This request did not change calls.`);
+      const replacing = conflictDays();
       message("importStatus",batch.status !== "validated" ? "This batch cannot be imported. Select a fresh workbook." :
-        batch.validation.contract_confirmed ? "Verify the source row count and confirm before importing." : "Import is disabled until the team confirms the server export contract.");
+        batch.validation.nothing_to_import ? "Every day in this file is already loaded. Nothing to import." :
+        replacing.length ? `${replacing.length} day${replacing.length === 1 ? "" : "s"} already hold different calls (${listDays(replacing)}). Importing replaces exactly those days. Verify the source row count and confirm.` :
+        "Verify the source row count and confirm before importing.");
       await refreshHistory();
     });
   });
@@ -281,31 +264,29 @@
     if (get("stageFile").disabled) return;
     return action("fileStatus",async version => {
       resetValidation(); uploadStatus("Checking without staging...");
-      const report = await api("/api/admin/validate",{method:"POST",body:workbookBody(false)});
+      const report = await api("/api/admin/validate",{method:"POST",body:workbookBody()});
       if (!current(version)) return;
       showReport(report); uploadStatus(report.ok ? "Checked, not staged" : "Validation failed");
-      message("fileStatus",report.ok ? "Format checks passed across all dates. Nothing stored. Staging and import require a complete export for one completed month." : "Validation failed. Correct the workbook and try again.");
+      message("fileStatus",report.ok ? "Checks passed. Nothing stored. Use Validate upload to stage this file for import." : "Validation failed. Correct the workbook and try again.");
     });
   });
   get("importFile").addEventListener("click",() => {
     if (get("importFile").disabled) return;
     return action("importStatus",async version => {
-      const body = {expected_rows:Number(get("expectedRows").value)}, replacement = get("replaceBatch").value;
-      if (replacement) body.replace_batch_id = replacement;
+      const body = {expected_rows:Number(get("expectedRows").value),replace_days:conflictDays()};
       get("confirmImport").checked = false;
       try {
         const result = await api(`/api/admin/uploads/${encodeURIComponent(batch.id)}/import`,{
           method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
         if (!current(version)) return;
-        batch.status = result.status;
-        replacementOffered = false; uploadStatus("Imported",false);
-        message("importStatus","Import completed. Calls updated; retraining remains manual. Call-derived caches update after an API restart.");
+        batch = {...batch,status:result.status};
+        uploadStatus("Imported",false);
+        message("importStatus",`Import completed: ${result.inserted_rows} calls added, ${result.deleted_rows} removed (${result.replaced_days.length} day(s) replaced), ${result.skipped_days.length} day(s) were already loaded. Retraining remains manual. Call-derived caches update after an API restart.`);
       } catch (error) {
         if (current(version) && error.status === 409) {
           await refreshHistory();
-          replacementOffered = true;
           uploadStatus("Import conflict");
-          message("importStatus",`${error.message} Review history and explicitly choose a replacement if needed, then confirm again.`); return;
+          message("importStatus",`${error.message} Validate the file again to see the current state.`); return;
         }
         throw error;
       }

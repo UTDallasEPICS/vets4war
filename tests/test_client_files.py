@@ -5,12 +5,14 @@ no database.
 """
 
 from datetime import datetime, time
+from io import BytesIO
 
 import pandas as pd
 import pytest
 from openpyxl import Workbook
 
-from db.client_files import hourly_from_calls, read_call_records
+from db.client_files import hourly_from_calls, read_call_records, read_call_sheets
+from db.load_week import CallRecordsError
 
 HEADER = ["Skill_Name", "Start_Date", "start_time", "InQueue", "Agent_Time",
           "Abandon_Time", "Routing_Time", "Abandon"]
@@ -153,3 +155,58 @@ def test_header_names_with_stray_spaces_are_still_read(tmp_path):
     book.save(tmp_path / "spaces.xlsx")
 
     assert len(read_call_records(tmp_path / "spaces.xlsx")) == 3
+
+
+# ---- an uploaded workbook (bytes in memory, not a path) --------------------------
+
+def test_an_uploaded_workbook_reads_the_same_as_the_file_on_disk(tmp_path):
+    path = _validity_workbook(tmp_path / "validity.xlsx", SEP_1 + SEP_2)
+    uploaded = BytesIO(path.read_bytes())
+    pd.testing.assert_frame_equal(read_call_records(uploaded), read_call_records(path))
+
+
+def test_an_uploaded_workbook_can_be_read_again_from_wherever_it_was_left(tmp_path):
+    uploaded = BytesIO(_raw_workbook(tmp_path / "raw.xlsx", SEP_1).read_bytes())
+    uploaded.read()
+    assert len(read_call_records(uploaded)) == 3
+    assert len(read_call_records(uploaded)) == 3
+
+
+def test_an_uploaded_workbook_without_call_records_says_so(tmp_path):
+    book = Workbook()
+    book.active.append(["Calls Offered", 3])
+    book.save(tmp_path / "summary.xlsx")
+    with pytest.raises(ValueError, match="uploaded workbook: no call-records sheet"):
+        read_call_records(BytesIO((tmp_path / "summary.xlsx").read_bytes()))
+
+
+# ---- read_call_sheets -----------------------------------------------------------
+
+def test_calls_are_also_available_sheet_by_sheet(tmp_path):
+    book = Workbook()
+    book.active.title = "CY 2026 a"
+    _fill(book.active, SEP_1)
+    _fill(book.create_sheet("CY 2026 b"), SEP_2)
+    book.create_sheet("Notes").append(["not calls"])
+    book.save(tmp_path / "two.xlsx")
+
+    sheets = read_call_sheets(tmp_path / "two.xlsx")
+
+    assert list(sheets) == ["CY 2026 a", "CY 2026 b"]
+    assert [len(calls) for calls in sheets.values()] == [3, 1]
+    assert len(read_call_records(tmp_path / "two.xlsx")) == 4
+
+
+def test_problems_in_the_file_are_reported_as_call_record_errors(tmp_path):
+    """One error type for 'this is not a usable call-records file', so a
+    caller can show its message and treat anything else as a plain failure.
+    It is still a ValueError for callers that catch that."""
+    book = Workbook()
+    book.active.append(["Calls Offered", 3])
+    book.save(tmp_path / "summary.xlsx")
+    with pytest.raises(CallRecordsError):
+        read_call_records(tmp_path / "summary.xlsx")
+    broken = [(datetime(2026, 9, 1), time(0, 5, 0), "not a number", 60, 0, 5, "N")]
+    with pytest.raises(CallRecordsError, match="InQueue"):
+        read_call_records(_raw_workbook(tmp_path / "broken.xlsx", broken))
+    assert issubclass(CallRecordsError, ValueError)

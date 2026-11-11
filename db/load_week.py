@@ -65,6 +65,12 @@ EXCEL_ROW_OFFSET = 2
 MAX_ROWS_IN_ERROR = 10
 
 
+class CallRecordsError(ValueError):
+    """This is not a usable call-records file. The message names columns and
+    Excel row numbers, never cell contents, so it is safe to show to whoever
+    uploaded the file. Still a ValueError for callers that catch that."""
+
+
 # =============================================================================
 # Parsing (pure)
 # =============================================================================
@@ -72,9 +78,9 @@ MAX_ROWS_IN_ERROR = 10
 def _validate_columns(raw: pd.DataFrame) -> None:
     missing = [c for c in REQUIRED_COLUMNS if c not in raw.columns]
     if missing:
-        raise ValueError(f"file is missing columns {missing}; expected the partner call-records layout")
+        raise CallRecordsError(f"file is missing columns {missing}; expected the partner call-records layout")
     if raw.empty:
-        raise ValueError("file has no call rows")
+        raise CallRecordsError("file has no call rows")
 
 
 def _start_timestamps(raw: pd.DataFrame) -> pd.Series:
@@ -85,7 +91,7 @@ def _start_timestamps(raw: pd.DataFrame) -> pd.Series:
     bad = stamps.isna()
     if bad.any():
         rows = (raw.index[bad] + EXCEL_ROW_OFFSET).tolist()[:MAX_ROWS_IN_ERROR]
-        raise ValueError(f"unreadable Start_Date/start_time on Excel rows {rows}")
+        raise CallRecordsError(f"unreadable Start_Date/start_time on Excel rows {rows}")
     return stamps
 
 
@@ -93,16 +99,16 @@ def _abandoned_flags(raw: pd.DataFrame) -> pd.Series:
     flags = raw["Abandon"].astype(str).str.strip().str.upper()
     unknown = sorted(set(flags) - set(ABANDON_FLAGS))
     if unknown:
-        raise ValueError(f"Abandon must be Y or N, found {unknown}")
+        raise CallRecordsError(f"Abandon must be Y or N on every row; {len(unknown)} other value(s) found")
     return flags.map(ABANDON_FLAGS).astype(bool)
 
 
 def _seconds(raw: pd.DataFrame, column: str) -> pd.Series:
     values = pd.to_numeric(raw[column], errors="coerce")
     if values.isna().any():
-        raise ValueError(f"{column} has non-numeric or empty values")
+        raise CallRecordsError(f"{column} has non-numeric or empty values")
     if (values < 0).any():
-        raise ValueError(f"{column} has negative values")
+        raise CallRecordsError(f"{column} has negative values")
     return values.astype(float)
 
 

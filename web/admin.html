@@ -136,44 +136,42 @@
       <p id="authStatus" role="status" aria-live="polite">Checking your sign-in session…</p>
       <button type="button" class="pill primary" id="login" disabled>Log in with Auth0</button>
       <button type="button" class="pill" id="retrySession" hidden>Retry session check</button>
-      <p class="sub">Sign in to validate monthly workbooks and review uploads. Import access requires an assigned permission.</p>
+      <p class="sub">Sign in to validate call workbooks and review uploads. Import access requires an assigned permission.</p>
       <noscript><p class="notice">JavaScript is required to sign in. Admin content remains hidden.</p></noscript>
     </section>
     <div id="adminContent" hidden>
     <div class="intro">
-      <div><p class="eyebrow">Operations workspace</p><h1>Data &amp; model administration</h1><p class="muted">Manage monthly call data and review forecast performance.</p></div>
-      <span class="badge pending">Monthly ingestion</span>
+      <div><p class="eyebrow">Operations workspace</p><h1>Data &amp; model administration</h1><p class="muted">Manage call data and review forecast performance.</p></div>
+      <span class="badge pending">Call data ingestion</span>
     </div>
-    <div class="notice"><strong>Monthly data administration.</strong> Validate upload stages a batch for review. Confirm the source row count before importing. Imports change call data; retraining remains a separate manual step.</div>
-    <nav class="nav glass" aria-label="Admin sections"><a href="#upload">Monthly data</a><a href="#reports">Accuracy reports</a><a href="#retraining">Retraining</a></nav>
+    <div class="notice"><strong>Call data administration.</strong> Validate upload stages a batch for review. Confirm the source row count before importing. Imports change call data; retraining remains a separate manual step.</div>
+    <nav class="nav glass" aria-label="Admin sections"><a href="#upload">Call data</a><a href="#reports">Accuracy reports</a><a href="#retraining">Retraining</a></nav>
     <section class="card" aria-labelledby="historyTitle">
       <div class="card-head"><h2 id="historyTitle">Upload history</h2><button type="button" class="pill" id="refreshHistory">Refresh history</button></div>
       <p id="historyStatus" role="status" aria-live="polite"></p>
       <p id="historyRefreshedAt" class="sub">Not refreshed yet.</p>
-      <div class="table-scroll"><table><caption>Last 100 uploads</caption><thead><tr><th>Month</th><th>Status</th><th>Uploaded by</th><th>Imported by</th><th>Batch</th></tr></thead><tbody id="historyRows"></tbody></table></div>
+      <div class="table-scroll"><table><caption>Last 100 uploads</caption><thead><tr><th>Days</th><th>Status</th><th>Uploaded by</th><th>Imported by</th><th>Batch</th></tr></thead><tbody id="historyRows"></tbody></table></div>
     </section>
     <div class="grid">
       <section class="card" id="upload" aria-labelledby="uploadTitle">
-        <div class="card-head"><h2 id="uploadTitle">Monthly Excel upload</h2><span class="badge pending" id="uploadStatus" role="status">Not validated</span></div>
-        <p class="muted">Validate and stage a complete monthly call export, then review and confirm before importing.</p>
-        <p class="sub">Use the partner export columns: Skill_Name, Start_Date, start_time, InQueue, Agent_Time, Abandon_Time, Routing_Time, Abandon. Extra columns and reference tabs are fine. The call-data tab is identified by its headers; keep the month's calls in one tab. Multi-year history uses a separate preparation process.</p>
-        <label class="control" for="uploadMonth">Reporting month<input type="month" id="uploadMonth" required></label>
+        <div class="card-head"><h2 id="uploadTitle">Call data upload</h2><span class="badge pending" id="uploadStatus" role="status">Not validated</span></div>
+        <p class="muted">Validate and stage a call export covering any range of whole days (a week, several weeks, across months), then review and confirm before importing.</p>
+        <p class="sub">Use the partner export columns: Skill_Name, Start_Date, start_time, InQueue, Agent_Time, Abandon_Time, Routing_Time, Abandon. Extra columns and reference tabs are fine. The call-data tab is identified by its headers; a day's calls must all be on one tab. Files over 4 MB (multi-year history) are loaded from the command line.</p>
         <div class="dropzone" id="dropzone">
           <span class="upload-icon" aria-hidden="true">↑</span>
           <strong>Drop one Excel workbook here</strong>
-          <label for="workbook" class="sub">Or choose an .xlsx file · 25 MB limit</label>
+          <label for="workbook" class="sub">Or choose an .xlsx file · 4 MB limit</label>
           <input type="file" id="workbook" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" aria-describedby="fileHelp fileStatus">
         </div>
-        <p class="sub" id="fileHelp">Check without staging validates format across all dates, including files spanning multiple months, and stores nothing. Validate upload requires the selected completed reporting month and stages a batch for review. Import is a separate action that changes call data.</p>
+        <p class="sub" id="fileHelp">Check without staging compares the file with what is loaded, day by day, and stores nothing. Validate upload does the same and stages a batch for review. Only finished days can be imported (up to yesterday, Eastern time). Import is a separate action that changes call data.</p>
         <div class="actions"><button type="button" class="pill primary" id="checkFile" disabled>Validate upload</button><button type="button" class="pill" id="stageFile" disabled>Check without staging</button><button type="button" class="pill" id="clearFile" disabled>Clear file</button></div>
         <p class="feedback sub" id="fileStatus" role="status" aria-live="polite">No file selected. Nothing has been uploaded.</p>
-        <dl class="facts"><div><dt>Workbook validation</dt><dd id="validationState">Not run</dd></div><div><dt>Valid / invalid / duplicate rows</dt><dd id="validationCounts">- / - / -</dd></div></dl>
+        <dl class="facts"><div><dt>Workbook validation</dt><dd id="validationState">Not run</dd></div><div><dt>New / already loaded / different days</dt><dd id="validationCounts">- / - / -</dd></div></dl>
         <ul id="validationIssues" aria-label="Validation issues"></ul>
-        <div class="actions"><button type="button" class="pill" id="importFile" disabled>Validate &amp; Import</button><button type="button" class="pill" id="replaceCurrentBatch" hidden disabled>Replace Current Batch</button></div>
-        <p class="sub" id="importHelp">Import requires read:admin and import:calls permissions and a confirmed server export contract.</p>
+        <div class="actions"><button type="button" class="pill" id="importFile" disabled>Import</button></div>
+        <p class="sub" id="importHelp">Import requires the read:admin and import:calls permissions. New days are added, days already loaded are skipped, and a day that differs is replaced only when you confirm it.</p>
         <label class="control" for="expectedRows">Source export row count<input type="number" id="expectedRows" min="1" max="100000" step="1" inputmode="numeric"></label>
-        <label class="control" for="replaceBatch">Replace an imported batch (optional)<select id="replaceBatch"><option value="">No replacement</option></select></label>
-        <label><input type="checkbox" id="confirmImport"> I verified the complete monthly export and row count. Import changes call data; replacement deletes the selected batch's calls.</label>
+        <label><input type="checkbox" id="confirmImport"> I verified the export and its row count. Import changes call data; a day listed as different is deleted and replaced by the file's calls.</label>
         <p id="importStatus" role="status" aria-live="polite"></p>
       </section>
       <section class="card" id="retraining" aria-labelledby="retrainingTitle">
@@ -181,7 +179,7 @@
         <p class="muted">Training jobs and deployment status will appear here.</p>
         <dl class="facts"><div><dt>Job status</dt><dd>Unknown · Placeholder</dd></div><div><dt>Last trained</dt><dd>Not available</dd></div><div><dt>Active model</dt><dd>Not connected</dd></div><div><dt>Training data through</dt><dd>Not available</dd></div></dl>
         <h3>Planned workflow</h3>
-        <ol class="steps"><li><span class="step">1</span>Reconcile and import monthly calls</li><li><span class="step">2</span>Train and run backtest checks</li><li><span class="step">3</span>Review results and publish model</li></ol>
+        <ol class="steps"><li><span class="step">1</span>Validate and import new call days</li><li><span class="step">2</span>Train and run backtest checks</li><li><span class="step">3</span>Review results and publish model</li></ol>
         <button type="button" class="pill" disabled aria-describedby="trainHelp">Request retraining · Not connected</button>
         <p class="sub" id="trainHelp">Retraining is manual. Importing calls does not retrain or replace the active model.</p>
       </section>
@@ -195,7 +193,7 @@
     </div>
     </div>
   </main>
-  <footer><span>Vets4Warriors Administration</span><span>Monthly ingestion - Manual retraining</span></footer>
+  <footer><span>Vets4Warriors Administration</span><span>Day-range ingestion - Manual retraining</span></footer>
 </div>
 </body>
 </html>

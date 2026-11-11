@@ -212,6 +212,7 @@ doubles on fall-back Sundays. Nothing is converted.
 ## Retraining
 
 For who can sign in where (shared password vs Auth0), see [Sign-in](docs/admin-sign-in.md).
+For loading call data (any range of whole days), see [Loading call data](docs/day-range-ingestion.md).
 For standalone Excel validation, see [Monthly call-file validation](docs/ingestion.md).
 For the draft ingestion ledger, see [Ingestion integration](docs/ingestion-integration.md).
 For sign-in → upload → import → forecast, see

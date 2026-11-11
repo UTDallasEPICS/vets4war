@@ -1,9 +1,10 @@
 """HTTP tests for the admin Excel upload routes.
 
 Synthetic workbooks only. Database tests use an isolated schema from
-V4W_TEST_DATABASE_URL or optional pgserver, never V4W_DATABASE_URL.
+V4W_TEST_DATABASE_URL or optional pgserver, never V4W_DATABASE_URL
+(tests/conftest.py turns any other attempt into a failure).
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 import os
 from pathlib import Path
@@ -17,79 +18,43 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
+from api import admin
 from api.main import app
 from api.auth import verify_token
 from db import pipeline
-from db.ingest import PARTNER_COLUMNS
+from ledger_workbooks import SEP_1, SEP_2, SEP_3, day_rows, workbook
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-SEPTEMBER = [datetime(2026, 9, 1, 12), 10, 2, 300, "N", 0]
+ADMIN = "auth0|test-admin"
 
 client = TestClient(app)
 
 
-def workbook(rows=(SEPTEMBER,), *, sheet="Call Log"):
-    wb = Workbook()
-    wb.active.title = sheet
-    wb.active.append(["Call Date/Time", "Inqueue Time", "Routing Time", "Agent Time", "Abandon", "Abandon Time"])
-    for row in rows:
-        wb.active.append(list(row))
-    stream = BytesIO()
-    wb.save(stream)
-    wb.close()
-    return stream.getvalue()
+def post_file(path, content):
+    return client.post(path, files={"file": ("calls.xlsx", content, XLSX)})
 
 
-def post_file(path, content, month="2026-09"):
-    return client.post(path, data={"month": month}, files={"file": ("calls.xlsx", content, XLSX)})
+def import_batch(batch_id, **body):
+    return client.post(f"/api/admin/uploads/{batch_id}/import", json=body)
 
 
 @pytest.fixture(autouse=True)
 def no_dev_admin(monkeypatch):
     monkeypatch.delenv("V4W_INSECURE_DEV_ADMIN", raising=False)
-    monkeypatch.delenv("V4W_EXPORT_CONTRACT", raising=False)
 
 
-# --- validation only: no database (a signed-in admin, see conftest) ----------
-
-@pytest.mark.usefixtures("signed_in_admin")
-def test_validate_returns_report_without_records():
-    response = post_file("/api/admin/validate", workbook())
-    assert response.status_code == 200
-    body = response.json()
-    assert body["ok"] is True
-    assert body["summary"]["valid_rows"] == 1
-    assert "records" not in body and "300" not in response.text
-
-
-@pytest.mark.usefixtures("signed_in_admin")
-def test_validate_flags_calls_outside_the_selected_month():
-    response = post_file("/api/admin/validate", workbook([[datetime(2026, 8, 31, 23), 10, 2, 300, "N", 0]]))
-    assert response.status_code == 200
-    body = response.json()
-    assert body["ok"] is False
-    assert body["row_errors"][0]["errors"][0]["code"] == "outside_month"
-
-
-@pytest.mark.usefixtures("signed_in_admin")
-@pytest.mark.parametrize("month", ["2026-9", "not-a-month", "9999-12"])
-def test_validate_rejects_bad_or_incomplete_months(month):
-    response = post_file("/api/admin/validate", workbook(), month=month)
-    assert response.status_code == 400
-    assert "completed reporting month" in response.json()["detail"]
-
-
-@pytest.mark.usefixtures("signed_in_admin")
-def test_validate_rejects_non_workbook_and_empty_files():
-    assert post_file("/api/admin/validate", b"not a workbook").status_code == 400
-    assert post_file("/api/admin/validate", b"").status_code == 413
-
+# --- refused before any database is opened ------------------------------------
 
 @pytest.mark.usefixtures("signed_in_admin")
 def test_oversized_upload_is_rejected(monkeypatch):
     monkeypatch.setattr(pipeline, "MAX_BYTES", 100)
     response = post_file("/api/admin/validate", workbook())
     assert response.status_code == 413
+
+
+@pytest.mark.usefixtures("signed_in_admin")
+def test_empty_upload_is_rejected():
+    assert post_file("/api/admin/validate", b"").status_code == 413
 
 
 def test_oversized_declared_length_is_refused_before_parsing():
@@ -102,13 +67,19 @@ def test_oversized_declared_length_is_refused_before_parsing():
 # --- sign-in gate -------------------------------------------------------------
 
 def test_admin_routes_refuse_requests_without_an_admin():
+    assert post_file("/api/admin/validate", workbook()).status_code == 401
     assert post_file("/api/admin/uploads", workbook()).status_code == 401
     assert client.get("/api/admin/uploads").status_code == 401
-    response = client.post(f"/api/admin/uploads/{uuid.uuid4()}/import", json={"expected_rows": 1})
-    assert response.status_code == 401
+    assert import_batch(uuid.uuid4(), expected_rows=1).status_code == 401
 
 
-# --- staging, import and history against an isolated schema ------------------
+@pytest.mark.usefixtures("signed_in_admin")
+def test_an_admin_who_can_only_read_cannot_stage_or_import():
+    assert post_file("/api/admin/uploads", workbook()).status_code == 403
+    assert import_batch(uuid.uuid4(), expected_rows=1).status_code == 403
+
+
+# --- validation, staging, import and history against an isolated schema ------
 
 @pytest.fixture(scope="module")
 def test_dsn():
@@ -128,7 +99,7 @@ def test_dsn():
 def authorized_actor():
     # Domain tests bypass only signature retrieval; real JWT route tests live in test_auth.py.
     app.dependency_overrides[verify_token] = lambda: {
-        "sub": "auth0|test-admin", "permissions": ["read:admin", "import:calls"]}
+        "sub": ADMIN, "permissions": ["read:admin", "import:calls"]}
     try:
         yield
     finally:
@@ -137,6 +108,7 @@ def authorized_actor():
 
 @pytest.fixture
 def admin_db(test_dsn, monkeypatch, authorized_actor):
+    """An empty ledger in its own schema, with imports switched on."""
     schema = "admin_api_test_" + uuid.uuid4().hex
     with psycopg.connect(test_dsn, autocommit=True, row_factory=dict_row) as conn:
         conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
@@ -145,16 +117,18 @@ def admin_db(test_dsn, monkeypatch, authorized_actor):
             start_ts timestamp NOT NULL, abandoned boolean NOT NULL,in_queue_sec double precision,
             agent_sec double precision,abandon_sec double precision,routing_sec double precision)""")
         pipeline.migrate(conn)
-        profile = pipeline.ExportContract(confirmed=True, confirmed_by="Synthetic test fixture",
-                                          source_namespace="test-inbound", sheet="Call Log",
-                                          column_map=PARTNER_COLUMNS)
-        monkeypatch.setattr(pipeline, "contract", lambda: profile)
+        # Like db.pipeline.connect(): each block commits when it ends.
         monkeypatch.setattr(pipeline, "connect", lambda: psycopg.connect(
-            test_dsn, row_factory=dict_row, options=f"-c search_path={schema}"))
+            test_dsn, row_factory=dict_row, autocommit=True, options=f"-c search_path={schema}"))
+        monkeypatch.setenv("V4W_ADMIN_IMPORTS", "1")
         try:
             yield conn
         finally:
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+def calls_in(conn):
+    return conn.execute("SELECT count(*) AS n FROM calls").fetchone()["n"]
 
 
 def stage(content=None):
@@ -163,103 +137,158 @@ def stage(content=None):
     return response.json()
 
 
+def load(content=None, rows=3):
+    batch = stage(content)
+    response = import_batch(batch["id"], expected_rows=rows)
+    assert response.status_code == 200, response.text
+    return batch
+
+
+def test_validate_reports_the_plan_for_days_across_two_months_and_stores_nothing(admin_db):
+    response = post_file("/api/admin/validate", workbook((datetime(2026, 9, 30).date(), datetime(2026, 10, 1).date())))
+    report = response.json()
+    assert response.status_code == 200 and report["ok"]
+    assert [day["status"] for day in report["days"]] == ["new", "new"]
+    assert report["summary"]["first_day"] == "2026-09-30" and report["summary"]["last_day"] == "2026-10-01"
+    assert "records" not in report and "id" not in report
+    assert calls_in(admin_db) == 0
+    assert admin_db.execute("SELECT count(*) AS n FROM pipeline_batches").fetchone()["n"] == 0
+
+
+def test_validate_cannot_write_even_by_mistake(admin_db, monkeypatch):
+    def tries_to_write(conn, content, **options):
+        conn.execute("INSERT INTO calls(start_ts,abandoned) VALUES ('2026-09-01',false)")
+
+    monkeypatch.setattr(pipeline, "inspect", tries_to_write)
+    with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+        post_file("/api/admin/validate", workbook())
+    assert calls_in(admin_db) == 0
+
+
+def test_validate_refuses_a_file_that_is_not_a_workbook(admin_db):
+    response = post_file("/api/admin/validate", b"not a workbook")
+    assert response.status_code == 400 and "valid .xlsx" in response.json()["detail"]
+
+
+def test_validate_explains_a_workbook_without_call_records(admin_db):
+    book = Workbook()
+    book.active.append(["Calls Offered", 3])
+    stream = BytesIO()
+    book.save(stream)
+    report = post_file("/api/admin/validate", stream.getvalue()).json()
+    assert not report["ok"] and report["file_errors"][0]["code"] == "unreadable"
+
+
 def test_upload_import_and_history(admin_db):
     batch = stage()
     assert batch["status"] == "validated" and batch["validation"]["ok"]
-    assert admin_db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 0
+    assert calls_in(admin_db) == 0
 
-    response = client.post(f"/api/admin/uploads/{batch['id']}/import", json={"expected_rows": 1})
+    response = import_batch(batch["id"], expected_rows=3)
     assert response.status_code == 200, response.text
-    assert response.json() == {"id": batch["id"], "status": "imported"}
-    assert admin_db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 1
+    assert response.json() == {"id": batch["id"], "status": "imported", "inserted_rows": 3, "deleted_rows": 0,
+                               "added_days": ["2026-09-01"], "replaced_days": [], "skipped_days": []}
+    assert calls_in(admin_db) == 3
 
     history = client.get("/api/admin/uploads").json()
     assert history[0]["id"] == batch["id"]
     assert history[0]["status"] == "imported"
-    assert history[0]["uploader"] == history[0]["imported_by"] == "auth0|test-admin"
+    assert history[0]["first_day"] == history[0]["last_day"] == "2026-09-01" and history[0]["month"] is None
+    assert history[0]["uploader"] == history[0]["imported_by"] == ADMIN
 
 
-def test_invalid_workbook_is_staged_as_invalid_and_cannot_import(admin_db):
-    batch = stage(workbook([[datetime(2026, 8, 1, 12), 10, 2, 300, "N", 0]]))
+def test_a_second_file_in_the_same_month_adds_days(admin_db):
+    load(workbook((SEP_1,)))
+    load(workbook((SEP_2, SEP_3)), rows=6)
+    assert calls_in(admin_db) == 9
+
+
+def test_a_file_with_an_unfinished_day_is_staged_as_invalid_and_cannot_import(admin_db):
+    today = datetime.now(pipeline.EASTERN).date()
+    batch = stage(workbook((today - timedelta(days=1), today)))
     assert batch["status"] == "invalid"
-    response = client.post(f"/api/admin/uploads/{batch['id']}/import", json={"expected_rows": 1})
-    assert response.status_code == 409
+    assert batch["validation"]["file_errors"][0]["code"] == "day_not_finished"
+    assert import_batch(batch["id"], expected_rows=6).status_code == 409
+    assert calls_in(admin_db) == 0
 
 
 def test_wrong_row_count_is_a_conflict(admin_db):
     batch = stage()
-    response = client.post(f"/api/admin/uploads/{batch['id']}/import", json={"expected_rows": 2})
+    response = import_batch(batch["id"], expected_rows=2)
     assert response.status_code == 409
     assert "row count" in response.json()["detail"]
 
 
-def test_repeat_month_needs_explicit_replacement(admin_db):
-    first = stage()
-    client.post(f"/api/admin/uploads/{first['id']}/import", json={"expected_rows": 1})
-    corrected = stage(workbook([[datetime(2026, 9, 1, 12), 10, 2, 450, "N", 0]]))
+def test_a_changed_day_needs_explicit_replacement_of_that_day(admin_db):
+    load()
+    corrected = stage(workbook(agent=450))
+    assert corrected["validation"]["days"][0]["status"] == "conflict"
 
-    blocked = client.post(f"/api/admin/uploads/{corrected['id']}/import", json={"expected_rows": 1})
-    assert blocked.status_code == 409 and "already imported" in blocked.json()["detail"]
+    blocked = import_batch(corrected["id"], expected_rows=3)
+    assert blocked.status_code == 409 and "2026-09-01" in blocked.json()["detail"]
+    wrong_day = import_batch(corrected["id"], expected_rows=3, replace_days=["2026-09-02"])
+    assert wrong_day.status_code == 409
+    assert calls_in(admin_db) == 3
 
-    replaced = client.post(f"/api/admin/uploads/{corrected['id']}/import",
-                           json={"expected_rows": 1, "replace_batch_id": first["id"]})
-    assert replaced.status_code == 200
-    assert admin_db.execute("SELECT agent_sec FROM calls").fetchone()["agent_sec"] == 450
+    replaced = import_batch(corrected["id"], expected_rows=3, replace_days=["2026-09-01"])
+    assert replaced.status_code == 200, replaced.text
+    assert replaced.json()["replaced_days"] == ["2026-09-01"] and replaced.json()["deleted_rows"] == 3
+    answered = admin_db.execute("SELECT agent_sec FROM calls WHERE NOT abandoned").fetchall()
+    assert [row["agent_sec"] for row in answered] == [450, 450]
+
+
+def test_reloading_the_same_file_is_refused_as_already_loaded(admin_db):
+    load()
+    again = stage()
+    assert again["validation"]["nothing_to_import"]
+    response = import_batch(again["id"], expected_rows=3)
+    assert response.status_code == 409 and "already loaded" in response.json()["detail"]
+    assert calls_in(admin_db) == 3
+
+
+@pytest.mark.parametrize("replace_days", [["not-a-day"], "2026-09-01", ["2026-13-01"]])
+def test_replace_days_must_be_a_list_of_dates(admin_db, replace_days):
+    batch = stage()
+    assert import_batch(batch["id"], expected_rows=3, replace_days=replace_days).status_code == 422
+    assert calls_in(admin_db) == 0
 
 
 def test_unknown_batch_is_not_found(admin_db):
-    response = client.post(f"/api/admin/uploads/{uuid.uuid4()}/import", json={"expected_rows": 1})
-    assert response.status_code == 404
+    assert import_batch(uuid.uuid4(), expected_rows=1).status_code == 404
+
+
+def test_imports_can_be_switched_off_without_losing_validation_or_history(admin_db, monkeypatch):
+    monkeypatch.delenv("V4W_ADMIN_IMPORTS")
+    assert post_file("/api/admin/validate", workbook()).json()["ok"]
+    batch = stage()
+    response = import_batch(batch["id"], expected_rows=3)
+    assert response.status_code == 503 and "switched off" in response.json()["detail"]
+    assert calls_in(admin_db) == 0
+    assert client.get("/api/admin/uploads").json()[0]["status"] == "validated"
 
 
 def test_missing_database_configuration_is_a_service_error(monkeypatch, authorized_actor):
+    monkeypatch.setattr(pipeline, "connect", pipeline.connect.real)
     monkeypatch.delenv("V4W_DATABASE_URL", raising=False)
     assert client.get("/api/admin/uploads").status_code == 503
 
 
-@pytest.mark.usefixtures("signed_in_admin")
-def test_configured_worksheet_validation_is_explicit_and_database_free(tmp_path, monkeypatch):
-    import json
-    contract = tmp_path / "synthetic-contract.json"
-    contract.write_text(json.dumps({
-        "source_namespace": "synthetic", "sheet": "Synthetic Export", "column_map": PARTNER_COLUMNS,
-        "confirmed": False,
-    }))
-    monkeypatch.setenv("V4W_EXPORT_CONTRACT", str(contract))
-    def no_database():
-        pytest.fail("Validation must not connect to a database")
-    monkeypatch.setattr(pipeline, "connect", no_database)
-    wrong = post_file("/api/admin/validate", workbook())
-    assert wrong.status_code == 200
-    assert wrong.json()["file_errors"][0]["code"] == "missing_sheet"
-    response = post_file("/api/admin/validate", workbook(sheet="Synthetic Export"))
-    assert response.status_code == 200
-    assert response.json()["ok"] is True
-    assert "records" not in response.json()
-    outside = post_file("/api/admin/validate", workbook(
-        [[datetime(2026, 8, 1), 10, 2, 300, "N", 0]], sheet="Synthetic Export"))
-    assert outside.json()["ok"] is False
-    assert outside.json()["row_errors"][0]["errors"][0]["code"] == "outside_month"
+def test_malformed_rows_are_reported_without_echoing_cell_values(admin_db):
+    rows = day_rows(SEP_1)
+    rows[0] = (rows[0][0], rows[0][1], "private-caller-note", 300, 0, 2, "N")
+    response = post_file("/api/admin/validate", workbook(rows=rows))
+    assert not response.json()["ok"]
+    assert "private-caller-note" not in response.text
 
 
-@pytest.mark.usefixtures("signed_in_admin")
-def test_invalid_configured_contract_does_not_fall_back_to_default(monkeypatch, tmp_path):
-    monkeypatch.setenv("V4W_EXPORT_CONTRACT", str(tmp_path / "missing-contract.json"))
-    response = post_file("/api/admin/validate", workbook())
-    assert response.status_code == 503
-
-
-def test_configured_validation_and_staging_use_the_same_worksheet(admin_db, monkeypatch):
-    profile = pipeline.contract().model_copy(update={"sheet": "Synthetic Export", "confirmed": False})
-    monkeypatch.setattr(pipeline, "contract", lambda: profile)
-    monkeypatch.setenv("V4W_EXPORT_CONTRACT", "synthetic-test-contract")
-    content = workbook(sheet="Synthetic Export")
-    validation = post_file("/api/admin/validate", content)
-    staged = stage(content)
-    assert validation.json()["ok"] is True
-    assert staged["validation"]["ok"] is True
-    assert staged["validation"]["summary"] == validation.json()["summary"]
-    assert staged["validation"]["contract_confirmed"] is False
-    response = client.post(f"/api/admin/uploads/{staged['id']}/import", json={"expected_rows": 1})
-    assert response.status_code == 409
-    assert admin_db.execute("SELECT count(*) AS n FROM calls").fetchone()["n"] == 0
+@pytest.mark.parametrize("path", ["/api/admin/validate", "/api/admin/uploads"])
+def test_only_a_few_files_are_read_at_once(admin_db, monkeypatch, path):
+    import threading
+    busy = threading.BoundedSemaphore(1)
+    busy.acquire()
+    monkeypatch.setattr(admin, "PARSE_SLOTS", busy)
+    response = post_file(path, workbook())
+    assert response.status_code == 429 and response.headers["retry-after"]
+    assert admin_db.execute("SELECT count(*) AS n FROM pipeline_batches").fetchone()["n"] == 0
+    busy.release()
+    assert post_file(path, workbook()).status_code in (200, 201)

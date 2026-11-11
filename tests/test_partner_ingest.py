@@ -149,8 +149,7 @@ def test_partner_cli_rejects_conflicting_overrides(capsys):
 
 
 def test_draft_contract_matches_observed_headers_without_claiming_import_readiness():
-    from db.pipeline import ExportContract
-    from db.ingest import CALL_RECORD_COLUMNS
+    from db.ingest import CALL_RECORD_COLUMNS, ExportContract
     example = Path(__file__).resolve().parents[1] / "config/export-contract.example.json"
     profile = ExportContract.model_validate_json(example.read_text())
     assert profile.sheet is None

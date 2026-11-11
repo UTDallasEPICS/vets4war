@@ -7,8 +7,7 @@ from pathlib import Path
 from openpyxl import Workbook
 import pytest
 
-from db.ingest import parse_excel
-from db.pipeline import ExportContract
+from db.ingest import ExportContract, parse_excel
 
 
 HEADERS = ["Skill_Name", "Start_Date", "start_time", "InQueue", "Agent_Time",
@@ -91,61 +90,6 @@ def test_skipped_blanks_do_not_hide_bad_row_numbers_or_row_limit():
     result = parse(workbook([ROW, [None] * 8, bad]))
     assert result.report()["row_errors"][0]["row_number"] == 4
     assert not parse(workbook([ROW, [None] * 8, ROW]), max_rows=2).ok
-
-
-@pytest.mark.usefixtures("signed_in_admin")
-def test_http_validation_uses_same_contract_without_database(monkeypatch):
-    from fastapi.testclient import TestClient
-    from api.main import app
-    monkeypatch.setenv("V4W_EXPORT_CONTRACT", str(
-        Path(__file__).resolve().parents[1] / "config/export-contract.example.json"))
-    response = TestClient(app).post("/api/admin/validate", data={"month": "2026-09"},
-                                   files={"file": ("calls.xlsx", workbook())})
-    assert response.status_code == 200 and response.json()["ok"]
-    assert "records" not in response.json()
-
-
-@pytest.mark.usefixtures("signed_in_admin")
-def test_cross_month_http_format_check_passes_without_enabling_monthly_import(monkeypatch):
-    from fastapi.testclient import TestClient
-    from api.main import app
-    from db import pipeline
-    monkeypatch.setenv("V4W_EXPORT_CONTRACT", str(
-        Path(__file__).resolve().parents[1] / "config/export-contract.example.json"))
-    def no_database():
-        raise AssertionError("Format validation must not connect to the database")
-    monkeypatch.setattr(pipeline, "connect", no_database)
-    october = ROW.copy()
-    october[1] = datetime(2026, 10, 28)
-    november = ROW.copy()
-    november[1] = datetime(2026, 11, 3)
-    content = workbook([october, november])
-    client = TestClient(app)
-    response = client.post("/api/admin/validate", files={"file": ("calls.xlsx", content)})
-    report = response.json()
-    assert response.status_code == 200 and report["ok"]
-    assert report["validation_scope"] == "format_only"
-    assert report["months_found"] == {"2026-10": 1, "2026-11": 1}
-    assert "records" not in report and "id" not in report
-    # The explicit month mode retains its strict checks.
-    report = client.post("/api/admin/validate", data={"month": "2026-10"},
-                         files={"file": ("calls.xlsx", content)}).json()
-    assert not report["ok"] and report["validation_scope"] == "single_month"
-    assert report["row_errors"][0]["errors"][0]["code"] == "outside_month"
-
-
-@pytest.mark.usefixtures("signed_in_admin")
-def test_format_check_caps_errors_but_keeps_total_counts(monkeypatch):
-    from fastapi.testclient import TestClient
-    from api.main import app
-    monkeypatch.setenv("V4W_EXPORT_CONTRACT", str(
-        Path(__file__).resolve().parents[1] / "config/export-contract.example.json"))
-    row = ROW.copy()
-    row[2] = None
-    report = TestClient(app).post("/api/admin/validate",
-        files={"file": ("bad.xlsx", workbook([row] * 205))}).json()
-    assert report["summary"]["invalid_rows"] == 205
-    assert len(report["row_errors"]) == 200 and report["row_errors_truncated"]
 
 
 def test_call_records_cli_is_read_only(tmp_path, capsys):

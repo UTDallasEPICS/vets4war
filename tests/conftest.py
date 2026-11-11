@@ -27,3 +27,20 @@ def signed_in_admin():
         yield
     finally:
         app.dependency_overrides.pop(verify_token, None)
+
+
+@pytest.fixture(autouse=True)
+def ledger_database_is_never_the_shared_one(monkeypatch):
+    """db.pipeline.connect() opens V4W_DATABASE_URL: the shared database. The
+    admin routes call it, so a test that forgot to supply its own database
+    would read or write the real one. Here that becomes a loud failure.
+    Tests that need a ledger database replace connect() themselves
+    (admin_db in test_admin_api.py); `refused.real` is the original, for the
+    one test about connect() itself."""
+    from db import pipeline
+
+    def refused():
+        raise AssertionError("a test reached db.pipeline.connect() without supplying a test database")
+
+    refused.real = pipeline.connect
+    monkeypatch.setattr(pipeline, "connect", refused)

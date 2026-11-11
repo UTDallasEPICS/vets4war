@@ -8,7 +8,15 @@ const html = fs.readFileSync(path.join(__dirname,"../web/admin.html"),"utf8");
 const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(m => m[1]);
 const tick = () => new Promise(setImmediate);
 async function settle() { for (let i=0;i<5;i++) await tick(); }
-const report = {ok:true,summary:{total_rows:2,valid_rows:2,invalid_rows:0,duplicate_rows:0},file_errors:[],row_errors:[],warnings:[],contract_confirmed:true};
+// A two-day file, both days new: what db.pipeline.inspect/preview report.
+const report = {ok:true,nothing_to_import:false,
+  summary:{total_rows:2,first_day:"2026-09-01",last_day:"2026-09-02",days:2,new_days:2,identical_days:0,conflict_days:0},
+  days:[{day:"2026-09-01",rows:1,existing_rows:0,status:"new"},{day:"2026-09-02",rows:1,existing_rows:0,status:"new"}],
+  days_without_calls:[],file_errors:[],warnings:[]};
+const refused = {...report,ok:false,file_errors:[{code:"partial_day",message:"Synthetic partial day"}]};
+// The same file when 2026-09-02 already holds different calls.
+const conflictReport = {...report,summary:{...report.summary,new_days:1,conflict_days:1},
+  days:[report.days[0],{day:"2026-09-02",rows:1,existing_rows:3,status:"conflict"}]};
 function environment(options={}) {
   const elements = new Map(), calls = [], actions = [];
   function element() {
@@ -69,15 +77,17 @@ function environment(options={}) {
       let status=200,body;
       if(url==="/api/admin/me") {status=options.code||200;body={sub:"auth0|admin",permissions:options.readOnly?["read:admin"]:["read:admin","import:calls"]};}
       else if(url==="/api/admin/uploads" && !settings.method) {status=options.historyCode||200;body=options.history||[];}
-      else if(url==="/api/admin/validate") body=options.invalid ? {...report,ok:false,row_errors:[{row_number:2,errors:[{message:"Invalid timestamp"}]}]} : report;
+      else if(url==="/api/admin/validate") body=options.invalid ? refused : report;
       else if(url==="/api/admin/uploads") {
         status=options.uploadCode||201;
-        const validation=options.validationReport || (options.invalid ? {...report,ok:false,row_errors:[{row_number:2,errors:[{message:"Invalid timestamp"}]}]} : report);
-        body={id:options.batchId||"new-batch",status:options.batchStatus||(validation.ok ? "validated" : "invalid"),validation:{...validation,contract_confirmed:!options.unconfirmed}};
+        const validation=options.validationReport || (options.invalid ? refused : report);
+        body={id:options.batchId||"new-batch",status:options.batchStatus||(validation.ok ? "validated" : "invalid"),validation};
       }
       else if(url.endsWith("/import")) {
-        if(options.conflict && !JSON.parse(settings.body).replace_batch_id){status=409;body={detail:"This month is already imported."};}
-        else body={id:"new-batch",status:"imported"};
+        const replaced=JSON.parse(settings.body).replace_days;
+        // options.conflict: the database changed after staging, so the import is refused whatever was confirmed.
+        if(options.conflict){status=409;body={detail:"These days already hold different calls: 2026-09-01."};}
+        else body={id:"new-batch",status:"imported",inserted_rows:2,deleted_rows:replaced.length*3,added_days:["2026-09-01"],replaced_days:replaced,skipped_days:[]};
       } else throw Error(`Unexpected route ${url}`);
       return {ok:status<300,status,async json(){return JSON.parse(JSON.stringify(body));}};
     },console:{log(){throw Error("Unexpected token logging");},error(){throw Error("Unexpected logging");}}
@@ -121,35 +131,49 @@ function environment(options={}) {
   assert(revoked.get("logout").hidden);assert(revoked.get("userEmail").hidden);assert(revoked.get("adminContent").hidden);
   assert(revoked.get("authStatus").textContent.includes("admin API rejected"));count++;
   const failed=environment({tokenError:true,authError:{error:"consent_required"}});await settle();await failed.event("login");assert(failed.actions.includes("login"));count++;
-  const e=environment();await settle();assert(e.get("uploadMonth").value<=e.get("uploadMonth").max);
+  const e=environment();await settle();
   for(const file of [{name:"bad.csv",size:100},{name:"empty.xlsx",size:0},{name:"big.xlsx",size:26*1024*1024},[]]) {await e.choose(file);assert(e.get("checkFile").disabled);}
   await e.choose();await e.event("checkFile");assert.equal(e.get("validationState").textContent,"Passed");assert.equal(e.get("validationCounts").textContent,"2 / 0 / 0");
   assert.equal(e.calls.filter(c=>c.url==="/api/admin/uploads"&&c.settings.method==="POST").length,1);
   assert(!e.calls.some(c=>c.url==="/api/admin/validate"));assert(e.get("importFile").disabled);
   const upload=e.calls.find(c=>c.url==="/api/admin/uploads"&&c.settings.method==="POST");
-  assert.equal(upload.settings.body.values.get("month"),e.get("uploadMonth").value);
+  assert(!upload.settings.body.values.has("month"));
   assert.equal(upload.settings.body.values.get("file").name,"calls.xlsx");
   assert(!("Content-Type" in upload.settings.headers));
   assert.equal(e.get("uploadStatus").textContent,"Validated batch");
   e.get("expectedRows").value="3";e.get("confirmImport").checked=true;await e.event("expectedRows","input");assert(e.get("importFile").disabled);
   e.get("expectedRows").value="2";await e.event("expectedRows","input");assert(!e.get("importFile").disabled);
   await e.event("importFile");assert(e.get("importStatus").textContent.includes("Import completed"));
-  assert.deepEqual(JSON.parse(e.calls.find(c=>c.url.endsWith("/import")).settings.body),{expected_rows:2});assert(e.get("importFile").disabled);count++;
-  const invalid=environment({invalid:true});await settle();await invalid.choose();await invalid.event("checkFile");assert(invalid.get("importFile").disabled);assert.equal(invalid.get("validationIssues").children[0].textContent,"Row 2: Invalid timestamp");assert.equal(invalid.get("uploadStatus").textContent,"Validation failed");count++;
-  const unconfirmed=environment({unconfirmed:true});await settle();await unconfirmed.choose();await unconfirmed.event("checkFile");unconfirmed.get("expectedRows").value="2";unconfirmed.get("confirmImport").checked=true;await unconfirmed.event("expectedRows","input");assert(unconfirmed.get("importFile").disabled);count++;
+  assert(e.get("importStatus").textContent.includes("2 calls added"));
+  assert.deepEqual(JSON.parse(e.calls.find(c=>c.url.endsWith("/import")).settings.body),{expected_rows:2,replace_days:[]});assert(e.get("importFile").disabled);count++;
+  const invalid=environment({invalid:true});await settle();await invalid.choose();await invalid.event("checkFile");assert(invalid.get("importFile").disabled);assert(invalid.get("validationIssues").children.some(li=>li.textContent==="Synthetic partial day"));assert.equal(invalid.get("uploadStatus").textContent,"Validation failed");count++;
+  // Every day already loaded: the file is valid but there is nothing to import, whatever is confirmed.
+  const loaded=environment({validationReport:{...report,nothing_to_import:true,summary:{...report.summary,new_days:0,identical_days:2},days:report.days.map(day=>({...day,existing_rows:1,status:"identical"}))}});
+  await settle();await loaded.choose();await loaded.event("checkFile");loaded.get("expectedRows").value="2";loaded.get("confirmImport").checked=true;await loaded.event("expectedRows","input");
+  assert(loaded.get("importFile").disabled);assert.equal(loaded.get("validationCounts").textContent,"0 / 2 / 0");
+  assert(loaded.get("importStatus").textContent.includes("Nothing to import"));count++;
   const read=environment({readOnly:true});await settle();await read.choose();assert(read.get("checkFile").disabled);await read.event("stageFile");assert(read.get("importFile").disabled);assert(!read.get("adminContent").hidden);assert(read.calls.some(c=>c.url==="/api/admin/validate"));assert(!read.calls.some(c=>c.url==="/api/admin/uploads"&&c.settings.method));count++;
-  const replacement=environment({conflict:true});await settle();replacement.get("uploadMonth").value="2026-09";
-  // Supply an imported history row for the selected reporting month.
-  const r=environment({conflict:true,history:[{id:"old-batch",month:"2026-09-01",status:"imported",uploader:"<script>alert(1)</script>"}]});await settle();
-  r.get("uploadMonth").value="2026-09";await r.event("uploadMonth","input");await r.choose();await r.event("checkFile");
-  r.get("expectedRows").value="2";r.get("confirmImport").checked=true;await r.event("expectedRows","input");await r.event("importFile");
-  assert(r.get("importStatus").textContent.includes("already imported"));assert(!r.get("confirmImport").checked);
-  assert(!r.get("replaceCurrentBatch").hidden);await r.event("replaceCurrentBatch");assert.equal(r.get("replaceBatch").value,"old-batch");assert(!r.get("confirmImport").checked);
-  assert(r.get("replaceCurrentBatch").hidden);
-  assert.equal(r.get("importFile").textContent,"Replace Current Batch");
-  r.get("confirmImport").checked=true;await r.event("confirmImport","input");await r.event("importFile");
-  assert.equal(JSON.parse(r.calls.filter(c=>c.url.endsWith("/import")).at(-1).settings.body).replace_batch_id,"old-batch");
+  // A day that differs: the page names it, the button says what it will do, and the import sends exactly that day.
+  const r=environment({validationReport:conflictReport,history:[
+    {id:"old-batch",month:"2026-09-01",first_day:"2026-09-01",last_day:"2026-09-30",status:"imported",uploader:"<script>alert(1)</script>"},
+    {id:"one-day",month:null,first_day:"2026-10-01",last_day:"2026-10-01",status:"imported",uploader:"u"},
+    {id:"unread",month:null,first_day:null,last_day:null,status:"invalid",uploader:"u"}]});await settle();
+  await r.choose();await r.event("checkFile");
+  assert.equal(r.get("validationCounts").textContent,"1 / 0 / 1");
+  assert(r.get("importStatus").textContent.includes("2026-09-02"));assert(r.get("importStatus").textContent.includes("replaces exactly those days"));
+  assert(r.get("validationIssues").children.some(li=>li.textContent==="2026-09-02: the file has 1 calls, the database has 3 and they differ."));
+  r.get("expectedRows").value="2";r.get("confirmImport").checked=true;await r.event("expectedRows","input");
+  assert.equal(r.get("importFile").textContent,"Replace 1 day & import");await r.event("importFile");
+  assert.deepEqual(JSON.parse(r.calls.find(c=>c.url.endsWith("/import")).settings.body),{expected_rows:2,replace_days:["2026-09-02"]});
+  assert(r.get("importStatus").textContent.includes("1 day(s) replaced"));assert(!r.get("confirmImport").checked);
+  assert.deepEqual(r.get("historyRows").children.map(row=>row.children[0].textContent),["2026-09-01 to 2026-09-30","2026-10-01","—"]);
   assert.equal(r.get("historyRows").children[0].children[2].textContent,"<script>alert(1)</script>");count++;
+  // The database changed between staging and import: refused, nothing retried, the admin is told to validate again.
+  const stale=environment({conflict:true});await settle();await stale.choose();await stale.event("checkFile");
+  stale.get("expectedRows").value="2";stale.get("confirmImport").checked=true;await stale.event("expectedRows","input");await stale.event("importFile");
+  assert(stale.get("importStatus").textContent.includes("2026-09-01"));assert(stale.get("importStatus").textContent.includes("Validate the file again"));
+  assert.equal(stale.get("uploadStatus").textContent,"Import conflict");assert(!stale.get("confirmImport").checked);
+  assert.equal(stale.calls.filter(c=>c.url.endsWith("/import")).length,1);count++;
   await e.event("logout");assert(e.get("adminContent").hidden);assert(e.actions.includes("logout"));assert.equal(e.get("workbook").value,"");count++;
   const logoutOptions={logoutError:true},failedLogout=environment(logoutOptions);await settle();
   await failedLogout.event("logout");
@@ -196,10 +220,8 @@ function environment(options={}) {
   assert.equal(uncertain.calls.filter(c=>c.url.endsWith("/import")).length,1);assert(!uncertain.get("confirmImport").checked);count++;
   for(const [now,expected] of [["2027-01-15T12:00:00Z","2026-12"],["2026-11-01T01:00:00Z","2026-09"]]) {
     const calendar=environment({now});await settle();
-    assert.equal(calendar.get("uploadMonth").value,expected);assert.equal(calendar.get("uploadMonth").max,expected);
     assert.equal(calendar.get("reportMonth").max,expected);await calendar.choose();
-    calendar.get("uploadMonth").value="2027-02";await calendar.event("uploadMonth","input");
-    assert(calendar.get("checkFile").disabled);assert(!calendar.get("stageFile").disabled);
+    assert(!calendar.get("checkFile").disabled);assert(!calendar.get("stageFile").disabled);
     await calendar.event("stageFile");
     const validation=calendar.calls.find(c=>c.url==="/api/admin/validate");
     assert(!validation.settings.body.values.has("month"));assert(calendar.get("importFile").disabled);count++;
@@ -209,20 +231,23 @@ function environment(options={}) {
   const limit=environment();await settle();
   await limit.choose({name:"boundary.xlsx",size:backendMegabytes*1024*1024});assert(!limit.get("checkFile").disabled);
   await limit.choose({name:"too-large.xlsx",size:backendMegabytes*1024*1024+1});assert(limit.get("checkFile").disabled);count++;
-  const detailedReport={...report,ok:false,summary:{total_rows:250,valid_rows:20,invalid_rows:225,duplicate_rows:5},
-    file_errors:[{message:"Synthetic file-level issue"}],
-    row_errors:Array.from({length:201},(_,i)=>({row_number:i+2,errors:[{message:"First issue"},{message:"Second issue"}]})),
-    row_errors_truncated:true,days_without_calls:[2,7],warnings:["Synthetic completeness warning","<img src=x onerror=alert(1)>"]};
+  const manyDays=Array.from({length:12},(_,i)=>({day:`2026-09-${String(i+1).padStart(2,"0")}`,rows:5,existing_rows:4,status:"conflict"}));
+  const detailedReport={...report,ok:false,summary:{total_rows:250,first_day:"2026-09-01",last_day:"2026-09-12",days:12,new_days:0,identical_days:0,conflict_days:12},
+    days:manyDays,file_errors:[{code:"partial_day",message:"Synthetic file-level issue"}],
+    warnings:["Synthetic completeness warning","<img src=x onerror=alert(1)>"]};
   const detailed=environment({validationReport:detailedReport});await settle();await detailed.choose();await detailed.event("checkFile");
-  assert.equal(detailed.get("validationCounts").textContent,"20 / 225 / 5");
+  assert.equal(detailed.get("validationCounts").textContent,"0 / 0 / 12");
   const issues=detailed.get("validationIssues").children.map(li=>li.textContent);
-  assert.equal(issues.filter(text=>text.startsWith("Row ")).length,200);
-  assert(issues.includes("Synthetic file-level issue"));assert(issues.includes("Only the first 200 row errors are shown."));
-  assert(issues.includes("Days without calls: 2, 7. Verify completeness."));assert(issues.includes("Synthetic completeness warning"));
+  assert(issues.includes("250 calls, 2026-09-01 to 2026-09-12."));
+  assert.equal(issues.filter(text=>/^2026-09-\d\d: the file has 5 calls/.test(text)).length,10);assert(issues.includes("2 more days differ."));
+  assert(issues.includes("Synthetic file-level issue"));assert(issues.includes("Synthetic completeness warning"));
   assert(issues.includes("<img src=x onerror=alert(1)>"));assert(detailed.get("importFile").disabled);count++;
-  const truncated=environment({validationReport:{...detailedReport,row_errors:detailedReport.row_errors.slice(0,200)}});
-  await settle();await truncated.choose();await truncated.event("checkFile");
-  assert(truncated.get("validationIssues").children.some(li=>li.textContent==="Only the first 200 row errors are shown."));count++;
+  // A file that could not be read at all has no days to count.
+  const unreadable=environment({validationReport:{ok:false,nothing_to_import:false,summary:{total_rows:0},days:[],days_without_calls:[],
+    file_errors:[{code:"unreadable",message:"This file could not be read as call records."}],warnings:[]}});
+  await settle();await unreadable.choose();await unreadable.event("checkFile");
+  assert.equal(unreadable.get("validationCounts").textContent,"— / — / —");
+  assert.deepEqual(unreadable.get("validationIssues").children.map(li=>li.textContent),["This file could not be read as call records."]);count++;
   for(const status of ["invalid","imported","expired","superseded"]) {
     const stopped=environment({batchStatus:status});await settle();await stopped.choose();await stopped.event("checkFile");
     stopped.get("expectedRows").value="2";stopped.get("confirmImport").checked=true;await stopped.event("expectedRows","input");
@@ -231,7 +256,7 @@ function environment(options={}) {
   }
   const saved=environment({batchId:"00000000-0000-0000-0000-000000000123"});await settle();await saved.choose();await saved.event("checkFile");
   saved.get("expectedRows").value="2";saved.get("confirmImport").checked=true;await saved.event("confirmImport","input");
-  assert(!saved.get("importFile").disabled);assert.equal(saved.get("importFile").textContent,"Validate & Import");await saved.event("importFile");
+  assert(!saved.get("importFile").disabled);assert.equal(saved.get("importFile").textContent,"Import");await saved.event("importFile");
   assert.equal(saved.calls.find(c=>c.url.endsWith("/import")).url,"/api/admin/uploads/00000000-0000-0000-0000-000000000123/import");
   assert.equal(saved.get("uploadStatus").textContent,"Imported");count++;
   const changed=environment();await settle();await changed.choose();await changed.event("checkFile");
