@@ -1,6 +1,6 @@
 # Model final run: what changed and why
 
-Branch `model-final-run`, 2026-11-10 and 11. Committed locally, not pushed.
+Branch `model-final-run`, 2026-11-10 and 11. Committed and pushed (`9472bf6`, `3557ff7`).
 During the run the shared database was only read. Afterwards, on the
 user's instruction, the three new client files and the 2027 holidays were
 loaded into it (section 10). To pick the work up: `HANDOFF.md` in this
@@ -404,7 +404,8 @@ t values are optimistic because test weeks overlap.
    (same model fingerprint), so `--supplement` is no longer needed. The
    rows went in directly, not through the teammates' pipeline tables.
 2. **Done: committed** on `model-final-run` in two commits (the earlier
-   "real calls" work, then this run). Not pushed.
+   "real calls" work, then this run), then pushed to
+   `origin/model-final-run` on 2026-11-11.
 3. **Done 2026-11-11: 2027 holidays added** with `python -m db.add_holidays
    2027 --commit` (11 rows, by calendar rule; the rules reproduce all 66
    older rows). Their multiplier columns follow the table's own convention

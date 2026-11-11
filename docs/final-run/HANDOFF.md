@@ -4,9 +4,9 @@ Read this first if you are picking the work up (new session, or after context lo
 
 ## Where things are
 
-- Repo `~/vets4war`, branch `model-final-run` (from `testing-rounds` @ 055ca80). Committed locally in two commits (real-calls work, then this run). NOT pushed.
-- The working tree also holds the user's older uncommitted "real calls" work (api/main.py, web/*, db/real_calls.py,
-  tests/test_real_calls.py, parts of db/forecast.py). Patch of that state: session scratchpad `pre_final_run/realcalls_wip.patch`.
+- Repo `~/vets4war`, branch `model-final-run` (from `testing-rounds` @ 055ca80). Committed in two commits (`9472bf6` real-calls work, `3557ff7` this run) and pushed to `origin/model-final-run` on 2026-11-11; later merged into `dev`.
+- The "real calls" work (api/main.py, web/*, db/real_calls.py, tests/test_real_calls.py, parts of db/forecast.py) that was
+  uncommitted during the run is now in commit `9472bf6`.
 - Shared Supabase DB: read-only during the run. On 2026-11-11, at the user's instruction, the three client files were loaded with `db.load_week --commit` (ids 378076-388588) and the 2027 holidays with `db.add_holidays 2027 --commit`. DB now: 388,588 calls to 2026-11-03, no missing day; holidays to 2027-12-25. Plain `make train` reproduces the saved model exactly.
 - Frozen dataset: `data/cache/final_run/` (388,588 calls, 2021-01-01 to 2026-11-03, no missing day).
 - Previous model: `git show testing-rounds:models/volume_lgbm.txt` (+ metadata.json).
