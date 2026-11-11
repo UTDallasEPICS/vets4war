@@ -172,6 +172,25 @@ port 8000 using the same local environment. These requests all returned
 | `V4W_DATABASE_URL` | yes | Postgres connection string. The only data source. Loaded by `python-dotenv` from `.env` or the shell. |
 | `V4W_DATA_SOURCE` | yes, for the badge | `partner` or `synthetic`. Shown in the header on every page load with the data's date range. Unset = the badge says the source is not labeled, so synthetic numbers are never mistaken for real ones. |
 | `HOST`, `PORT` | no | Bind address for `make serve`, default `127.0.0.1:8000`. |
+| `V4W_AUTH_DISABLED` | on your own machine | `1` runs without sign-in. Ignored on Vercel. If neither this nor the two below are set, every request is refused with 503. |
+| `V4W_APP_PASSWORD_HASH` | on a server | Hash of the shared password, from `python -m api.site_auth hash`. The password itself is never stored. |
+| `V4W_SESSION_SECRET` | on a server | Signs session cookies, from `python -m api.site_auth secret`. Changing it signs everyone out. |
+
+### Sign-in
+
+The console sits behind one shared password (no usernames), see `api/site_auth.py`.
+A correct password sets a signed, HttpOnly, 12-hour session cookie; pages and
+API calls without it go to `/login.html` or get 401. Five wrong passwords from
+one address lock sign-in for 15 minutes. To change the password, generate a new
+hash, replace `V4W_APP_PASSWORD_HASH` and redeploy; replace `V4W_SESSION_SECRET`
+too if existing sessions should end at once.
+
+### Hosting on Vercel
+
+Vercel builds `Dockerfile.vercel` (LightGBM needs `libgomp`, which the image
+installs). Set `V4W_DATABASE_URL`, `V4W_DATA_SOURCE`, `V4W_APP_PASSWORD_HASH`,
+`V4W_SESSION_SECRET` and `PORT=8000` as project environment variables, then
+`npx vercel deploy --prod`. `vercel.json` pins the region next to the database.
 
 ## The data
 

@@ -1,0 +1,17 @@
+# What `vercel deploy` uploads as build source. Allowlist: everything at the
+# repo root is left out unless it is named below, so .env files, data/ (call
+# records) and local databases can never be uploaded by accident, whatever is
+# lying in the folder.
+/*
+!/api
+!/db
+!/models
+!/web
+!/requirements.txt
+!/Dockerfile.vercel
+!/vercel.json
+!/.dockerignore
+
+# Never needed in the image.
+__pycache__
+*.pyc

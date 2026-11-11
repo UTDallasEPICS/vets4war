@@ -1,0 +1,55 @@
+# syntax=docker/dockerfile:1
+#
+# Image Vercel builds and runs for this project (it looks for this filename
+# at the repo root). Same recipe as ./Dockerfile; the differences are that
+# the port comes from $PORT, which Vercel routes traffic to, and that the
+# sign-in settings are required (see api/site_auth.py):
+#
+#   V4W_DATABASE_URL, V4W_DATA_SOURCE, V4W_APP_PASSWORD_HASH,
+#   V4W_SESSION_SECRET, PORT=8000
+#
+# Set those in the Vercel project's environment variables, never in this file.
+
+FROM python:3.12-slim-bookworm AS builder
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /build
+
+COPY requirements.txt ./
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --upgrade pip \
+    && /opt/venv/bin/pip install --requirement requirements.txt
+
+
+FROM python:3.12-slim-bookworm AS runtime
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    V4W_DEPLOYED=1
+# V4W_DEPLOYED=1: this image always requires sign-in (V4W_AUTH_DISABLED is ignored)
+# and trusts the client address reported by the host's proxy. See api/site_auth.py.
+
+# LightGBM requires the GNU OpenMP runtime.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid app --create-home --home-dir /home/app app
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --chown=app:app api ./api
+COPY --chown=app:app db ./db
+COPY --chown=app:app models ./models
+COPY --chown=app:app web ./web
+
+USER app
+
+EXPOSE 8000
+
+# Shell form so $PORT is expanded; exec so uvicorn receives SIGTERM directly.
+CMD ["sh", "-c", "exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

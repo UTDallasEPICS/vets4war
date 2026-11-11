@@ -154,6 +154,8 @@
   // ---- fetch ----
   async function fetchJson(url, init) {
     const res = await fetch(url, init);
+    // Session ended (expired, or signed out in another tab): back to the sign-in page.
+    if (res.status === 401) { window.location.assign("/login.html"); throw new Error("Sign in required"); }
     if (!res.ok) {
       let detail = res.statusText;
       try { const body = await res.json(); detail = Array.isArray(body.detail) ? body.detail.map((d) => d.msg).join("; ") : (body.detail || detail); } catch (_) {}

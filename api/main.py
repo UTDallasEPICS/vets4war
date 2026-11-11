@@ -21,6 +21,9 @@
         capacity) and the Erlang service level at the PLANNED number.
     GET /api/model                                          models/metadata.json
     GET /                                                   web/index.html (static)
+    POST /api/login, POST /api/logout, GET /api/session     shared-password sign-in
+        (api/site_auth.py). Everything above needs a session unless sign-in is
+        switched off for local work with V4W_AUTH_DISABLED=1.
 
     Every response carries data_source: which data (partner / synthetic,
     from $V4W_DATA_SOURCE) and its date range, so the page can say so.
@@ -77,6 +80,8 @@ from db.staffing import (  # noqa: E402
 )
 from db.train import METADATA_PATH  # noqa: E402
 
+from api.site_auth import install_auth  # noqa: E402
+
 log = logging.getLogger("v4w.api")
 
 DEFAULT_HORIZON_DAYS = 30
@@ -100,7 +105,12 @@ TALK_TIME_CAVEAT = (
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = REPO_ROOT / "web"
 
-app = FastAPI(title="Vets4Warriors staffing forecast", version="0.1.0")
+# No interactive API docs: this is served to the public internet behind a sign-in.
+app = FastAPI(title="Vets4Warriors staffing forecast", version="0.1.0",
+              docs_url=None, redoc_url=None, openapi_url=None)
+# Shared-password sign-in in front of every route and static file (api/site_auth.py).
+# Installed before any route so /api/login is matched ahead of the static mount.
+install_auth(app)
 
 
 @app.middleware("http")
@@ -142,8 +152,10 @@ def _connection():
     try:
         return psycopg.connect(dsn)
     except psycopg.Error as exc:
-        log.exception("database connection failed")
-        raise HTTPException(503, f"database connection failed: {exc}") from exc
+        # The driver's message can quote the connection string (password included),
+        # so neither the response nor the log carries it.
+        log.error("database connection failed: %s", type(exc).__name__)
+        raise HTTPException(503, "database connection failed") from None
 
 
 def _queue_params(conn, queue_model: str, patience_sec: float | None) -> dict:
@@ -206,7 +218,7 @@ def _hourly_staffing(start: date, end: date, efficiency: float, target_pct: floa
         raise HTTPException(400, str(exc)) from exc
     except psycopg.Error as exc:
         log.exception("query failed")
-        raise HTTPException(500, f"query failed: {exc}") from exc
+        raise HTTPException(500, "query failed; see the server log") from exc
 
 
 def format_duration(seconds: float) -> str:
@@ -496,7 +508,7 @@ def api_model():
             source = describe_source(conn)
     except (psycopg.Error, ValueError) as exc:
         log.exception("data source lookup failed")
-        raise HTTPException(503, f"data source lookup failed: {exc}") from exc
+        raise HTTPException(503, "data source lookup failed; see the server log") from exc
     return {**metadata, "data_source": source}
 
 

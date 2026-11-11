@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Sign in, Vets4Warriors Staffing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wdth,wght@75..100,400..700&display=swap">
+<style>
+  /* Same system as the console: white sheet, black field, one blue. */
+  :root {
+    color-scheme: light;
+    --bg: #ffffff; --fg: #111111; --muted: #6b6b6b;
+    --ink: #111111; --ink-fg: #ffffff;
+    --accent: #1a4be0; --accent-strong: #1238b0; --on-accent: #ffffff;
+    --bad: #ff8a78; --glow-c: #4a78ff;
+    --font: "Instrument Sans", -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, sans-serif;
+    --ease: cubic-bezier(0.2, 0.9, 0.3, 1);
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #111111; --fg: #ffffff; --muted: #9a9a9a;
+    --ink: #ffffff; --ink-fg: #111111;
+    --accent: #1a4be0; --accent-strong: #1238b0; --on-accent: #ffffff;
+    --bad: #c5301c; --glow-c: #9db4ff;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body { margin: 0; min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 16px;
+    font: 400 15px/1.45 var(--font); color: var(--fg); background: var(--bg); -webkit-font-smoothing: antialiased; }
+  h1, p { margin: 0; }
+  button, input { font: inherit; color: inherit; }
+
+  .box { position: relative; overflow: hidden; isolation: isolate; width: min(100%, 420px); padding: 32px 28px 28px; border-radius: 22px;
+    background: var(--ink); color: var(--ink-fg); --gx: 18%; --gy: 22%;
+    --soft: color-mix(in srgb, var(--ink-fg) 62%, transparent); --line: color-mix(in srgb, var(--ink-fg) 26%, transparent);
+    animation: rise 560ms var(--ease) both, glow-sweep 1600ms cubic-bezier(0.2, 0.7, 0.2, 1) 120ms both; }
+  .box > * { position: relative; z-index: 1; }
+  .box::before { content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none; opacity: 0.55;
+    background-image: radial-gradient(circle, color-mix(in srgb, var(--ink-fg) 60%, transparent) 1.1px, transparent 1.6px); background-size: 22px 22px;
+    -webkit-mask-image: radial-gradient(300px 240px at var(--gx) var(--gy), #000 0%, transparent 72%); mask-image: radial-gradient(300px 240px at var(--gx) var(--gy), #000 0%, transparent 72%); }
+  .box::after { content: ""; position: absolute; z-index: 0; left: var(--gx); top: var(--gy); width: 380px; height: 380px; translate: -50% -50%; border-radius: 50%; pointer-events: none;
+    background: radial-gradient(circle, color-mix(in srgb, var(--glow-c) 62%, transparent) 0%, transparent 66%); filter: blur(26px); opacity: 0.6; }
+
+  .mark { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 12px; background: var(--ink-fg); color: var(--ink); }
+  h1 { margin-top: 20px; font-size: 26px; font-weight: 600; font-stretch: 92%; letter-spacing: -0.03em; line-height: 1.15; }
+  .sub { margin-top: 6px; color: var(--soft); }
+  form { margin-top: 24px; display: flex; flex-direction: column; gap: 10px; }
+  label { font-size: 13px; font-weight: 500; }
+  .field { display: flex; align-items: center; border-radius: 12px; border: 1px solid var(--line); background: color-mix(in srgb, var(--ink-fg) 8%, transparent); }
+  .field:focus-within { border-color: var(--ink-fg); }
+  .field input { flex: 1; min-width: 0; height: 50px; padding: 0 14px; border: 0; background: transparent; font-size: 16px; outline: none; }
+  .field button { height: 36px; margin-right: 7px; padding: 0 12px; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--ink-fg) 14%, transparent); font-size: 13px; font-weight: 500; cursor: pointer; }
+  .field button:hover { background: color-mix(in srgb, var(--ink-fg) 24%, transparent); }
+  #error { font-size: 14px; font-weight: 500; color: var(--bad); }
+  .primary { height: 50px; margin-top: 6px; border: 0; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: 15px; font-weight: 600; cursor: pointer; transition: background-color 140ms ease, transform 120ms var(--ease); }
+  .primary:hover { background: var(--accent-strong); }
+  .primary:active { transform: scale(0.98); }
+  .primary:disabled { opacity: 0.6; cursor: progress; }
+  :focus-visible { outline: 2px solid var(--ink-fg); outline-offset: 2px; }
+  .field input:focus-visible { outline: none; }
+
+  @property --gx { syntax: "<percentage>"; inherits: true; initial-value: 18%; }
+  @keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+  @keyframes glow-sweep { from { --gx: -30%; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<main class="box">
+  <span class="mark"><svg width="22" height="22" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2" y="9" width="3.2" height="9" rx="1.6" fill="currentColor" opacity="0.5"/><rect x="8.4" y="5" width="3.2" height="13" rx="1.6" fill="currentColor" opacity="0.75"/><rect x="14.8" y="2" width="3.2" height="16" rx="1.6" fill="currentColor"/></svg></span>
+  <h1>Vets4Warriors staffing</h1>
+  <p class="sub">Enter the team password to open the forecast.</p>
+  <form id="form" novalidate>
+    <label for="password">Password</label>
+    <div class="field">
+      <input id="password" name="password" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="256" required autofocus aria-describedby="error">
+      <button type="button" id="reveal" aria-pressed="false" aria-controls="password">Show</button>
+    </div>
+    <p id="error" role="alert" hidden></p>
+    <button type="submit" class="primary" id="submit">Sign in</button>
+  </form>
+</main>
+<script src="login.js"></script>
+</body>
+</html>
