@@ -1,7 +1,7 @@
 """Hourly call-volume and handle-time forecast for a future date range.
 
     forecast_range(conn, start_date, end_date, recency, include_holidays) -> DataFrame
-        hour_start, predicted_offered, predicted_aht_sec  (one row per hour)
+        hour_start, predicted_offered, predicted_aht_sec, predicted_real  (one row per hour)
 
     recency: "equal" | "weighted" | "recent" picks the handle-time weighting
         (db.aht.RECENCY_HALFLIFE_DAYS). Call volume is unaffected.
@@ -17,8 +17,9 @@ metadata (train_start, feature list, level_factor). Predicted calls are
 multiplied by level_factor (1.0 when absent). Features come from
 db.features.build_features, the same function training used, anchored to
 the training epoch so the trend index lines up. AHT comes from db.aht.
+predicted_real = predicted_offered x the real-call share (db.real_calls).
 
-The booster, its metadata, and one AHT table per recency preset are cached
+The booster, its metadata, and one AHT and real-share table per recency preset are cached
 in this module, keyed on the model file's mtime. A retrain (new mtime)
 refreshes all of them on the next call; slider drags between retrains reuse
 them.
@@ -35,6 +36,7 @@ import warnings
 from datetime import date
 
 import lightgbm as lgb
+import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -46,6 +48,7 @@ except ImportError:
     sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
 
 from db.aht import DEFAULT_RECENCY, RECENCY_HALFLIFE_DAYS, estimate_aht  # noqa: E402
+from db.real_calls import estimate_real_share  # noqa: E402
 from db.features import HOLIDAY_WINDOW_DAYS, build_features, load_holidays  # noqa: E402
 from db.train import METADATA_PATH, MODEL_PATH  # noqa: E402
 
@@ -96,11 +99,15 @@ def _load_cached(conn, recency: str = DEFAULT_RECENCY) -> tuple[lgb.Booster, dic
             "booster": lgb.Booster(model_file=str(MODEL_PATH)),
             "metadata": _read_metadata(),
             "aht": {},
+            "real_share": {},
         }
     if recency not in _cache["aht"]:
         tables = {**_cache["aht"], recency: estimate_aht(conn, RECENCY_HALFLIFE_DAYS[recency])}
         _cache = {**_cache, "aht": tables}
-    return _cache["booster"], _cache["metadata"], _cache["aht"][recency]
+    if recency not in _cache["real_share"]:
+        shares = {**_cache["real_share"], recency: estimate_real_share(conn, RECENCY_HALFLIFE_DAYS[recency])}
+        _cache = {**_cache, "real_share": shares}
+    return _cache["booster"], _cache["metadata"], _cache["aht"][recency], _cache["real_share"][recency]
 
 
 # =============================================================================
@@ -162,7 +169,7 @@ def forecast_range(conn, start_date: date | str, end_date: date | str,
                    recency: str = DEFAULT_RECENCY, include_holidays: bool = True) -> pd.DataFrame:
     """Predicted offered calls and AHT for every hour from start_date 00:00
     through end_date 23:00 (both dates inclusive)."""
-    booster, metadata, aht_by_cell = _load_cached(conn, recency)
+    booster, metadata, aht_by_cell, real_share_by_cell = _load_cached(conn, recency)
     holidays = load_holidays(conn)
 
     coverage = holiday_coverage(holidays, end_date)
@@ -187,8 +194,14 @@ def forecast_range(conn, start_date: date | str, end_date: date | str,
         for dow, hour in zip(featured["dow"], featured["hour"])
     ]
 
+    real_share = [
+        real_share_by_cell[(int(dow), int(hour))]
+        for dow, hour in zip(featured["dow"], featured["hour"])
+    ]
+
     return pd.DataFrame({
         "hour_start": featured["hour_start"].to_numpy(),
         "predicted_offered": predicted_offered,
         "predicted_aht_sec": predicted_aht,
+        "predicted_real": predicted_offered * np.asarray(real_share),
     })

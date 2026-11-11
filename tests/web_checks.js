@@ -42,7 +42,7 @@ function sampleWeek() {
     days.push({ date, is_weekend: d >= 5, holiday: d === 3 ? "Test Day" : null });
     for (let h = 0; h < 24; h++) {
       const shape = 4 + 5 * Math.max(0, Math.sin((h - 6) / 24 * Math.PI * 2 + 1));   // 4..9 calls, evening peak
-      hours.push({ date, hour: h, predicted_calls: shape, aht_sec: 600 + 20 * (h % 5) });
+      hours.push({ date, hour: h, predicted_calls: shape, predicted_real_calls: shape * 0.6, aht_sec: 600 + 20 * (h % 5) });
     }
   }
   return { hours, days };
@@ -146,6 +146,16 @@ out.tradeoff = {
   coreCallsOnly: Math.abs(t4.calls - eve.predicted_calls) < 1e-9,
   plannedHasTotals: judged[0].planned.Evening.totals !== null,
   undefinedAtZeroEfficiency: L.shiftTotals(eve.core_hours, 4, { ...c, efficiency: 0 }),
+};
+
+// Real calls: summed per hour, and shown right beside the total.
+const appSource = fs.readFileSync(path.join(__dirname, "..", "web", "app.js"), "utf8");
+out.realCalls = {
+  sum: L.summarize(computed).realCalls,
+  expected: hours.reduce((a, h) => a + h.predicted_real_calls, 0),
+  total: L.summarize(computed).calls,
+  tileBesideTotal: /stat\("", "Predicted calls"[^\n]*\n\s*stat\("", "Real calls", [^\n]*"Calls that lasted 2 mins"\)/.test(appSource),
+  cachedFromApi: /predicted_real_calls: h\.predicted_real_calls/.test(appSource),
 };
 
 process.stdout.write(JSON.stringify(out));

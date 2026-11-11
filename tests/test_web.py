@@ -122,3 +122,11 @@ def test_staff_tradeoff_table_runs_to_the_cap_and_moves_the_right_way(checks):
     assert t["coreCallsOnly"]                       # each call counted once
     assert t["plannedHasTotals"]
     assert t["undefinedAtZeroEfficiency"] is None
+
+
+def test_real_calls_sum_per_hour_and_sit_beside_the_total(checks):
+    real = checks["realCalls"]
+    assert real["sum"] == pytest.approx(real["expected"])
+    assert real["sum"] < real["total"]
+    assert real["tileBesideTotal"]
+    assert real["cachedFromApi"]

@@ -30,7 +30,7 @@ HOURS_PER_DAY = 24
 HOUR_KEYS = {
     "date", "hour", "predicted_calls", "aht_sec", "load_erlangs", "agents_required",
     "staff_to_schedule", "effective_agents", "service_level_delivered", "over_cap",
-    "implausible", "reason", "expected_talk_sec", "expected_talk", "abandon_share",
+    "implausible", "reason", "expected_talk_sec", "expected_talk", "abandon_share", "predicted_real_calls",
 }
 DAY_KEYS = {"date", "is_weekend", "holiday", "predicted_calls", "shifts", "expected_talk_sec", "expected_talk"}
 WINDOW_KEYS = {"start", "end", "expected_calls", "expected_talk_sec", "expected_talk", "mean_aht_sec",
@@ -419,3 +419,14 @@ def test_planned_outside_window_is_400(client):
 def test_planned_bad_shift_is_422(client):
     body = {**THREE_DAYS, "planned": [{"date": THREE_DAYS["start"], "shift": "Night", "planned": 5}]}
     assert client.post("/api/planned", json=body).status_code == 422
+
+
+def test_real_calls_are_part_of_total_calls_in_every_hour(forecast):
+    for hour in forecast["hours"]:
+        assert 0 < hour["predicted_real_calls"] < hour["predicted_calls"]
+
+
+def test_staffing_numbers_still_come_from_total_calls(forecast):
+    hour = forecast["hours"][0]
+    expected_load = hour["predicted_calls"] * hour["aht_sec"] / SECONDS_PER_HOUR
+    assert hour["load_erlangs"] == pytest.approx(expected_load, abs=LOAD_TOLERANCE)

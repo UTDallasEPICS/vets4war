@@ -235,6 +235,7 @@ def _hour_rows(hourly: pd.DataFrame) -> list[dict]:
             "date": row.hour_start.strftime("%Y-%m-%d"),
             "hour": int(row.hour_start.hour),
             "predicted_calls": float(row.predicted_offered),
+            "predicted_real_calls": float(row.predicted_real),
             "aht_sec": float(row.predicted_aht_sec),
             "load_erlangs": float(row.offered_load_erlangs),
             "agents_required": int(row.agents_required),

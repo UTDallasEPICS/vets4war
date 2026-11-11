@@ -74,7 +74,7 @@ const V4WUI = (() => {
       const cap = capForHour(h.hour);
       const state = capState(r.staff_to_schedule, cap);
       return {
-        date: h.date, hour: h.hour, ...r, cap, cap_state: state,
+        date: h.date, hour: h.hour, ...r, predicted_real_calls: h.predicted_real_calls, cap, cap_state: state,
         over_cap: r.staff_to_schedule === null ? r.over_cap : r.staff_to_schedule > cap,
         service_level_if_capped: state === "over" ? clampedServiceLevel(r, c, cap) : null,
       };
@@ -231,13 +231,14 @@ const V4WUI = (() => {
   // ---------------------------------------------------------------------------
   function summarize(hours) {
     const calls = hours.reduce((a, h) => a + h.predicted_calls, 0);
+    const realCalls = hours.reduce((a, h) => a + h.predicted_real_calls, 0);
     const talkSec = hours.reduce((a, h) => a + h.load_erlangs * SECONDS_PER_HOUR, 0);
     const staffed = hours.map((h) => h.staff_to_schedule);
     const personHours = staffed.some((s) => s === null) ? null : staffed.reduce((a, s) => a + s, 0);
     const peakStaff = staffed.some((s) => s === null) || !staffed.length ? null : Math.max(...staffed);
     const known = hours.filter((h) => h.abandon_share !== null);
     const abandoned = known.length ? known.reduce((a, h) => a + h.predicted_calls * h.abandon_share, 0) : null;
-    return { n: hours.length, calls, talkSec, meanAht: calls > 0 ? talkSec / calls : null, personHours, peakStaff, abandoned };
+    return { n: hours.length, calls, realCalls, talkSec, meanAht: calls > 0 ? talkSec / calls : null, personHours, peakStaff, abandoned };
   }
 
   // Expected abandoned calls if every hour scheduled ONE FEWER person. Mirrors

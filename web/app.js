@@ -161,7 +161,7 @@
     try {
       const data = await fetchJson("/api/forecast?" + serverParams());
       if (id !== inflight) return;
-      cache = { key: k, hours: data.hours.map((h) => ({ date: h.date, hour: h.hour, predicted_calls: h.predicted_calls, aht_sec: h.aht_sec })),
+      cache = { key: k, hours: data.hours.map((h) => ({ date: h.date, hour: h.hour, predicted_calls: h.predicted_calls, predicted_real_calls: h.predicted_real_calls, aht_sec: h.aht_sec })),
         days: data.days, window: data.window, params: data.params, source: data.data_source, coverage: data.holiday_coverage,
         quick: data.quick_hangups || null };
       el.error.hidden = true;
@@ -328,6 +328,7 @@
         `${r.Overnight}/${r.Day}/${r.Evening} staff, ${span}: ${pct(atRoster.serviceLevel, 1)} answered within ${c.targetSec} s`);
     el.summary.innerHTML = recommendedStat + rosterStat +
       stat("", "Predicted calls", Math.round(s.calls).toLocaleString(), `${s.n.toLocaleString()} hours`) +
+      stat("", "Real calls", Math.round(s.realCalls).toLocaleString(), "Calls that lasted 2 mins") +
       stat("", "Expected talk time", formatDuration(s.talkSec), `Average call ${s.meanAht === null ? "?" : (s.meanAht / SECONDS_PER_MINUTE).toFixed(1)} min`) +
       stat("", "Person-hours to schedule", s.personHours === null ? UNDEF : s.personHours.toLocaleString(), "Every hour, added up") +
       `<p class="story"><span>${story}</span></p>`;
