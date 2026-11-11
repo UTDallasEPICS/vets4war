@@ -276,8 +276,10 @@ def test_success_and_permission_denial_do_not_log_jwt_rejections(security, caplo
 
 
 @pytest.mark.parametrize("overrides,diagnostic", [
-    ({"iat": int(time.time()) + 60}, "token_not_yet_valid:ImmatureSignatureError"),
-    ({"nbf": int(time.time()) + 60}, "token_not_yet_valid:ImmatureSignatureError"),
+    # One hour ahead, not one minute: these values are fixed when the suite is
+    # collected, and a full run can take longer than a minute to get here.
+    ({"iat": int(time.time()) + 3600}, "token_not_yet_valid:ImmatureSignatureError"),
+    ({"nbf": int(time.time()) + 3600}, "token_not_yet_valid:ImmatureSignatureError"),
     ({"iat": "private-invalid-time"}, "invalid_issued_at:InvalidIssuedAtError"),
     ({"sub": 42}, "invalid_subject:InvalidSubjectError"),
     ({"jti": 42}, "invalid_token_id:InvalidJTIError"),
