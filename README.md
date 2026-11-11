@@ -1,5 +1,8 @@
 # Vets4Warriors staffing forecast
 
+> **New here?** Read [`START_HERE.md`](START_HERE.md) (which branch, how to run, how to contribute), then
+> [`docs/PROJECT_GUIDE.md`](docs/PROJECT_GUIDE.md) for the whole project from A to Z.
+
 Forecasts inbound call volume per hour for the Vets4Warriors peer-support line
 and turns it into "how many people to schedule" per hour and per shift. Reads
 the real call log from the shared Supabase Postgres database. Python, LightGBM,
