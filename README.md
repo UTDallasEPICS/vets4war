@@ -30,22 +30,32 @@ Nothing here depends on it.
 
 ## Accuracy on the real data
 
-Rolling-origin backtest over the last 12 complete months of data
-(2025-09 to 2026-08). Each month is predicted by a model trained only on the
-months before it. Pooled over all held-out hours:
+Weekly rolling-origin backtest (`db/backtest.py`): the model is trained on
+everything up to a day, forecasts the next 28 days with no access to them,
+and the origin then moves back one week. 104 origins, test weeks Nov 2024 to
+Nov 2026:
 
-| model | hourly MAE | hourly MAPE | daily-total MAE |
-|---|---|---|---|
-| LightGBM Poisson | 2.72 calls | 54% | 16.9 calls/day |
-| seasonal naive (same weekday-hour, last 8 weeks) | 2.85 | 54% | 18.7 |
-| flat mean of training window | 3.17 | 72% | 17.4 |
+| model | daily error, 1 to 14 days ahead | 15 to 28 days ahead | hourly MAE | week-to-week spread of accuracy |
+|---|---|---|---|---|
+| this model | 9.29% | 9.67% | 2.70 calls | 2.74 points |
+| Oct 28 2026 model | 9.91% | 10.27% | 2.72 | 3.00 |
+| seasonal naive (same weekday-hour, last 8 weeks) | 10.33% | 10.78% | 2.87 | 3.38 |
+| hindsight oracle (knows the weeks before AND after) | 9.22% | 9.14% | 2.83 | 2.80 |
 
-The line takes about 180 calls a day, so the daily error is roughly 9%.
-Hourly MAPE is high because many hours have only a handful of calls; the
-dashboard treats any one cell as plus or minus one person. Exact numbers,
-per fold, are in `models/metadata.json` and in the banner on the dashboard.
+"Daily error" is the mean absolute % error of the day total; the client's
+"accuracy" is 100 minus it, so about 90.7% on average. On 52 older weeks
+(Nov 2023 to Nov 2024) the same comparison is 10.78% vs 10.95% (1 to 14
+days, too small to tell from chance), 11.32% vs 11.87% (15 to 28 days),
+spread 2.72 vs 3.31, worst week 83.5% vs 76.8%.
+
+Calls arrive at random, so accuracy has a ceiling: with about 180 calls a
+day, a forecast that knew every weekly total in advance would still average
+92.1% daily accuracy, and single weeks swing about 3 points either way.
+Hourly error is close to its noise level; any one cell is plus or minus
+one person. The full record of what was tried, kept and rejected is
+`docs/final-run/REPORT.md` and `docs/final-run/ledger.json`.
 `make train` refuses to save a model that does not beat seasonal naive on
-daily-total MAE.
+daily error.
 
 ## Layout
 
@@ -54,8 +64,23 @@ db/erlang.py     Erlang C and Erlang A, required_agents()        (pure math)
 db/features.py   the ONLY place feature logic lives; hourly aggregation SQL
 db/aht.py        handle time per (weekday, hour), recency-weighted
 db/patience.py   mean caller patience from abandoned calls
-db/train.py      LightGBM Poisson, rolling backtest, writes models/
+db/holiday_calendar.py  official holidays + the client's four holiday-type days
+db/dataset.py    training data: database (read-only) + client files it lacks
+db/client_files.py      reads a client call-records workbook (no database)
+db/load_week.py  appends a client call-records file to `calls` (dry run by default)
+db/add_holidays.py      adds a year of official holidays to `holidays` (dry run by default)
+db/procedure.py  the forecasting procedure: LightGBM base profile + calibration;
+                 PRODUCTION is the configuration that ships
+db/calibration.py       level and hour-of-day shape from the most recent weeks
+db/train.py      fits PRODUCTION on all data, gates it, writes models/
 db/forecast.py   forecast_range(): hourly calls + handle time for a date range
+db/backtest.py   weekly rolling-origin folds, metrics, accept / reject rule
+db/diagnostics.py       noise floor, hindsight oracle, bias tables
+db/tune.py       the improvement loop: candidates vs incumbent, ledger
+db/experiments.py       the candidate families the loop tried
+db/base_cache.py        stores base-model numbers so a candidate scores in seconds
+db/legacy.py     the Oct 28 2026 model, kept as the comparison baseline
+db/atomic.py     files are replaced whole or not at all
 db/staffing.py   Erlang -> agents -> scheduled staff, shift roll-up
 db/source.py     data-source badge: partner / synthetic label + date range
 api/main.py      FastAPI: /api/forecast, /api/staffing, /api/planned, /api/model
@@ -173,12 +198,26 @@ New calls land in the `calls` table (loaded outside this repo). Then:
 make train PYTHON=.venv/bin/python
 ```
 
-About 30 seconds. It rebuilds the full hourly grid, reruns the 12-month
-rolling backtest against the two baselines, prints the per-fold table, and
-only then writes `models/volume_lgbm.txt` and `models/metadata.json`. If
-LightGBM does not beat seasonal naive on daily-total MAE it prints `STOP`,
-exits non-zero and leaves `models/` untouched. The hold-out window moves
-forward automatically with the data: the last 12 complete months.
+Under a minute. It rebuilds the full hourly grid, backtests the production
+procedure on the last 26 weekly origins next to the seasonal naive
+baseline, prints both, and only then writes `models/volume_lgbm.txt` and
+`models/metadata.json` (features, the procedure, the level and hour-of-day
+factors, where the data came from, the gate result). If the model does not
+beat seasonal naive on daily error it prints `STOP`, exits non-zero and
+leaves `models/` untouched.
+
+Client call-record files for days the database does not have yet can be
+added without writing to the database:
+
+```
+.venv/bin/python -m db.train --supplement "data/client/<file>.xlsx" ["..." ...]
+```
+
+The database wins on any day both have; a day present in both with a
+different call count stops the run, and so does a file cut off part-way
+through a day. `models/metadata.json` lists every source and how many
+calls it added. While recent days are missing from the database, plain
+`make train` stops with a message saying so.
 
 The running API reloads the model on the next request after a retrain.
 

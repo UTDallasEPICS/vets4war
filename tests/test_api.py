@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 import db.forecast as forecast_module  # noqa: E402
 from api.main import app, format_duration  # noqa: E402
 from db.patience import estimate_patience  # noqa: E402
-from db.staffing import MAX_STAFF_PER_SHIFT, SHIFT_ORDER, cap_for_hour, staff_for_hour  # noqa: E402
+from db.staffing import MAX_STAFF_PER_SHIFT, SHIFT_CAPS, SHIFT_ORDER, cap_for_hour, staff_for_hour  # noqa: E402
 from db.train import METADATA_PATH  # noqa: E402
 
 HOURS_PER_DAY = 24
@@ -386,12 +386,17 @@ def test_one_fewer_is_none_under_erlang_c(client):
 def test_planned_roster_verdicts_and_consequences(client, forecast):
     day = forecast["days"][0]
     rec = {name: day["shifts"][name]["staff_needed"] for name in SHIFT_ORDER}
+    # A shift that can take one more person without passing its cap. Which
+    # shift that is depends on the forecast, so it is looked up, not assumed.
+    with_room = [name for name in SHIFT_ORDER if rec[name] + 1 <= SHIFT_CAPS[name]]
+    assert with_room, f"every shift is already recommended at its cap: {rec}"
+    roomy = with_room[0]
     body = {
         **THREE_DAYS, "efficiency": EFFICIENCY, "target_pct": TARGET_PCT,
         "planned": [
             {"date": day["date"], "shift": "Day", "planned": rec["Day"]},
             {"date": day["date"], "shift": "Evening", "planned": max(rec["Evening"] - 1, 0)},
-            {"date": day["date"], "shift": "Overnight", "planned": rec["Overnight"] + 1},
+            {"date": day["date"], "shift": roomy, "planned": rec[roomy] + 1},
             {"date": day["date"], "shift": "Day", "planned": MAX_STAFF_PER_SHIFT + 1},
         ],
     }
@@ -406,7 +411,7 @@ def test_planned_roster_verdicts_and_consequences(client, forecast):
     assert beyond["verdict"] == "exceeds capacity"
     # the consequence: fewer people, lower service level, more hang-ups
     assert under["service_level_at_planned"] <= on["service_level_at_planned"] or under["shift"] != on["shift"]
-    assert over["effective_agents"] == math.floor((rec["Overnight"] + 1) * EFFICIENCY)
+    assert over["effective_agents"] == math.floor((rec[roomy] + 1) * EFFICIENCY)
     assert on["service_level_at_planned"] >= TARGET_PCT - 1e-9
     assert 0 <= on["abandon_share_at_planned"] <= 1
 

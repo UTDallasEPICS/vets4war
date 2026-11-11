@@ -21,6 +21,11 @@ Timestamps are local Eastern wall-clock time, the same convention as the
 rows already in `calls` (verified 2026-10-11: hour 2 empty on spring-forward
 Sundays).
 
+Both client layouts are read (db.client_files): the raw export with the
+calls on its only sheet, and the "Actual Data for Validity Testing"
+workbook with the calls on a later sheet. A file cut off part-way through
+a day is refused.
+
 Run from the repo root:
     python -m db.load_week "path/to/file.xlsx"            # dry run
     python -m db.load_week "path/to/file.xlsx" --commit   # write
@@ -168,7 +173,6 @@ def insert_calls(conn, rows: pd.DataFrame, commit: bool = False) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("xlsx", type=Path, help="partner call-records Excel file")
-    parser.add_argument("--sheet", default=0, help="sheet name or index (default: first sheet)")
     parser.add_argument("--commit", action="store_true", help="write the rows (default: dry run)")
     args = parser.parse_args()
 
@@ -178,7 +182,14 @@ def main() -> int:
     if not args.xlsx.exists():
         sys.exit(f"file not found: {args.xlsx}")
 
-    rows = parse_call_records(pd.read_excel(args.xlsx, sheet_name=args.sheet))
+    # Imported here: db.client_files itself imports this module's parser.
+    from db.client_files import hourly_from_calls, read_call_records
+    from db.dataset import partial_edge_days
+
+    rows = read_call_records(args.xlsx)
+    cut_short = partial_edge_days(hourly_from_calls(rows))
+    if cut_short:
+        sys.exit(f"{args.xlsx.name} starts or stops part-way through a day ({', '.join(cut_short)}); export whole days")
     print(f"parsed {len(rows):,} calls, {int(rows['abandoned'].sum()):,} abandoned, "
           f"{rows['start_ts'].min()} to {rows['start_ts'].max()}")
     with psycopg.connect(dsn) as conn:

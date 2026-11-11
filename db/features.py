@@ -35,6 +35,15 @@ try:
 except ImportError:
     sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
 
+from db.holiday_calendar import (  # noqa: E402
+    ADJACENT,
+    MAJOR_HOLIDAYS,
+    NO_HOLIDAY,
+    OFFICIAL,
+    holiday_type_days,
+    kind_code,
+)
+
 
 # days_to_nearest_holiday is clipped to this window. Beyond two weeks the
 # distance carries no signal and would only stretch the feature's range.
@@ -43,11 +52,18 @@ HOLIDAY_WINDOW_DAYS = 14
 HOURS_PER_DAY = 24
 DAYS_PER_WEEK = 7
 SATURDAY_ISODOW = 6
+DAYS_PER_YEAR = 365.25
+# Days of the month around the 1st and the 15th, when benefits and pay
+# commonly arrive (a teammate's candidate feature, tested in the final run).
+PAYDAY_WINDOW_DAYS = (1, 2, 3, 14, 15, 16)
 
 REQUIRED_HOLIDAY_COLUMNS = ("holiday_date",)
 
 # Service-level rule, defined once: answered and waited at most this long.
 SERVICE_LEVEL_SEC = 30
+
+# The column every volume model predicts: calls offered in the hour.
+TARGET = "offered"
 
 # Hourly grain, aggregated straight from `calls`. Hours with no calls have no
 # row here; db.train.complete_hourly_grid zero-fills them.
@@ -121,9 +137,14 @@ def _validate_inputs(df: pd.DataFrame, holidays: pd.DataFrame) -> None:
 
 
 def _calendar_features(hour_start: pd.Series, epoch: pd.Timestamp) -> pd.DataFrame:
-    """dow, hour, month, week_of_year, trend index, cyclic encodings, weekend."""
+    """dow, hour, month, week_of_year, trend index, cyclic encodings, weekend,
+    plus the candidates of the 2026-11 final run: hour_of_week (0 = Monday
+    midnight .. 167), day_of_month, is_payday_window and a smooth yearly
+    cycle (doy_* = first, doy_*2 = second harmonic of the day of the year)."""
     dow = hour_start.dt.isocalendar().day.astype("int64")       # 1=Mon..7=Sun
     hour = hour_start.dt.hour.astype("int64")
+    day_of_month = hour_start.dt.day.astype("int64")
+    year_angle = 2 * np.pi * (hour_start.dt.dayofyear - 1) / DAYS_PER_YEAR
 
     return pd.DataFrame({
         "dow": dow,
@@ -136,6 +157,13 @@ def _calendar_features(hour_start: pd.Series, epoch: pd.Timestamp) -> pd.DataFra
         "dow_sin": np.sin(2 * np.pi * (dow - 1) / DAYS_PER_WEEK),
         "dow_cos": np.cos(2 * np.pi * (dow - 1) / DAYS_PER_WEEK),
         "is_weekend": (dow >= SATURDAY_ISODOW).astype("int64"),
+        "hour_of_week": (dow - 1) * HOURS_PER_DAY + hour,
+        "day_of_month": day_of_month,
+        "is_payday_window": day_of_month.isin(PAYDAY_WINDOW_DAYS).astype("int64"),
+        "doy_sin": np.sin(year_angle),
+        "doy_cos": np.cos(year_angle),
+        "doy_sin2": np.sin(2 * year_angle),
+        "doy_cos2": np.cos(2 * year_angle),
     }, index=hour_start.index)
 
 
@@ -172,20 +200,27 @@ def _days_to_nearest_holiday(dates: pd.Series, holiday_dates: np.ndarray) -> pd.
 
 
 def _holiday_features(hour_start: pd.Series, holidays: pd.DataFrame) -> pd.DataFrame:
-    """is_holiday and days_to_nearest_holiday. The model learns each
-    holiday's size from the flag; no multipliers are read from the table."""
-    calendar = holidays.copy()
-    calendar["holiday_date"] = pd.to_datetime(calendar["holiday_date"]).dt.normalize()
-    calendar = calendar.drop_duplicates(subset="holiday_date")
+    """Five columns. The model learns each day's effect from the data; no
+    multipliers are read from the table.
 
+    is_holiday, days_to_nearest_holiday : the official holidays of the table
+    is_major_holiday    : Thanksgiving and Christmas (db.holiday_calendar)
+    is_holiday_adjacent : the client's four extra days (db.holiday_calendar)
+    holiday_kind        : which holiday-type day it is (0 = none)
+    """
     row_dates = hour_start.dt.normalize()
-    holiday_dates = calendar["holiday_date"]
+    calendar = holiday_type_days(holidays, int(row_dates.dt.year.min()), int(row_dates.dt.year.max()))
+    official = calendar.loc[calendar["kind"] == OFFICIAL, "holiday_date"]
+    adjacent = calendar.loc[calendar["kind"] == ADJACENT, "holiday_date"]
+    major = calendar.loc[calendar["holiday_name"].isin(MAJOR_HOLIDAYS), "holiday_date"]
+    kind_by_date = dict(zip(calendar["holiday_date"], calendar["holiday_name"].map(kind_code)))
 
     return pd.DataFrame({
-        "is_holiday": row_dates.isin(holiday_dates).astype("int64"),
-        "days_to_nearest_holiday": _days_to_nearest_holiday(
-            row_dates, holiday_dates.to_numpy()
-        ),
+        "is_holiday": row_dates.isin(official).astype("int64"),
+        "days_to_nearest_holiday": _days_to_nearest_holiday(row_dates, official.to_numpy()),
+        "is_major_holiday": row_dates.isin(major).astype("int64"),
+        "is_holiday_adjacent": row_dates.isin(adjacent).astype("int64"),
+        "holiday_kind": row_dates.map(kind_by_date).fillna(NO_HOLIDAY).astype("int64"),
     }, index=hour_start.index)
 
 

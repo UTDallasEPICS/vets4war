@@ -13,8 +13,11 @@
         last_known_holiday, covered, message  (message is None when covered)
 
 Loads the trained LightGBM booster from models/volume_lgbm.txt and its
-metadata (train_start, feature list, level_factor). Predicted calls are
-multiplied by level_factor (1.0 when absent). Features come from
+metadata. The booster gives the base profile; calibrated_volume() then
+applies what training measured on the most recent weeks (db.calibration):
+a level, and a factor per weekday and hour. Metadata written before the
+2026-11 final run has only a scalar level_factor and is served exactly as
+before (base x level_factor). Features come from
 db.features.build_features, the same function training used, anchored to
 the training epoch so the trend index lines up. AHT comes from db.aht.
 predicted_real = predicted_offered x the real-call share (db.real_calls).
@@ -30,9 +33,11 @@ Connection comes from $V4W_DATABASE_URL via python-dotenv.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import warnings
+from dataclasses import replace
 from datetime import date
 
 import lightgbm as lgb
@@ -48,12 +53,22 @@ except ImportError:
     sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
 
 from db.aht import DEFAULT_RECENCY, RECENCY_HALFLIFE_DAYS, estimate_aht  # noqa: E402
+from db.calibration import IDENTITY_FACTORS, CalibrationFactors, apply_calibration  # noqa: E402
 from db.real_calls import estimate_real_share  # noqa: E402
 from db.features import HOLIDAY_WINDOW_DAYS, build_features, load_holidays  # noqa: E402
 from db.train import METADATA_PATH, MODEL_PATH  # noqa: E402
 
 OUTPUT_COLUMNS = ("hour_start", "predicted_offered", "predicted_aht_sec")
 LAST_HOUR_OF_DAY = 23
+
+# What each holiday feature holds on an ordinary day far from any holiday.
+HOLIDAY_NEUTRAL = {
+    "is_holiday": 0,
+    "days_to_nearest_holiday": HOLIDAY_WINDOW_DAYS,
+    "is_holiday_adjacent": 0,
+    "is_major_holiday": 0,
+    "holiday_kind": 0,
+}
 
 # Process-wide cache. Replaced wholesale (never mutated in place) when the
 # model file's mtime changes. `aht` maps recency preset -> table, filled on
@@ -77,6 +92,17 @@ def _read_metadata() -> dict:
     return metadata
 
 
+def check_model_matches(metadata: dict, model_bytes: bytes) -> None:
+    """Raise if the metadata names a model file other than this one (a
+    request landed between the two files of a retrain, or one file was
+    copied without the other). Metadata without a fingerprint, written
+    before the 2026-11 final run, is not checked."""
+    expected = metadata.get("model_sha256")
+    if expected is not None and hashlib.sha256(model_bytes).hexdigest() != expected:
+        raise ValueError(f"{MODEL_PATH.name} and {METADATA_PATH.name} are from different training runs; "
+                         f"retrain, or wait a moment if a retrain is writing them now")
+
+
 def _load_cached(conn, recency: str = DEFAULT_RECENCY) -> tuple[lgb.Booster, dict, dict]:
     """Booster, metadata, and the AHT table for `recency`, reloaded only
     when the model file changes on disk."""
@@ -94,6 +120,7 @@ def _load_cached(conn, recency: str = DEFAULT_RECENCY) -> tuple[lgb.Booster, dic
 
     mtime = MODEL_PATH.stat().st_mtime
     if _cache["mtime"] != mtime:
+        check_model_matches(_read_metadata(), MODEL_PATH.read_bytes())
         _cache = {
             "mtime": mtime,
             "booster": lgb.Booster(model_file=str(MODEL_PATH)),
@@ -159,10 +186,26 @@ def aht_table(conn, recency: str = DEFAULT_RECENCY) -> dict:
 
 
 def _without_holidays(featured: pd.DataFrame) -> pd.DataFrame:
-    """The same rows with holiday features set to their 'no holiday nearby'
-    values: flag 0, and distance at the clip limit, which is what the model
-    saw for every ordinary hour more than two weeks from a holiday."""
-    return featured.assign(is_holiday=0, days_to_nearest_holiday=HOLIDAY_WINDOW_DAYS)
+    """The same rows with every holiday feature set to its 'no holiday
+    nearby' value: flags 0, and distance at the clip limit, which is what
+    the model saw for every ordinary hour more than two weeks from a holiday."""
+    return featured.assign(**{name: value for name, value in HOLIDAY_NEUTRAL.items() if name in featured.columns})
+
+
+def calibration_factors(metadata: dict) -> CalibrationFactors:
+    """The factors training stored. Older metadata has only `level_factor`
+    (or nothing): that is a level with a flat shape."""
+    if "calibration" in metadata:
+        return CalibrationFactors.from_dict(metadata["calibration"])
+    return replace(IDENTITY_FACTORS, level=float(metadata.get("level_factor", 1.0)))
+
+
+def calibrated_volume(base: np.ndarray, hour_start: pd.Series, metadata: dict) -> np.ndarray:
+    """Base model output -> served forecast: level x shape[weekday][hour]
+    (db.calibration.apply_calibration). The horizon is counted from the last
+    training day."""
+    origin = pd.Timestamp(metadata["train_end"]) if "train_end" in metadata else pd.Timestamp(hour_start.min())
+    return apply_calibration(hour_start, base, calibration_factors(metadata), origin)
 
 
 def forecast_range(conn, start_date: date | str, end_date: date | str,
@@ -186,9 +229,7 @@ def forecast_range(conn, start_date: date | str, end_date: date | str,
     if missing:
         raise ValueError(f"build_features did not produce trained features: {missing}")
 
-    # Capped recent level correction chosen at training time (db.calibration).
-    # Older metadata without the key means no correction.
-    predicted_offered = booster.predict(featured[features]) * float(metadata.get("level_factor", 1.0))
+    predicted_offered = calibrated_volume(booster.predict(featured[features]), featured["hour_start"], metadata)
     predicted_aht = [
         aht_by_cell[(int(dow), int(hour))]
         for dow, hour in zip(featured["dow"], featured["hour"])

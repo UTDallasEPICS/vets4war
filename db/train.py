@@ -1,42 +1,40 @@
-"""Train and backtest the hourly call-volume model.
+"""Train the hourly call-volume model and save it.
 
-Target    : `offered` per hour, aggregated from `calls`, on an hourly grid
-            of every day that has data (quiet hours inside such a day are
-            zero calls; days with no calls at all are a reporting gap and
-            are left out, never learned as zero).
-Model     : LightGBM, objective="poisson" (count data).
-Features  : db.features.build_features. Imported, never reimplemented.
-Config    : TrainConfig (CLI flags): recency half-life sample weights,
-            features to drop, capped recent level correction
-            (db.calibration). db.tune compares configs; the chosen one is
-            stored in models/metadata.json with its level_factor.
+    python -m db.train                                 database only
+    python -m db.train --supplement a.xlsx b.xlsx      plus client call-record files
+                                                       for days the database lacks
 
-Backtest  : rolling origin over the last HOLDOUT_MONTHS COMPLETE months
-            (every day present). Each fold trains on everything before its
-            test month with the same config and predicts that whole month
-            with no access to it. Data after the last complete month (e.g.
-            the partner's Oct 14-20 2026 validation week) is scored
-            separately as `recent_period`, trained only on data before it.
+Target    : `offered` per hour, on an hourly grid of every day that has data
+            (quiet hours inside such a day are zero calls; days with no calls
+            at all are a reporting gap and are left out, never learned as zero).
+Procedure : db.procedure.PRODUCTION, the configuration the 2026-11 final run
+            ended on (docs/final-run/REPORT.md): a LightGBM base profile on
+            calendar features, then a level and an hour-of-day shape measured
+            on the most recent weeks (db.calibration).
+Data      : db.dataset.load_dataset. The database is only read.
 
-Baselines : (a) seasonal naive = median `offered` for the same (dow, hour)
-                over the 8 weeks before the test month
-            (b) overall mean of the training window
+Gate      : before anything is saved, the procedure is backtested on the last
+            GATE_ORIGINS weekly origins (db.backtest: train up to a day,
+            forecast the next 28 with no access to them) next to the seasonal
+            naive baseline. If the model does not beat the baseline on daily
+            error at 1 to 14 days, the script prints STOP and exits 1 without
+            saving.
 
-Gate      : if LightGBM does not beat seasonal naive on daily-total MAE
-            (pooled over all folds), the script prints STOP and exits 1
-            without saving anything.
+Output    : models/volume_lgbm.txt and models/metadata.json (features, the
+            procedure, the calibration factors db.forecast applies, where the
+            data came from, the gate result).
 
-Run from the repo root:  python -m db.train
-Connection comes from $V4W_DATABASE_URL (same pattern as db/load_calls.py).
+Connection comes from $V4W_DATABASE_URL.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -47,32 +45,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-try:
-    import psycopg
-except ImportError:
-    sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
-
-from db.calibration import LEVEL_CAP, LEVEL_WINDOW_DAYS, level_factor, recent_window_start  # noqa: E402
-from db.features import HOURS_PER_DAY, build_features, load_holidays, load_hourly  # noqa: E402
-
-TARGET = "offered"
-NON_FEATURE_COLUMNS = ("hour_start", TARGET)
-
-# Held-out period for the accuracy report: the last 12 complete months.
-HOLDOUT_MONTHS = 12
-NAIVE_WINDOW_DAYS = 8 * 7
-
-# Fixed. Not tuned: the gate below decides whether this is good enough.
-LGBM_PARAMS = {
-    "objective": "poisson",
-    "learning_rate": 0.05,
-    "num_leaves": 31,
-    "min_data_in_leaf": 20,
-    "feature_fraction": 0.9,
-    "seed": 42,
-    "verbose": -1,
-}
-NUM_BOOST_ROUNDS = 500
+from db.atomic import atomic_write  # noqa: E402
+from db.backtest import DAYS_PER_WEEK, HORIZON_DAYS, run_origins, score, weekly_origins  # noqa: E402
+from db.calibration import CalibrationFactors, fit_calibration  # noqa: E402
+from db.dataset import load_dataset, missing_days  # noqa: E402
+from db.diagnostics import SeasonalNaive  # noqa: E402
+from db.features import HOURS_PER_DAY, TARGET, build_features  # noqa: E402
+from db.procedure import (  # noqa: E402
+    PRODUCTION,
+    RECENT_DAYS,
+    ForecastProcedure,
+    ProcedureConfig,
+    fit_base,
+    recent_frame,
+    special_days,
+)
 
 # Anchored on this file, not the process cwd, so `python -m db.train` and the
 # API find the same models/ from any working directory.
@@ -81,41 +68,25 @@ MODEL_DIR = REPO_ROOT / "models"
 MODEL_PATH = MODEL_DIR / "volume_lgbm.txt"
 METADATA_PATH = MODEL_DIR / "metadata.json"
 
-MODEL_NAMES = ("lgbm_poisson", "seasonal_naive", "overall_mean")
-
-# Feature sets the tuning compares (db.tune). Calendar features that let the
-# trees memorise a level by date: `month`/`week_of_year` learned "October is
-# slow" from Oct 2025 alone, and `days_since_epoch` freezes the last level
-# seen because trees cannot extrapolate.
-DROPPABLE_FEATURES = ("month", "week_of_year", "days_since_epoch")
+GATE_ORIGINS = 26
+GATE_WORKERS = 8
+# Days of recent data the gate touches: its origins, their 28-day horizon and
+# the recent history each origin's calibration reads.
+GATE_SPAN_DAYS = GATE_ORIGINS * DAYS_PER_WEEK + HORIZON_DAYS + RECENT_DAYS
+GATE_METRIC = "daily_mape_1_14"
+GATE_REPORTED = ("daily_mape_1_14", "daily_mape_15_28", "hourly_mae_1_14", "block_wape_1_14",
+                 "week_acc_mean", "week_acc_std", "week_acc_min", "week_total_ape")
+MODEL_LABEL = "final run 2026-11: level half-life 10 d, bursts clipped (training and level), hour-of-day shape, holiday eves"
 
 
 @dataclass(frozen=True)
-class TrainConfig:
-    """How one model is trained. Defaults reproduce the 2026-10-11 model.
-
-    halflife_days : None = every hour weighs the same; else an hour `age`
-                    days before the newest training hour weighs
-                    0.5 ** (age / halflife_days)
-    drop_features : feature columns left out of the model
-    calibrate     : multiply the forecast by the capped recent level factor
-                    (db.calibration)
-    """
-    halflife_days: float | None = None
-    drop_features: tuple[str, ...] = ()
-    calibrate: bool = False
-
-    def __post_init__(self):
-        if self.halflife_days is not None and self.halflife_days <= 0:
-            raise ValueError(f"halflife_days must be > 0, got {self.halflife_days}")
-        unknown = [f for f in self.drop_features if f not in DROPPABLE_FEATURES]
-        if unknown:
-            raise ValueError(f"cannot drop {unknown}; droppable: {DROPPABLE_FEATURES}")
-
-    def label(self) -> str:
-        half = "equal" if self.halflife_days is None else f"half{int(self.halflife_days)}d"
-        drop = "all-features" if not self.drop_features else "no-" + "-".join(self.drop_features)
-        return f"{half} {drop}{' +level' if self.calibrate else ''}"
+class TrainedModel:
+    booster: lgb.Booster
+    factors: CalibrationFactors
+    features: tuple[str, ...]
+    train_start: pd.Timestamp
+    train_end: pd.Timestamp
+    train_rows: int
 
 
 # =============================================================================
@@ -127,9 +98,8 @@ def complete_hourly_grid(hourly: pd.DataFrame) -> pd.DataFrame:
     `offered` = 0 where no call started in that hour.
 
     A day with no calls at all is MISSING data, not a quiet day: the line is
-    24/7 and has never had a zero-call day. Such days (e.g. Sep 1 - Oct 13
-    2026, not yet reported by the partner) are left out, so a reporting gap
-    is never learned as silence."""
+    24/7 and has never had a zero-call day. Such days are left out, so a
+    reporting gap is never learned as silence."""
     days = np.sort(hourly["hour_start"].dt.normalize().unique())
     offsets = pd.to_timedelta(np.arange(HOURS_PER_DAY), unit="h")
     grid = pd.DatetimeIndex(
@@ -145,324 +115,151 @@ def complete_hourly_grid(hourly: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({"hour_start": grid, TARGET: offered.to_numpy()})
 
 
-def feature_columns(featured: pd.DataFrame, drop: tuple[str, ...] = ()) -> list[str]:
-    return [c for c in featured.columns if c not in NON_FEATURE_COLUMNS and c not in drop]
+def recent_gaps(hourly: pd.DataFrame, span_days: int) -> pd.DatetimeIndex:
+    """Days with no calls at all inside the last `span_days` days of the
+    data. The weekly backtest gate cannot run across such a gap."""
+    gaps = missing_days(hourly)
+    cutoff = hourly["hour_start"].max().normalize() - pd.Timedelta(days=span_days)
+    return gaps[gaps > cutoff]
 
 
-def complete_months(hour_start: pd.Series) -> pd.DatetimeIndex:
-    """Month starts of every month in which EVERY calendar day has data."""
-    days = pd.Series(hour_start.dt.normalize().unique())
-    per_month = days.groupby(days.dt.to_period("M")).size()
-    full = [p for p, n in per_month.items() if n == p.days_in_month]
-    return pd.DatetimeIndex([p.to_timestamp() for p in sorted(full)])
-
-
-def backtest_months(hour_start: pd.Series, holdout_months: int = HOLDOUT_MONTHS) -> pd.DatetimeIndex:
-    """Month starts of the last `holdout_months` COMPLETE months in the data.
-
-    A month counts as complete only if every one of its days has data, so a
-    trailing partial month or a month inside a reporting gap is never a
-    test month.
-    """
-    if holdout_months < 1:
-        raise ValueError(f"holdout_months must be >= 1, got {holdout_months}")
-    months = complete_months(hour_start)[-holdout_months:]
-    if len(months) < holdout_months:
-        raise ValueError(f"only {len(months)} complete months of data; need {holdout_months}")
-    if hour_start.min().normalize() >= months[0]:
-        raise ValueError(
-            f"data starts {hour_start.min().date()}, inside the hold-out "
-            f"window from {months[0].date()}; nothing left to train on"
-        )
-    return months
-
-
-def recent_period(hour_start: pd.Series) -> tuple[pd.Timestamp, pd.Timestamp] | None:
-    """(first, last) day of data AFTER the last complete month, e.g. a
-    partner validation week. None when the data ends on a month end."""
-    last_month = complete_months(hour_start)[-1]
-    after = hour_start[hour_start >= last_month + pd.offsets.MonthBegin(1)]
-    if after.empty:
-        return None
-    return after.min().normalize(), after.max().normalize()
+def featured_frame(hourly: pd.DataFrame, holidays: pd.DataFrame) -> pd.DataFrame:
+    """Hourly grid (days with data only) with every feature column."""
+    return build_features(complete_hourly_grid(hourly), holidays)
 
 
 # =============================================================================
-# Models
+# Fit
 # =============================================================================
 
-def recency_weights(hour_start: pd.Series, halflife_days: float | None) -> np.ndarray | None:
-    """0.5 ** (age_days / halflife) with age measured back from the newest
-    hour. None (no weighting) when halflife_days is None."""
-    if halflife_days is None:
-        return None
-    age_days = (hour_start.max() - hour_start).dt.total_seconds().to_numpy() / 86_400
-    return np.power(0.5, age_days / halflife_days)
-
-
-def fit_lgbm(train: pd.DataFrame, features: list[str], halflife_days: float | None = None) -> lgb.Booster:
-    dataset = lgb.Dataset(train[features], label=train[TARGET],
-                          weight=recency_weights(train["hour_start"], halflife_days))
-    return lgb.train(LGBM_PARAMS, dataset, num_boost_round=NUM_BOOST_ROUNDS)
-
-
-def fit_level_factor(train: pd.DataFrame, features: list[str], config: TrainConfig) -> float:
-    """Out-of-sample recent level gap (db.calibration): fit on hours before
-    the last LEVEL_WINDOW_DAYS data days, predict those days, compare.
-    1.0 when the config does not calibrate."""
-    if not config.calibrate:
-        return 1.0
-    window_start = recent_window_start(train["hour_start"])
-    before = train[train["hour_start"] < window_start]
-    window = train[train["hour_start"] >= window_start]
-    booster = fit_lgbm(before, features, config.halflife_days)
-    return level_factor(window[TARGET].to_numpy(), predict_lgbm(booster, window, features))
-
-
-def fit_and_predict(train: pd.DataFrame, test: pd.DataFrame, config: TrainConfig) -> np.ndarray:
-    """The full procedure for one config: weighted fit, then level factor."""
-    features = feature_columns(train, config.drop_features)
-    booster = fit_lgbm(train, features, config.halflife_days)
-    return predict_lgbm(booster, test, features) * fit_level_factor(train, features, config)
-
-
-def predict_lgbm(booster: lgb.Booster, test: pd.DataFrame, features: list[str]) -> np.ndarray:
-    return booster.predict(test[features])
-
-
-def predict_seasonal_naive(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
-    """Median `offered` per (dow, hour) over the trailing 8 weeks of train."""
-    window_start = test["hour_start"].min() - pd.Timedelta(days=NAIVE_WINDOW_DAYS)
-    window = train[train["hour_start"] >= window_start]
-    medians = window.groupby(["dow", "hour"])[TARGET].median()
-
-    keys = pd.MultiIndex.from_frame(test[["dow", "hour"]])
-    predicted = medians.reindex(keys).to_numpy()
-    if np.isnan(predicted).any():
-        raise ValueError("seasonal naive: some (dow, hour) cells have no trailing history")
-    return predicted
-
-
-def predict_overall_mean(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
-    return np.full(len(test), train[TARGET].mean())
-
-
-# =============================================================================
-# Scoring
-# =============================================================================
-
-def score(hour_start: pd.Series, actual: np.ndarray, predicted: np.ndarray) -> dict:
-    """MAE, RMSE, MAPE (hours with offered > 0), daily-total MAE."""
-    error = predicted - actual
-    positive = actual > 0
-
-    daily = (
-        pd.DataFrame({"day": hour_start.dt.normalize().to_numpy(),
-                      "actual": actual, "predicted": predicted})
-        .groupby("day")[["actual", "predicted"]].sum()
+def fit_model(featured: pd.DataFrame, holidays: pd.DataFrame, config: ProcedureConfig) -> TrainedModel:
+    """Fit the base model on every row, then measure the level and shape on
+    the most recent weeks."""
+    if len(config.base.seeds) != 1:
+        raise ValueError(f"the model file holds one booster; the config must have one seed, got {config.base.seeds}")
+    boosters = fit_base(featured, config.base)
+    recent = recent_frame(featured, boosters, config.base)
+    factors = fit_calibration(recent, config.calibration, special_days(holidays, featured["hour_start"]))
+    return TrainedModel(
+        booster=boosters[0],
+        factors=factors,
+        features=config.base.features,
+        train_start=featured["hour_start"].min(),
+        train_end=featured["hour_start"].max(),
+        train_rows=len(featured),
     )
 
+
+# =============================================================================
+# Gate
+# =============================================================================
+
+def passes_gate(model_metrics: dict, naive_metrics: dict) -> bool:
+    return model_metrics[GATE_METRIC] < naive_metrics[GATE_METRIC]
+
+
+def gate(featured: pd.DataFrame, holidays: pd.DataFrame, config: ProcedureConfig,
+         n_origins: int = GATE_ORIGINS, workers: int = GATE_WORKERS) -> dict:
+    """Backtest the procedure and the seasonal naive baseline on the last
+    `n_origins` weekly origins."""
+    days = pd.DatetimeIndex(featured["hour_start"].dt.normalize().unique())
+    origins = weekly_origins(days, n_origins)
+    procedure = ForecastProcedure(config, special_days(holidays, featured["hour_start"]))
+    model = score(run_origins(featured, origins, procedure, workers))
+    naive = score(run_origins(featured, origins, SeasonalNaive(), workers=1))
     return {
-        "mae": float(np.mean(np.abs(error))),
-        "rmse": float(np.sqrt(np.mean(error ** 2))),
-        "mape_pct": float(np.mean(np.abs(error[positive]) / actual[positive]) * 100),
-        "daily_mae": float(np.mean(np.abs(daily["predicted"] - daily["actual"]))),
+        "origins": len(origins),
+        "first_origin": str(origins[0].date()),
+        "last_origin": str(origins[-1].date()),
+        "model": {name: model[name] for name in GATE_REPORTED},
+        "naive": {name: naive[name] for name in GATE_REPORTED},
+        "passed": passes_gate(model, naive),
     }
-
-
-# =============================================================================
-# Backtest
-# =============================================================================
-
-def split_fold(featured: pd.DataFrame, month_start: pd.Timestamp):
-    month_end = month_start + pd.offsets.MonthBegin(1)
-    is_test = (featured["hour_start"] >= month_start) & (featured["hour_start"] < month_end)
-    train = featured[featured["hour_start"] < month_start]
-    test = featured[is_test]
-    if train.empty or test.empty:
-        raise ValueError(f"fold {month_start:%Y-%m}: empty train or test window")
-    return train, test
-
-
-def predict_fold(train: pd.DataFrame, test: pd.DataFrame, config: TrainConfig) -> dict[str, np.ndarray]:
-    return {
-        "lgbm_poisson": fit_and_predict(train, test, config),
-        "seasonal_naive": predict_seasonal_naive(train, test),
-        "overall_mean": predict_overall_mean(train, test),
-    }
-
-
-def score_recent(featured: pd.DataFrame, config: TrainConfig) -> dict | None:
-    """Score the data after the last complete month (e.g. the partner's
-    Oct 14-20 2026 validation week): train on everything before it with the
-    same procedure, predict it, report the hourly metrics plus the daily
-    accuracy the partner quotes (100 - mean daily absolute % error) and the
-    week-total bias. None when there is no such period."""
-    period = recent_period(featured["hour_start"])
-    if period is None:
-        return None
-    first, last = period
-    train = featured[featured["hour_start"] < first]
-    test = featured[featured["hour_start"] >= first]
-    predicted = fit_and_predict(train, test, config)
-    actual = test[TARGET].to_numpy()
-    daily = (pd.DataFrame({"day": test["hour_start"].dt.normalize().to_numpy(),
-                           "actual": actual, "predicted": predicted})
-             .groupby("day")[["actual", "predicted"]].sum())
-    daily_ape = (daily["predicted"] - daily["actual"]).abs() / daily["actual"]
-    return {
-        "first_day": str(first.date()),
-        "last_day": str(last.date()),
-        **score(test["hour_start"], actual, predicted),
-        "daily_accuracy_pct": float(100 - daily_ape.mean() * 100),
-        "week_bias_pct": float((daily["predicted"].sum() - daily["actual"].sum()) / daily["actual"].sum() * 100),
-    }
-
-
-def run_backtest(featured: pd.DataFrame, config: TrainConfig, months: pd.DatetimeIndex):
-    """Returns (per_fold DataFrame, overall DataFrame). Overall metrics are
-    pooled over every test hour of every fold, not averaged across folds."""
-    fold_rows = []
-    pooled = {name: [] for name in MODEL_NAMES}
-    pooled_hours = []
-    pooled_actual = []
-
-    for month_start in months:
-        train, test = split_fold(featured, month_start)
-        predictions = predict_fold(train, test, config)
-        actual = test[TARGET].to_numpy()
-
-        for name in MODEL_NAMES:
-            metrics = score(test["hour_start"], actual, predictions[name])
-            fold_rows.append({"fold": f"{month_start:%Y-%m}", "model": name, **metrics})
-            pooled[name].append(predictions[name])
-        pooled_hours.append(test["hour_start"])
-        pooled_actual.append(actual)
-        print(f"fold {month_start:%Y-%m}  train={len(train):,}  test={len(test):,}", file=sys.stderr)
-
-    hours = pd.concat(pooled_hours, ignore_index=True)
-    actual = np.concatenate(pooled_actual)
-    overall_rows = [
-        {"model": name, **score(hours, actual, np.concatenate(pooled[name]))}
-        for name in MODEL_NAMES
-    ]
-    return pd.DataFrame(fold_rows), pd.DataFrame(overall_rows)
-
-
-# =============================================================================
-# Reporting
-# =============================================================================
-
-def markdown_table(df: pd.DataFrame) -> str:
-    header = "| " + " | ".join(df.columns) + " |"
-    rule = "|" + "|".join("---" for _ in df.columns) + "|"
-    body = []
-    for row in df.itertuples(index=False):
-        cells = [f"{v:.3f}" if isinstance(v, float) else str(v) for v in row]
-        body.append("| " + " | ".join(cells) + " |")
-    return "\n".join([header, rule, *body])
-
-
-def passes_gate(overall: pd.DataFrame) -> bool:
-    by_model = overall.set_index("model")["daily_mae"]
-    return by_model["lgbm_poisson"] < by_model["seasonal_naive"]
 
 
 # =============================================================================
 # Persistence
 # =============================================================================
 
-def save_model(booster: lgb.Booster, featured: pd.DataFrame, features: list[str], config: TrainConfig,
-               factor: float, per_fold: pd.DataFrame, overall: pd.DataFrame,
-               months: pd.DatetimeIndex, recent: dict | None) -> None:
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    booster.save_model(str(MODEL_PATH))
-
-    metadata = {
+def build_metadata(model: TrainedModel, config: ProcedureConfig, sources: tuple[dict, ...], gate_result: dict) -> dict:
+    """Everything db.forecast needs to serve the model and a reader needs to
+    audit it. JSON-ready."""
+    return {
         "created_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "target": TARGET,
-        "train_start": featured["hour_start"].min().isoformat(),
-        "train_end": featured["hour_start"].max().isoformat(),
-        "train_rows": int(len(featured)),
-        "features": features,
-        "lgbm_params": LGBM_PARAMS,
-        "num_boost_rounds": NUM_BOOST_ROUNDS,
-        "config": {**asdict(config), "drop_features": list(config.drop_features), "label": config.label()},
-        # db.forecast multiplies every predicted hour by this (1.0 = off).
-        "level_factor": factor,
-        "level_window_days": LEVEL_WINDOW_DAYS,
-        "level_cap": LEVEL_CAP,
-        "backtest": {
-            "holdout_months": int(len(months)),
-            "first_test_month": months[0].strftime("%Y-%m-%d"),
-            "last_test_month": months[-1].strftime("%Y-%m-%d"),
-            "overall": overall.to_dict(orient="records"),
-            "per_fold": per_fold.to_dict(orient="records"),
-        },
-        "recent_period": recent,
+        "train_start": model.train_start.isoformat(),
+        "train_end": model.train_end.isoformat(),
+        "train_rows": int(model.train_rows),
+        "features": list(model.features),
+        "lgbm_params": config.base.lgbm_params(config.base.seeds[0]),
+        "num_boost_rounds": config.base.num_boost_round,
+        "config": {"label": MODEL_LABEL},
+        "procedure": config.to_dict(),
+        # db.forecast multiplies every predicted hour by level x shape[weekday][hour].
+        "calibration": model.factors.to_dict(),
+        "level_factor": model.factors.level,
+        "data_sources": list(sources),
+        "gate": gate_result,
     }
-    METADATA_PATH.write_text(json.dumps(metadata, indent=2))
+
+
+def save_model(model: TrainedModel, metadata: dict, model_path: Path = MODEL_PATH,
+               metadata_path: Path = METADATA_PATH) -> None:
+    """Write the metadata, then the model, each replaced whole. The server
+    reloads when the MODEL file changes, so by then its metadata is already
+    in place; `model_sha256` lets db.forecast refuse a model and metadata
+    from two different runs."""
+    text = model.booster.model_to_string()
+    stamped = {**metadata, "model_sha256": hashlib.sha256(text.encode()).hexdigest()}
+    atomic_write(metadata_path, lambda temporary: temporary.write_text(json.dumps(stamped, indent=2)))
+    atomic_write(model_path, lambda temporary: temporary.write_text(text))
 
 
 # =============================================================================
 # CLI
 # =============================================================================
 
-def load_featured(dsn: str) -> pd.DataFrame:
-    """Hourly grid (days with data only) with every feature column."""
-    with psycopg.connect(dsn) as conn:
-        hourly = load_hourly(conn)
-        holidays = load_holidays(conn)
-    grid = complete_hourly_grid(hourly)
-    print(f"grid rows {len(grid):,}  (hours with calls {len(hourly):,}, "
-          f"zero-filled {len(grid) - len(hourly):,}, days {len(grid) // HOURS_PER_DAY:,})")
-    return build_features(grid, holidays)
-
-
-def parse_config(argv: list[str] | None = None) -> TrainConfig:
-    parser = argparse.ArgumentParser(description="Train and backtest the hourly volume model.")
-    parser.add_argument("--halflife", type=float, default=None,
-                        help="recency half-life in days (default: equal weights)")
-    parser.add_argument("--drop", default="",
-                        help=f"comma-separated features to leave out, from {','.join(DROPPABLE_FEATURES)}")
-    parser.add_argument("--calibrate", action="store_true", help="apply the capped recent level factor")
-    args = parser.parse_args(argv)
-    drop = tuple(f for f in args.drop.split(",") if f)
-    return TrainConfig(halflife_days=args.halflife, drop_features=drop, calibrate=args.calibrate)
+def _print_gate(result: dict) -> None:
+    print(f"\n## Gate: last {result['origins']} weekly origins, {result['first_origin']} to {result['last_origin']}\n")
+    print(f"{'metric':18s} {'model':>9s} {'naive':>9s}")
+    for name in GATE_REPORTED:
+        print(f"{name:18s} {result['model'][name]:9.3f} {result['naive'][name]:9.3f}")
 
 
 def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Train, gate and save the hourly volume model.")
+    parser.add_argument("--supplement", nargs="*", type=Path, default=[],
+                        help="client call-record workbooks for days the database lacks")
+    args = parser.parse_args(argv)
+
     dsn = os.environ.get("V4W_DATABASE_URL")
     if not dsn:
         sys.exit("no connection string. set V4W_DATABASE_URL")
-    config = parse_config(argv)
-    print(f"config: {config.label()}")
+    absent = [str(path) for path in args.supplement if not path.exists()]
+    if absent:
+        sys.exit(f"file not found: {absent}")
 
-    featured = load_featured(dsn)
-    features = feature_columns(featured, config.drop_features)
-    months = backtest_months(featured["hour_start"])
-    print(f"hold-out: {len(months)} months, {months[0]:%Y-%m} to {months[-1]:%Y-%m}")
+    dataset = load_dataset(dsn, args.supplement)
+    print(json.dumps(list(dataset.sources), indent=2))
+    gaps = recent_gaps(dataset.hourly, GATE_SPAN_DAYS)
+    if len(gaps):
+        sys.exit(f"{len(gaps)} recent day(s) have no calls at all ({gaps[0].date()} to {gaps[-1].date()}): "
+                 f"that is unreported data, and the backtest gate cannot run across it. Load those days "
+                 f"into the database, or pass the client's files with --supplement.")
+    featured = featured_frame(dataset.hourly, dataset.holidays)
+    print(f"grid rows {len(featured):,}  days {len(featured) // HOURS_PER_DAY:,}  "
+          f"{featured['hour_start'].min().date()} to {featured['hour_start'].max().date()}")
 
-    per_fold, overall = run_backtest(featured, config, months)
-    print("\n## Per fold\n")
-    print(markdown_table(per_fold))
-    print("\n## Overall (pooled over all test hours)\n")
-    print(markdown_table(overall))
-
-    recent = score_recent(featured, config)
-    if recent:
-        print(f"\n## Recent period {recent['first_day']} to {recent['last_day']} (trained only on data before it)\n")
-        print(json.dumps(recent, indent=2))
-
-    if not passes_gate(overall):
-        print("\nSTOP: LightGBM did not beat seasonal naive on daily-total MAE. "
-              "Nothing saved.")
+    result = gate(featured, dataset.holidays, PRODUCTION)
+    _print_gate(result)
+    if not result["passed"]:
+        print("\nSTOP: the model did not beat seasonal naive on daily error. Nothing saved.")
         return 1
 
-    booster = fit_lgbm(featured, features, config.halflife_days)
-    factor = fit_level_factor(featured, features, config)
-    print(f"\nlevel factor applied to forecasts: {factor:.4f}")
-    save_model(booster, featured, features, config, factor, per_fold, overall, months, recent)
+    model = fit_model(featured, dataset.holidays, PRODUCTION)
+    save_model(model, build_metadata(model, PRODUCTION, dataset.sources, result))
+    print(f"\nlevel factor {model.factors.level:.4f}")
+    print("hour-of-day factors:", " ".join(f"{value:.2f}" for value in model.factors.hour))
     print(f"saved {MODEL_PATH} and {METADATA_PATH}")
     return 0
 
