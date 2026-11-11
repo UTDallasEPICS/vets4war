@@ -15,7 +15,7 @@
  */
 (function () {
   "use strict";
-  const L = V4WUI;
+  const L = V4WUI, C = V4WCharts, F = V4WDayFocus, M = V4WMotion;
   const HOURS = L.HOURS, SHIFTS = L.SHIFTS, MAX = L.MAX_STAFF_PER_SHIFT, SPH = L.SECONDS_PER_HOUR;
   const QUEUE_MODEL = "erlang_a";
   const RECENCY = "weighted";
@@ -25,19 +25,32 @@
   const SECONDS_PER_MINUTE = 60;
   const MAJOR_HOURS = new Set([0, 6, 12, 18]);
   const SL_MIN = 80, SL_MAX = 95, SL_STANDARD = 90, SL_CURRENT = [80, 85];
-  const DEEP_LEVEL = 0.6;            // above this heat level the numeral turns white
+  const DEEP_LEVEL = 0.6;            // above this heat level the numeral takes the deep-cell ink
   const THUMB_PX = 20;
   const UNDEF = "-";
   const PNG = { cell: 34, row: 30, date: 120, roster: 52, pad: 20, head: 64,
-    lo: "#f3f6fd", hi: "#3b82f6", bg: "#ffffff", ink: "#0f172a", mute: "#64748b", amber: "#f59e0b", amberBg: "#fef3c7",
-    red: "#dc2626", rosterBg: "#f6f8fc", green: "#047857", maxMix: 0.78 };
+    lo: "#f4f4f4", hi: "#1a4be0", bg: "#ffffff", ink: "#111111", mute: "#6b6b6b", amber: "#9a5b00", amberBg: "#fbefd9",
+    red: "#c5301c", rosterBg: "#f4f4f4", green: "#17713f", maxMix: 0.85 };
+  // Narrowest the grid columns may get, in px (mirrors the compact col rules
+  // in index.html). Above this the 24 hours always fit the panel; below it
+  // (phones) the grid scrolls sideways instead.
+  const GRID_PX = { date: 128, hour: 24, roster: 78, gap: 3, tourGap: 10 };
+  const ROW_FADE_MS = 700;           // how long freshly loaded rows keep their fade-in class
+  const PROFILE_BAR_PX = 26;         // tallest bar in the calls-per-hour strip
+  // Day chart: above these many days the per-day numbers, then the labels, no longer fit.
+  const DAY_VALUES_MAX = 35, DAY_LABELS_MAX = 62;
 
   const $ = (id) => document.getElementById(id);
   const el = {
     start: $("start"), end: $("end"), eff: $("eff"), effNum: $("effNum"), sl: $("sl"), slNum: $("slNum"), slTrack: $("slTrack"), tsec: $("tsec"),
     hFrom: $("hFrom"), hTo: $("hTo"), hoursTrack: $("hoursTrack"), hoursVal: $("hoursVal"),
     holidays: $("holidays"), changed: $("changed"),
-    head: $("gridHead"), rows: $("rows"), scroll: $("gridScroll"), gridNote: $("gridNote"),
+    grid: $("grid"), cols: $("gridCols"), head: $("gridHead"), rows: $("rows"), scroll: $("gridScroll"), gridNote: $("gridNote"),
+    pageSub: $("pageSub"), rosterStat: $("rosterStat"), recStat: $("recStat"), story: $("story"),
+    dayChart: $("dayChart"), shiftSplit: $("shiftSplit"),
+    modeRange: $("modeRange"), modeDay: $("modeDay"), dayPrev: $("dayPrev"), dayNext: $("dayNext"),
+    datesLabel: $("datesLabel"), dayFocus: $("dayFocus"), dayFocusTitle: $("dayFocusTitle"),
+    dayList: $("dayList"), dayFocusList: $("dayFocusList"), dock: $("dock"), dockToggle: $("dockToggle"),
     sheet: $("sheet"), sheetTitle: $("sheetTitle"), sheetBody: $("sheetBody"), sheetClose: $("sheetClose"),
     summary: $("summary"), caveat: $("caveat"), sourceBadge: $("sourceBadge"), exportPng: $("exportPng"), exportCsv: $("exportCsv"), exportReport: $("exportReport"),
     error: $("error"), holidayNote: $("holidayNote"),
@@ -59,6 +72,7 @@
   let scale = { lo: 0, hi: 0, levelOf: () => 0 };
   let view = null;           // null | { type: "hour", key } | { type: "day", date } | { type: "selection" }
   let selection = null;
+  let dayMode = null;        // null | { start, end }: the date range to go back to when one-day mode ends
   let changedTimer = null;
   const store = L.createPlannedStore(safeStorage());
 
@@ -172,6 +186,9 @@
       if (view && view.type === "day" && !cache.days.some((d) => d.date === view.date)) closeSheet();
       if (view && view.type !== "day") closeSheet();
       buildGrid(cache.days);
+      buildDayChart(cache.days);
+      el.rows.classList.add("fresh");
+      setTimeout(() => el.rows.classList.remove("fresh"), ROW_FADE_MS);
       computed = [];
       recompute();
     } catch (err) {
@@ -180,8 +197,9 @@
       el.error.hidden = false;
       el.error.textContent = `The forecast did not load (${err.message}). Check that the server is running and V4W_DATABASE_URL is set, then change a date to retry.`;
       el.rows.innerHTML = "";
+      el.dayChart.innerHTML = "";
     } finally {
-      if (id === inflight) document.body.classList.remove("is-loading");
+      if (id === inflight) { document.body.classList.remove("is-loading"); document.body.classList.add("ready"); }
     }
   }
   function renderSourceBadge(src) {
@@ -193,21 +211,32 @@
   // ---- grid skeleton (per range and per hours shown) ----
   function buildGrid(days) {
     const tours = visibleTours();
+    const hourCount = tours.reduce((n, t) => n + t.hours.length, 0);
+    // A narrow empty column separates one tour from the next.
+    const gapCount = Math.max(0, tours.length - 1);
+    const GAP_TH = `<th class="gap" aria-hidden="true"></th>`, GAP_TD = `<td class="gap" aria-hidden="true"></td>`;
+    el.cols.innerHTML = `<col class="c-date">` + tours.map((t) => `<col class="c-h">`.repeat(t.hours.length) + `<col class="c-roster">`).join(`<col class="c-gap">`);
+    el.grid.style.minWidth = `${GRID_PX.date + hourCount * (GRID_PX.hour + GRID_PX.gap) + tours.length * (GRID_PX.roster + GRID_PX.gap) + gapCount * (GRID_PX.tourGap + GRID_PX.gap) + GRID_PX.gap}px`;
+    // Predicted calls per day (whole day, whatever hours are shown): the same
+    // sum the day sheet shows, so the row label and the sheet always agree.
+    const dayCalls = cache.hours.reduce((m, h) => new Map(m).set(h.date, (m.get(h.date) || 0) + h.predicted_calls), new Map());
     el.head.innerHTML =
-      `<tr><th class="date" rowspan="2"></th>${tours.map((t) => `<th class="group" colspan="${t.hours.length + 1}">${t.spec.name}<small>${t.spec.span}</small></th>`).join("")}</tr>` +
-      `<tr>${tours.map((t) => t.hours.map((h) => `<th class="hh${MAJOR_HOURS.has(h) ? " major" : ""}" data-h="${h}">${pad2(h)}</th>`).join("") +
-        `<th class="roster" title="The tour's busiest hour sets the number to roster. Type your own to compare.">Roster</th>`).join("")}</tr>`;
+      `<tr><th class="date"></th>${tours.map((t) => `<th class="group" colspan="${t.hours.length + 1}">${t.spec.name}<small>${t.spec.span}</small></th>`).join(GAP_TH)}</tr>` +
+      `<tr class="profile"><th class="date pf-label">Average calls<br>per hour</th>${tours.map((t) => t.hours.map((h) => `<th class="pf" data-h="${h}"></th>`).join("") + `<th></th>`).join(GAP_TH)}</tr>` +
+      `<tr><th class="date"></th>${tours.map((t) => t.hours.map((h) => `<th class="hh${MAJOR_HOURS.has(h) ? " major" : ""}" data-h="${h}">${pad2(h)}</th>`).join("") +
+        `<th class="roster" title="The tour's busiest hour sets the number to roster. Type your own to compare.">Roster</th>`).join(GAP_TH)}</tr>`;
     const today = isoDate(new Date());
-    el.rows.innerHTML = days.map((day) => {
+    el.rows.innerHTML = days.map((day, rowIndex) => {
       const cls = [day.is_weekend ? "weekend" : "", day.date === today ? "today" : "", day.holiday ? "holiday" : "",
         view && view.type === "day" && view.date === day.date ? "picked" : ""].join(" ").trim();
       const dt = localDate(day.date);
-      const meta = day.holiday ? esc(day.holiday) : (day.date === today ? "Today" : "");
+      const callsText = `${Math.round(dayCalls.get(day.date) || 0).toLocaleString()} calls`;
+      const meta = callsText + (day.holiday ? `, ${esc(day.holiday)}` : (day.date === today ? ", today" : ""));
       const cells = tours.map((t) =>
         t.hours.map((h) => `<td class="h${MAJOR_HOURS.has(h) ? " major" : ""}" data-k="${L.key(day.date, h)}" data-d="${day.date}" data-h="${h}" tabindex="0"></td>`).join("") +
         `<td class="roster" data-plan="${L.shiftKey(day.date, t.spec.name)}"><input type="number" name="planned" min="0" max="99" step="1" inputmode="numeric" autocomplete="off" aria-label="Planned staff, ${t.spec.name}, ${day.date}" data-d="${day.date}" data-s="${t.spec.name}"><span class="verdict"></span></td>`
-      ).join("");
-      return `<tr class="${cls}" data-d="${day.date}"><td class="date"><button type="button" class="date-btn" data-day="${day.date}"${day.holiday ? ` title="${esc(day.holiday)}"` : ""}>` +
+      ).join(GAP_TD);
+      return `<tr class="${cls}" data-d="${day.date}" style="--r:${rowIndex}"><td class="date"><button type="button" class="date-btn" data-day="${day.date}" title="${callsText} predicted for the whole day${day.holiday ? `. ${esc(day.holiday)}` : ""}">` +
         `<div class="d">${dt.toLocaleDateString(undefined, { weekday: "short" })}<span>${dt.toLocaleDateString(undefined, { day: "numeric", month: "short" })}</span></div><div class="meta">${meta}</div></button></td>${cells}</tr>`;
     }).join("");
     cellIndex = new Map([...el.rows.querySelectorAll("td.h[data-k]")].map((td) => [td.dataset.k, td]));
@@ -227,11 +256,30 @@
     judged = L.judgeRoster(L.rollupShifts(cache.days, computed), store, c);
     repaint();
     renderSummary(c);
+    renderDayFocus(c);
     renderSheet();
     renderControlFeedback();
     if (!first) flashChanged(changed);
   }
   function repaint() { patchCells(computed); patchShifts(judged); renderLegend(); }
+
+  // Average predicted calls for each hour of the day across the loaded dates.
+  function hourMeans(hours) {
+    const sum = new Map(), n = new Map();
+    hours.forEach((h) => { sum.set(h.hour, (sum.get(h.hour) || 0) + h.predicted_calls); n.set(h.hour, (n.get(h.hour) || 0) + 1); });
+    return new Map([...sum].map(([hour, total]) => [hour, total / n.get(hour)]));
+  }
+  function patchProfile(hours, peaks) {
+    const means = hourMeans(hours);
+    const top = Math.max(0, ...means.values());
+    el.head.querySelectorAll("th.pf[data-h]").forEach((th) => {
+      const hour = Number(th.dataset.h), mean = means.get(hour);
+      if (mean === undefined) { th.innerHTML = ""; th.title = ""; return; }
+      th.classList.toggle("peak", peaks.has(hour));
+      th.title = `${pad2(hour)}:00, ${mean.toFixed(1)} calls on average across these dates`;
+      th.innerHTML = `<span class="pv">${mean.toFixed(1)}</span><i style="height:${top > 0 ? Math.round(mean / top * PROFILE_BAR_PX) : 0}px"></i>`;
+    });
+  }
 
   function patchCells(hours) {
     scale = L.discreteScale(hours.filter((h) => h.cap_state === "under").map((h) => h.staff_to_schedule));
@@ -241,6 +289,7 @@
       th.classList.toggle("peak", peak);
       th.title = peak ? "One of the four busiest hours in this window" : "";
     });
+    patchProfile(hours, peaks);
     const activeKey = view && view.type === "hour" ? view.key : null;
     hours.forEach((h) => {
       const td = cellIndex.get(L.key(h.date, h.hour));
@@ -251,9 +300,10 @@
       td.className = `h cap-${h.cap_state}${MAJOR_HOURS.has(h.hour) ? " major" : ""}${lvl > DEEP_LEVEL ? " deep" : ""}${h.implausible ? " implausible" : ""}` +
         `${inSelection(h) ? " sel" : ""}${activeKey === L.key(h.date, h.hour) ? " active" : ""}`;
       td.innerHTML = h.cap_state === "over"
-        ? `<span class="n">${staff}</span><span class="cl">${pct(h.service_level_if_capped)} at ${h.cap}</span>`
+        ? `<span class="n">${staff}</span><span class="cl">${pct(h.service_level_if_capped)}<span class="cl-cap"> at ${h.cap}</span></span>`
         : `<span class="n">${staff === null ? UNDEF : staff}</span>`;
       td.setAttribute("aria-label", `${h.date} ${pad2(h.hour)}:00, ${staff === null ? "undefined" : staff} people to schedule`);
+      td.title = `${dayLabel(h.date)}, ${pad2(h.hour)}:00. ${h.predicted_calls.toFixed(1)} calls predicted`;
     });
   }
 
@@ -298,17 +348,72 @@
     return ` In the last ${q.window_days} days of data (${q.first_day} to ${q.last_day}), ${pct(q.quick_share_of_abandoned, 0)} of hang-ups ` +
       `(${q.n_quick.toLocaleString()} of ${q.n_abandoned.toLocaleString()}) came within ${q.threshold_sec} s, too fast for any staffing to answer.`;
   }
+  // Lead block of an outlook card: the hang-up count, then its figures.
+  function leadBlock(count, figs, note) {
+    const list = figs.length ? `<dl class="figs">${figs.map(([k, v]) => `<div class="fig"><dt>${k}</dt><dd class="num">${v}</dd></div>`).join("")}</dl>` : "";
+    return `<div class="lead-top" title="${esc(note)}"><div class="lead-n"><span class="n num">${count}</span><span class="u">hang-ups</span></div>${list}</div>`;
+  }
+  const lostText = (v) => (v === null ? UNDEF : Math.round(v).toLocaleString());
+
+  // Hang-ups by shift. The rows are fixed markup; only bar lengths and numbers
+  // change, so the bars slide as a slider moves.
+  function patchShiftSplit(c) {
+    const rows = C.shiftSplit(computed, roster(), c);
+    const top = C.topOf(rows);
+    rows.forEach((row) => {
+      const node = el.shiftSplit.querySelector(`.srow[data-shift="${row.name}"]`);
+      if (!node) return;
+      const [own, rec] = node.querySelectorAll(".sbar");
+      own.querySelector("i").style.width = C.share(row.roster, top);
+      own.querySelector("b").textContent = lostText(row.roster);
+      rec.querySelector("i").style.width = C.share(row.recommended, top);
+      rec.querySelector("b").textContent = lostText(row.recommended);
+      node.title = `${row.name}: ${lostText(row.calls)} calls. Hang-ups: ${lostText(row.roster)} with your roster, ${lostText(row.recommended)} as recommended.`;
+    });
+  }
+
+  // Hang-ups day by day. Skeleton per date range, values patched per recompute.
+  function buildDayChart(days) {
+    const today = isoDate(new Date());
+    el.dayChart.className = `daybars${days.length > DAY_VALUES_MAX ? " dense" : ""}${days.length > DAY_LABELS_MAX ? " packed" : ""}`;
+    el.dayChart.innerHTML = days.map((day) => {
+      const dt = localDate(day.date);
+      const cls = ["db", day.is_weekend ? "weekend" : "", day.holiday ? "holiday" : "", day.date === today ? "today" : ""].join(" ").trim();
+      return `<button type="button" class="${cls}" data-day="${day.date}"><span class="dv"></span>` +
+        `<span class="track"><i class="b-roster"></i><i class="b-rec"></i></span>` +
+        `<span class="dl"><b>${dt.toLocaleDateString(undefined, { weekday: "short" }).slice(0, 2)}</b>${dt.getDate()}</span></button>`;
+    }).join("");
+  }
+  function patchDayChart(c) {
+    const rows = C.daySplit(cache.days, computed, roster(), c);
+    // Phone layout of the same days (hidden on wider screens).
+    el.dayList.innerHTML = C.dayList(judged, rows, (date) => ({ weekday: localDate(date).toLocaleDateString(undefined, { weekday: "short" }), date: shortDate(date) }));
+    const top = C.topOf(rows);
+    const worst = Math.max(0, ...rows.map((r) => r.roster).filter((v) => v !== null));
+    const holidays = new Map(cache.days.map((d) => [d.date, d.holiday]));
+    const picked = view && view.type === "day" ? view.date : null;
+    rows.forEach((row) => {
+      const node = el.dayChart.querySelector(`[data-day="${row.date}"]`);
+      if (!node) return;
+      node.querySelector(".dv").textContent = lostText(row.roster);
+      node.querySelector(".b-roster").style.height = C.share(row.roster, top);
+      node.querySelector(".b-rec").style.height = C.share(row.recommended, top);
+      node.classList.toggle("picked", row.date === picked);
+      node.classList.toggle("top", row.roster !== null && row.roster === worst);   // the worst day keeps its number, for scale
+      const label = `${dayLabel(row.date)}${holidays.get(row.date) ? `, ${holidays.get(row.date)}` : ""}: ${lostText(row.calls)} calls. ` +
+        `Hang-ups: ${lostText(row.roster)} with your roster, ${lostText(row.recommended)} as recommended.`;
+      node.title = label;
+      node.setAttribute("aria-label", label);
+    });
+  }
+
   function renderSummary(c) {
     const s = L.summarize(computed);
     const fewer = L.abandonedOneFewer(computed, c);
     const stat = (cls, k, v, d) => `<div class="stat ${cls}"><div class="k">${k}</div><div class="v">${v}</div><div class="d">${d}</div></div>`;
     const span = `${shortDate(cache.window.start)} to ${shortDate(cache.window.end)}`;
-    // Secondary: what our recommendation would give. Labelled so it is never
-    // read as the roster the partner actually runs (that is the lead stat).
-    const recommendedStat = s.abandoned === null
-      ? stat("lead", "Hang-ups with recommended staffing", UNDEF, "Undefined at 0% efficiency")
-      : stat("lead", "Hang-ups with recommended staffing", `${Math.round(s.abandoned).toLocaleString()}<small>${s.calls > 0 ? pct(s.abandoned / s.calls, 1) + " hang up" : ""}</small>`,
-        `Every hour staffed as the grid recommends, ${span}`);
+    el.pageSub.textContent = cache.days.length === 1 ? longDate(cache.window.start)
+      : `${dayLabel(cache.window.start)} to ${dayLabel(cache.window.end)}, ${cache.days.length} days`;
     const talkHours = s.talkSec / SPH;
     let story;
     if (s.personHours === null) story = "Scheduled person-hours are undefined at 0% efficiency.";
@@ -320,21 +425,80 @@
     }
     const r = roster();
     const atRoster = L.rosterOutcome(computed, r, c);
-    // Lead: hang-ups at the roster the partner actually runs (validated against
-    // their Oct 14-20 2026 actuals).
-    const rosterStat = atRoster === null
-      ? stat("lead", "Hang-ups with the slider staff", UNDEF, "Needs Erlang A and efficiency above 0")
-      : stat("lead", "Hang-ups with the slider staff", `${Math.round(atRoster.abandoned).toLocaleString()}<small>${pct(atRoster.abandonShare, 1)} of calls</small>`,
-        `${r.Overnight}/${r.Day}/${r.Evening} staff, ${span}: ${pct(atRoster.serviceLevel, 1)} answered within ${c.targetSec} s`);
-    el.summary.innerHTML = recommendedStat + rosterStat +
+    const recShare = s.abandoned !== null && s.calls > 0 ? s.abandoned / s.calls : null;
+    // Lead: hang-ups at the roster on the sliders (the partner's real 4/4/6 by
+    // default, validated against their Oct 14-20 2026 actuals).
+    el.rosterStat.innerHTML = atRoster === null
+      ? leadBlock(UNDEF, [], "Needs Erlang A and efficiency above 0")
+      : leadBlock(Math.round(atRoster.abandoned).toLocaleString(),
+        [["Share of calls", pct(atRoster.abandonShare, 1)], [`Answered within ${c.targetSec} s`, pct(atRoster.serviceLevel, 1)]],
+        `${r.Overnight}/${r.Day}/${r.Evening} staff, ${span}`);
+    // Beside it: what our recommendation would give. Labelled so it is never
+    // read as the roster the partner actually runs.
+    el.recStat.innerHTML = s.abandoned === null
+      ? leadBlock(UNDEF, [], "Undefined at 0% efficiency")
+      : leadBlock(Math.round(s.abandoned).toLocaleString(),
+        [["Share of calls", recShare === null ? UNDEF : pct(recShare, 1)]].concat(fewer === null ? [] : [["With one person fewer", Math.round(fewer).toLocaleString()]]),
+        `Every hour staffed as the grid recommends, ${span}`);
+    const rosterMoved = M.countTo(el.rosterStat.querySelector(".n"), "roster");
+    M.countTo(el.recStat.querySelector(".n"), "recommended");
+    if (rosterMoved) M.pulse(el.rosterStat.closest(".card"));
+    el.summary.innerHTML =
       stat("", "Predicted calls", Math.round(s.calls).toLocaleString(), `${s.n.toLocaleString()} hours`) +
       stat("", "Real calls", Math.round(s.realCalls).toLocaleString(), "Calls that lasted 2 mins") +
       stat("", "Expected talk time", formatDuration(s.talkSec), `Average call ${s.meanAht === null ? "?" : (s.meanAht / SECONDS_PER_MINUTE).toFixed(1)} min`) +
-      stat("", "Person-hours to schedule", s.personHours === null ? UNDEF : s.personHours.toLocaleString(), "Every hour, added up") +
-      `<p class="story"><span>${story}</span></p>`;
+      stat("", "Person-hours to schedule", s.personHours === null ? UNDEF : s.personHours.toLocaleString(), "");
+    el.story.innerHTML = story;
+    patchShiftSplit(c);
+    patchDayChart(c);
     el.caveat.textContent = `${cache.window.caveat} Callers are assumed to give up after ${Math.round(c.patienceSec || 0)} s on average, measured from ` +
       `${cache.params.patience_source ? cache.params.patience_source.n_abandoned.toLocaleString() : "the"} past hang-ups.` +
       quickHangupNote(cache.quick);
+  }
+
+  // ---- one-day mode ----
+  // Looking at one day is the same forecast request with start = end, so every
+  // number, control and export behaves exactly as it does for a range. The
+  // page swaps the day-by-day chart for an hour-by-hour board of that day.
+  function paintMode() {
+    const on = dayMode !== null;
+    document.body.classList.toggle("one-day", on);
+    el.modeRange.setAttribute("aria-pressed", String(!on));
+    el.modeDay.setAttribute("aria-pressed", String(on));
+    el.datesLabel.textContent = on ? "Day" : "Dates";
+  }
+  function enterDay(date) {
+    if (dayMode === null) dayMode = { start: el.start.value, end: el.end.value };
+    el.start.value = date; el.end.value = date;
+    paintMode();
+    debounced(refresh);
+  }
+  function exitDay() {
+    if (dayMode === null) return;
+    el.start.value = dayMode.start; el.end.value = dayMode.end;
+    dayMode = null;
+    paintMode();
+    debounced(refresh);
+  }
+  // The day to open on: the one in the detail sheet, else today if loaded, else the first date.
+  function defaultDay() {
+    if (view && view.type === "day") return view.date;
+    const today = isoDate(new Date());
+    return cache && cache.days.some((d) => d.date === today) ? today : el.start.value;
+  }
+  function stepDay(offset) {
+    const d = localDate(el.start.value);
+    if (Number.isNaN(d.getTime())) return;
+    d.setDate(d.getDate() + offset);
+    enterDay(isoDate(d));
+  }
+  function renderDayFocus(c) {
+    if (dayMode === null) { el.dayFocus.innerHTML = ""; el.dayFocusList.innerHTML = ""; return; }
+    const date = cache.window.start;
+    el.dayFocusTitle.textContent = `${longDate(date)}, hour by hour`;
+    const dayHours = computed.filter((h) => h.date === date);
+    el.dayFocus.innerHTML = F.build(dayHours, roster(), c);
+    el.dayFocusList.innerHTML = F.buildList(dayHours, roster(), c);   // phone layout, hidden on wider screens
   }
 
   // ---- detail sheet ----
@@ -358,6 +522,7 @@
     cellIndex.forEach((td, k) => td.classList.toggle("active", k === key));
     const date = view && view.type === "day" ? view.date : null;
     el.rows.querySelectorAll("tr[data-d]").forEach((tr) => tr.classList.toggle("picked", tr.dataset.d === date));
+    el.dayChart.querySelectorAll("[data-day]").forEach((b) => b.classList.toggle("picked", b.dataset.day === date));
   }
   function renderSheet() {
     if (!view || !cache) return;
@@ -368,13 +533,15 @@
   }
   const line = (k, v, f, cls = "") => `<li class="${cls}"><div class="line"><span class="k">${k}</span><span class="v">${v}</span></div>${f ? `<div class="f">${f}</div>` : ""}</li>`;
   const tiles = (pairs) => `<div class="tiles">${pairs.map(([k, v]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}</div>`;
+  const focusButton = (date) => (dayMode === null ? `<button type="button" class="pill" data-focus-day="${date}">Look at this day alone</button>` : "");
   function hourView(h) {
     const c = controls();
     const day = cache.days.find((d) => d.date === h.date);
     const chips = [h.cap_state === "over" ? `<span class="chip over">Over the cap</span>` : "", h.cap_state === "at" ? `<span class="chip at">At the cap</span>` : "",
       day && day.holiday ? `<span class="chip hol">${esc(day.holiday)}</span>` : ""].join("");
     let body = (chips ? `<div class="chips">${chips}</div>` : "") +
-      `<div class="hero-n cap-${h.cap_state}"><span class="n">${h.staff_to_schedule === null ? UNDEF : h.staff_to_schedule}</span><span class="u">people to schedule</span></div><ul class="rows">` +
+      `<div class="hero-n cap-${h.cap_state}"><span class="n">${h.staff_to_schedule === null ? UNDEF : h.staff_to_schedule}</span><span class="u">people to schedule</span></div>` +
+      `<h3 class="chart-head">Calls through the day</h3>${C.hourBars(computed.filter((x) => x.date === h.date), h.hour)}<ul class="rows">` +
       line("Predicted calls", h.predicted_calls.toFixed(1), "Forecast for this hour") +
       line("Handle time", formatDuration(h.aht_sec), "Average for this weekday and hour, recent calls weighted more") +
       line("Expected talk time", formatDuration(h.load_erlangs * SPH), `${h.predicted_calls.toFixed(1)} calls × ${formatDuration(h.aht_sec)}`);
@@ -383,7 +550,7 @@
       line("Hang-ups", pct(h.abandon_share, 1), "Callers who give up before a peer answers");
     if (h.cap_state === "over") body += line(`With only ${h.cap} people`, pct(h.service_level_if_capped, 1), "Answered in time if you can't staff above the cap", "out");
     return body + `</ul>` + (h.reason ? `<p class="reason">${esc(h.reason)}</p>` : "") +
-      `<div class="sheet-foot"><button type="button" class="pill" data-open-day="${h.date}">See the whole day</button></div>`;
+      `<div class="sheet-foot"><button type="button" class="pill" data-open-day="${h.date}">See the whole day</button>${focusButton(h.date)}</div>`;
   }
   function selectionView() {
     const rows = computed.filter(inSelection);
@@ -406,11 +573,13 @@
     return (day.holiday ? `<div class="chips"><span class="chip hol">${esc(day.holiday)}</span></div>` : "") +
       tiles([["Predicted calls", Math.round(st.calls).toLocaleString()], ["Busiest hour", st.peakHour === null ? UNDEF : `${pad2(st.peakHour)}:00`],
         ["Peak staff", st.peakStaff === null ? UNDEF : st.peakStaff], ["Hang-ups if staffed as recommended", st.abandoned === null ? UNDEF : Math.round(st.abandoned).toLocaleString()]]) +
+      `<h3 class="chart-head">Calls through the day</h3>${C.hourBars(computed.filter((h) => h.date === date))}` +
       `<table class="tours"><tr><th>Tour</th><th>Need</th><th>Planned</th><th>Verdict</th></tr>${tours}</table>` +
       `<ul class="rows">${line("At the cap", hoursList(st.atCap))}${line("Over the cap", hoursList(st.overCap), "", st.overCap.length ? "out" : "")}</ul>` +
       SHIFTS.map((spec) => tradeoffTable(spec, day)).join("") +
       `<p class="hint">Rows with the same "On phones" number give the same result: after breaks, outbound and admin ` +
-      `(efficiency ${esc(el.effNum.value)}%), that extra person adds no time on inbound.</p>`;
+      `(efficiency ${esc(el.effNum.value)}%), that extra person adds no time on inbound.</p>` +
+      (dayMode === null ? `<div class="sheet-foot">${focusButton(date)}</div>` : "");
   }
 
   // Option 2: every staff number from 1 to the shift's cap and what it costs
@@ -450,9 +619,15 @@
     if (!c || (c === drag.anchor && !drag.moved)) return;
     drag.moved = true;
     applySelection(rectFrom(drag.anchor, c));
-    openSheet({ type: "selection" });
+    // Opening the sheet narrows the page, which would slide cells under the
+    // pointer mid-drag. So a closed sheet opens on release; an open one
+    // keeps its totals live while you drag.
+    if (view) openSheet({ type: "selection" });
   });
-  const endDrag = () => { setTimeout(() => { drag = null; }, 0); };
+  const endDrag = () => {
+    if (drag && drag.moved && selection) openSheet({ type: "selection" });
+    setTimeout(() => { drag = null; }, 0);
+  };
   el.rows.addEventListener("pointerup", endDrag);
   el.rows.addEventListener("pointercancel", endDrag);
   el.rows.addEventListener("click", (e) => {
@@ -480,9 +655,43 @@
     const day = e.target.closest("[data-open-day]");
     if (day) openSheet({ type: "day", date: day.dataset.openDay });
     if (e.target.closest("[data-clear-selection]")) closeSheet();
+    const focus = e.target.closest("[data-focus-day]");
+    if (focus) enterDay(focus.dataset.focusDay);
   });
+  el.dayChart.addEventListener("click", (e) => {
+    const bar = e.target.closest("[data-day]");
+    if (bar) { applySelection(null); openSheet({ type: "day", date: bar.dataset.day }); }
+  });
+  const openHourFrom = (e) => {
+    const cell = e.target.closest("[data-k]");
+    if (cell) { applySelection(null); openSheet({ type: "hour", key: cell.dataset.k }); }
+  };
+  el.dayFocus.addEventListener("click", openHourFrom);
+  el.dayFocusList.addEventListener("click", openHourFrom);
+  el.dayList.addEventListener("click", (e) => {
+    const row = e.target.closest("[data-day]");
+    if (!row) return;
+    enterDay(row.dataset.day);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+  el.dockToggle.addEventListener("click", () => {
+    const open = el.dock.classList.toggle("open");
+    el.dockToggle.setAttribute("aria-expanded", String(open));
+    el.dockToggle.textContent = open ? "Hide settings" : "Settings";
+  });
+  el.modeDay.addEventListener("click", () => { if (dayMode === null) enterDay(defaultDay()); });
+  el.modeRange.addEventListener("click", exitDay);
+  el.dayPrev.addEventListener("click", () => stepDay(-1));
+  el.dayNext.addEventListener("click", () => stepDay(1));
   el.sheetClose.addEventListener("click", closeSheet);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && view) closeSheet(); });
+  // One-day mode: left and right arrows step a day, unless a field or slider has the keys.
+  document.addEventListener("keydown", (e) => {
+    if (dayMode === null || e.metaKey || e.ctrlKey || e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+    if (e.target.closest && e.target.closest("input, textarea, select")) return;
+    e.preventDefault();
+    stepDay(e.key === "ArrowLeft" ? -1 : 1);
+  });
 
   // ---- exports ----
   function download(name, blob) {
@@ -603,12 +812,13 @@
   el.hFrom.addEventListener("input", () => { if (Number(el.hFrom.value) > Number(el.hTo.value)) el.hFrom.value = el.hTo.value; onHours(); });
   el.hTo.addEventListener("input", () => { if (Number(el.hTo.value) < Number(el.hFrom.value)) el.hTo.value = el.hFrom.value; onHours(); });
   el.holidays.addEventListener("change", () => debounced(refresh));
-  el.start.addEventListener("change", () => debounced(refresh));
+  el.start.addEventListener("change", () => { if (dayMode !== null) el.end.value = el.start.value; debounced(refresh); });
   el.end.addEventListener("change", () => debounced(refresh));
 
   function init() {
     const today = new Date(), end = new Date(today); end.setDate(end.getDate() + DEFAULT_HORIZON_DAYS - 1);
     el.start.value = isoDate(today); el.end.value = isoDate(end);
+    dayMode = null; paintMode();
     el.eff.value = String(DEFAULT_EFF_PCT); el.effNum.value = String(DEFAULT_EFF_PCT); el.sl.value = "80";
     paintRoster(CURRENT_ROSTER); el.slNum.value = "80"; el.tsec.value = "30";
     el.hFrom.value = "0"; el.hTo.value = "23"; el.holidays.checked = true;
