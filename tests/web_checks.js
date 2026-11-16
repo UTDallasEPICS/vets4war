@@ -158,4 +158,17 @@ out.realCalls = {
   cachedFromApi: /predicted_real_calls: h\.predicted_real_calls/.test(appSource),
 };
 
+// UI regressions: the service-level slider has no amber overlay, preset state
+// is state-driven, one-day hours use the selected range, and day-chart values
+// are only revealed through interaction rather than forced onto a random day.
+out.uiRegressions = {
+  noServiceBand: !/class="band"/.test(appSource) && !/\.range \.band/.test(html),
+  presetAria: /id="rosterReal" aria-pressed="true"/.test(html) && /id="rosterRec" aria-pressed="false"/.test(html),
+  customRosterState: /function updateRosterPreset\(\)/.test(appSource) && /rosterMode\.hidden = isCurrent \|\| isRecommended/.test(appSource),
+  oneDayUsesHours: /computed\.filter\(\(h\) => h\.date === date && inHours\(h\.hour\)\)/.test(appSource) && /renderDayFocus\(controls\(\)\)/.test(appSource),
+  noForcedDayValue: !/classList\.toggle\("top"/.test(appSource) && !/\.db\.top \.dv/.test(html),
+  noStaggeredRows: !/#rows\.fresh tr/.test(html),
+  noGridTopRule: !/\.grid-scroll[^}]*border-top/.test(html),
+};
+
 process.stdout.write(JSON.stringify(out));

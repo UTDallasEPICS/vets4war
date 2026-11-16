@@ -24,7 +24,7 @@
   const DEFAULT_HORIZON_DAYS = 30;
   const SECONDS_PER_MINUTE = 60;
   const MAJOR_HOURS = new Set([0, 6, 12, 18]);
-  const SL_MIN = 80, SL_MAX = 95, SL_STANDARD = 90, SL_CURRENT = [80, 85];
+  const SL_MIN = 80, SL_MAX = 95, SL_STANDARD = 90;
   const DEEP_LEVEL = 0.6;            // above this heat level the numeral takes the deep-cell ink
   const THUMB_PX = 20;
   const UNDEF = "-";
@@ -35,7 +35,7 @@
   // in index.html). Above this the 24 hours always fit the panel; below it
   // (phones) the grid scrolls sideways instead.
   const GRID_PX = { date: 128, hour: 24, roster: 78, gap: 3, tourGap: 10 };
-  const ROW_FADE_MS = 700;           // how long freshly loaded rows keep their fade-in class
+  const ROW_FADE_MS = 300;           // how long the freshly loaded table keeps its single fade
   const PROFILE_BAR_PX = 26;         // tallest bar in the calls-per-hour strip
   // Day chart: above these many days the per-day numbers, then the labels, no longer fit.
   const DAY_VALUES_MAX = 35, DAY_LABELS_MAX = 62;
@@ -56,7 +56,7 @@
     error: $("error"), holidayNote: $("holidayNote"),
     rosterO: $("rosterO"), rosterD: $("rosterD"), rosterE: $("rosterE"),
     rosterOVal: $("rosterOVal"), rosterDVal: $("rosterDVal"), rosterEVal: $("rosterEVal"),
-    rosterRec: $("rosterRec"), rosterReal: $("rosterReal"),
+    rosterRec: $("rosterRec"), rosterReal: $("rosterReal"), rosterMode: $("rosterMode"),
   };
   // The partner's own efficiency calculator: 315 of 480 shift minutes on
   // inbound = 65.625%, shown to one decimal (db/staffing.DEFAULT_EFFICIENCY).
@@ -115,6 +115,7 @@
   const ROSTER_INPUTS = () => [[el.rosterO, el.rosterOVal, "Overnight"], [el.rosterD, el.rosterDVal, "Day"], [el.rosterE, el.rosterEVal, "Evening"]];
   function paintRoster(r) {
     ROSTER_INPUTS().forEach(([input, label, name]) => { input.value = String(r[name]); label.textContent = String(r[name]); setFill(input); });
+    updateRosterPreset();
   }
   function onRoster() { paintRoster(roster()); onLocal(); }
   function setRoster(r) { paintRoster(r); onLocal(); }
@@ -132,6 +133,15 @@
     return { Overnight: clampInt(el.rosterO.value, 0, ROSTER_SLIDER_MAX, CURRENT_ROSTER.Overnight),
              Day: clampInt(el.rosterD.value, 0, ROSTER_SLIDER_MAX, CURRENT_ROSTER.Day),
              Evening: clampInt(el.rosterE.value, 0, ROSTER_SLIDER_MAX, CURRENT_ROSTER.Evening) };
+  }
+  const sameRoster = (a, b) => SHIFTS.every((spec) => a[spec.name] === b[spec.name]);
+  function updateRosterPreset() {
+    const value = roster();
+    const isCurrent = sameRoster(value, CURRENT_ROSTER);
+    const isRecommended = !isCurrent && judged.length > 0 && sameRoster(value, recommendedRoster());
+    el.rosterReal.setAttribute("aria-pressed", String(isCurrent));
+    el.rosterRec.setAttribute("aria-pressed", String(isRecommended));
+    el.rosterMode.hidden = isCurrent || isRecommended;
   }
   function fraction(range) { return (range.value - range.min) / (range.max - range.min); }
   function setFill(range) { range.style.setProperty("--fill", (fraction(range) * 100).toFixed(1) + "%"); }
@@ -256,6 +266,7 @@
     computed = next;
     hourIndex = new Map(computed.map((h) => [L.key(h.date, h.hour), h]));
     judged = L.judgeRoster(L.rollupShifts(cache.days, computed), store, c);
+    updateRosterPreset();
     repaint();
     renderSummary(c);
     renderDayFocus(c);
@@ -391,7 +402,6 @@
     // Phone layout of the same days (hidden on wider screens).
     el.dayList.innerHTML = C.dayList(judged, rows, (date) => ({ weekday: localDate(date).toLocaleDateString(undefined, { weekday: "short" }), date: shortDate(date) }));
     const top = C.topOf(rows);
-    const worst = Math.max(0, ...rows.map((r) => r.roster).filter((v) => v !== null));
     const holidays = new Map(cache.days.map((d) => [d.date, d.holiday]));
     const picked = view && view.type === "day" ? view.date : null;
     rows.forEach((row) => {
@@ -401,7 +411,6 @@
       node.querySelector(".b-roster").style.height = C.share(row.roster, top);
       node.querySelector(".b-rec").style.height = C.share(row.recommended, top);
       node.classList.toggle("picked", row.date === picked);
-      node.classList.toggle("top", row.roster !== null && row.roster === worst);   // the worst day keeps its number, for scale
       const label = `${dayLabel(row.date)}${holidays.get(row.date) ? `, ${holidays.get(row.date)}` : ""}: ${lostText(row.calls)} calls. ` +
         `Hang-ups: ${lostText(row.roster)} with your roster, ${lostText(row.recommended)} as recommended.`;
       node.title = label;
@@ -498,7 +507,7 @@
     if (dayMode === null) { el.dayFocus.innerHTML = ""; el.dayFocusList.innerHTML = ""; return; }
     const date = cache.window.start;
     el.dayFocusTitle.textContent = `${longDate(date)}, hour by hour`;
-    const dayHours = computed.filter((h) => h.date === date);
+    const dayHours = computed.filter((h) => h.date === date && inHours(h.hour));
     el.dayFocus.innerHTML = F.build(dayHours, roster(), c);
     el.dayFocusList.innerHTML = F.buildList(dayHours, roster(), c);   // phone layout, hidden on wider screens
   }
@@ -808,6 +817,7 @@
     if (!cache) return;
     buildGrid(cache.days);
     repaint();
+    renderDayFocus(controls());
     markActive();
     applySelection(selection);
   };
@@ -825,9 +835,8 @@
     paintRoster(CURRENT_ROSTER); el.slNum.value = "80"; el.tsec.value = "30";
     el.hFrom.value = "0"; el.hTo.value = "23"; el.holidays.checked = true;
     const at = (v) => (v - SL_MIN) / (SL_MAX - SL_MIN);
-    el.slTrack.querySelectorAll(".band, .tick").forEach((n) => n.remove());
+    el.slTrack.querySelectorAll(".tick").forEach((n) => n.remove());
     el.slTrack.insertAdjacentHTML("afterbegin",
-      `<span class="band" style="left:${along(at(SL_CURRENT[0]))};width:calc((100% - ${THUMB_PX}px) * ${(at(SL_CURRENT[1]) - at(SL_CURRENT[0])).toFixed(4)})"></span>` +
       `<span class="tick" style="left:${along(at(SL_STANDARD))}"></span>`);
     renderControlFeedback();
     refresh();

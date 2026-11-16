@@ -130,3 +130,7 @@ def test_real_calls_sum_per_hour_and_sit_beside_the_total(checks):
     assert real["sum"] < real["total"]
     assert real["tileBesideTotal"]
     assert real["cachedFromApi"]
+
+
+def test_dashboard_ui_regressions_stay_fixed(checks):
+    assert all(checks["uiRegressions"].values()), checks["uiRegressions"]
