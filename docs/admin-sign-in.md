@@ -19,9 +19,9 @@ Set on the Auth0 API, delivered inside the access token (`permissions` claim).
 
 | Permission | Allows |
 |---|---|
-| `read:admin` | who-am-I, validate a file, upload history |
+| `read:admin` | who-am-I, validate a file, upload history, Model Health, Accuracy Reports, and retraining run status |
 | `read:admin` + `import:calls` | stage an upload, import it into `calls` |
-| `trigger:retraining` | reserved; nothing uses it yet |
+| `read:admin` + `trigger:retraining` | request a candidate retraining run |
 
 ## Settings
 
@@ -31,19 +31,35 @@ Set on the Auth0 API, delivered inside the access token (`permissions` claim).
 | `AUTH0_AUDIENCE` | identifier of the Auth0 API |
 | `AUTH0_CLIENT_ID` | client id of the Auth0 single-page application |
 
-None is a secret. If any is missing: `/api/admin/config` and every admin route
-answer 503 and the admin page says sign-in is not configured. The staffing
-page is unaffected.
+All three settings are public. If any is missing, `/api/admin/config`
+returns 503 and the admin page cannot start sign-in. Protected APIs require
+a bearer token and use the domain and audience to validate it. The SPA
+client ID is only needed for browser sign-in. Missing or invalid tokens
+return 401, and missing permissions return 403.
 
 ## What the Auth0 tenant needs
 
-1. Single-page application: Allowed Callback URLs, Allowed Logout URLs and
-   Allowed Web Origins containing the address the admin page is served from,
-   e.g. `https://v4w-staffing.vercel.app/admin.html` (origin only for Web
-   Origins) and `http://localhost:8001/admin.html` for local work.
+1. In the development tenant, open **Applications > Applications > the admin
+   application > Settings**. Confirm **Application Type** is **Single Page
+   Application**. Copy **Basic Information > Client ID** into the gitignored
+   local `.env` as `AUTH0_CLIENT_ID`. Use the tenant hostname and the admin
+   API identifier from the same tenant. The browser uses Authorization Code
+   with PKCE, so it needs only the public ID.
+
+   | Application URI setting | Local value |
+   |---|---|
+   | Allowed Callback URLs | `http://127.0.0.1:8000/admin.html` |
+   | Allowed Logout URLs | `http://127.0.0.1:8000/admin.html` |
+   | Allowed Web Origins | `http://127.0.0.1:8000` |
+
+   Open that same host and port in the browser. `localhost` is a distinct
+   origin and only works if its URLs are registered separately. Restart the
+   local API after editing `.env`. The API loads it at startup, and existing
+   process environment values take precedence.
 2. API with the audience above: RS256, **Enable RBAC**, **Add Permissions in
    the Access Token**, and the three permissions listed above.
-3. A role holding `read:admin` and `import:calls`, assigned to each admin.
+3. Grant `read:admin` to admins. Grant `import:calls` to upload operators and
+   `trigger:retraining` to approved retraining operators.
 4. Public sign-ups switched off, so only invited people have accounts.
 
 ## Details worth knowing

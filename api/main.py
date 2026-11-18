@@ -245,6 +245,7 @@ def _hourly_staffing(start: date, end: date, efficiency: float, target_pct: floa
     # uses a consistent source and avoids reopening the database per helper.
     try:
         with _connection() as conn:
+            pipeline.bind_call_revision(conn)
             queue = _queue_params(conn, queue_model, patience_sec)
             hourly = staff_for_range(conn, start, end, efficiency, target_pct, target_sec,
                                      queue_model, queue["patience_sec"], recency, include_holidays)
@@ -572,6 +573,7 @@ def api_model():
         raise HTTPException(500, f"{METADATA_PATH} is not valid JSON: {exc}") from exc
     try:
         with _connection() as conn:
+            pipeline.bind_call_revision(conn)
             source = describe_source(conn)
     except (psycopg.Error, ValueError) as exc:
         log.exception("data source lookup failed")

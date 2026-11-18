@@ -47,6 +47,8 @@ from pydantic import BaseModel, Field
 
 from api.auth import require_permissions
 from api.auth0_config import auth0_config
+from api.model_admin import router as model_router
+from api.reports import router as reports_router
 from db import pipeline
 
 log = logging.getLogger("v4w.api.admin")
@@ -66,6 +68,8 @@ BUSY_RETRY_SEC = 5
 BUSY = "Other files are being checked right now. Try again in a few seconds."
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+router.include_router(model_router)
+router.include_router(reports_router)
 
 require_admin = require_permissions("read:admin")
 require_import = require_permissions("read:admin", "import:calls")
@@ -86,12 +90,20 @@ def _read_upload(file: UploadFile) -> bytes:
     return content
 
 
-def _pipeline_connection():
+@contextmanager
+def _pipeline_connection(*, ledger: bool = False):
     try:
-        return pipeline.connect()
-    except psycopg.OperationalError as exc:
-        log.exception("pipeline database connection failed")
-        raise HTTPException(503, "The application database is unavailable. Try again later.") from exc
+        with pipeline.connect() as conn:
+            yield conn
+    except (psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable):
+        if not ledger:
+            raise
+        log.warning("Admin ingestion ledger schema is incomplete")
+        raise HTTPException(503, "Upload history and staging require the latest ingestion schema. "
+                                 "Ask the database administrator to check migration 002.") from None
+    except psycopg.OperationalError:
+        log.warning("Admin database connection or operation failed")
+        raise HTTPException(503, "The application database is unavailable. Try again later.") from None
 
 
 @contextmanager
@@ -139,7 +151,7 @@ def validate(file: UploadFile = File(...)):
 @router.post("/uploads", status_code=201)
 def upload(file: UploadFile = File(...), user: dict = Depends(require_import)):
     content = _read_upload(file)
-    with _parse_slot(), _pipeline_connection() as conn:
+    with _parse_slot(), _pipeline_connection(ledger=True) as conn:
         return pipeline.preview(conn, content, user["sub"])
 
 
@@ -147,12 +159,12 @@ def upload(file: UploadFile = File(...), user: dict = Depends(require_import)):
 def import_batch(batch_id: uuid.UUID, body: ImportRequest, user: dict = Depends(require_import)):
     if not imports_enabled():
         raise HTTPException(503, IMPORTS_OFF)
-    with _pipeline_connection() as conn:
+    with _pipeline_connection(ledger=True) as conn:
         return pipeline.commit_import(conn, batch_id, expected_rows=body.expected_rows,
                                       replace_days=body.replace_days, actor=user["sub"])
 
 
 @router.get("/uploads", dependencies=[Depends(require_admin)])
 def history():
-    with _pipeline_connection() as conn:
+    with _pipeline_connection(ledger=True) as conn:
         return pipeline.history(conn)

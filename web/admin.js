@@ -20,14 +20,16 @@
     };
   }
   let client, selectedFile, batch;
-  let authorized = false, canImport = false, busy = false, generation = 0;
+  let authorized = false, canImport = false, canTrain = false, busy = false, generation = 0;
   const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+  const MAX_REPLACE_DAYS = 366;
   const MAX_DAYS_LISTED = 10;
   let history = [];
   let historyLoaded = false, historyLoading = false, historyRequest = 0;
   const requests = new Set();
   let restoring = false;
   // Nonsecret loop guard only: tokens remain exclusively in SDK memory.
+  let accuracyReport = null, accuracyRequest = 0;
   const recoveryKey = "v4w.admin.silent-recovery";
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric", month: "2-digit" }).formatToParts(new Date());
   const year = Number(parts.find(p => p.type === "year").value);
@@ -50,12 +52,18 @@
     get("stageFile").disabled = busy || !authorized || !selectedFile;
     const count = Number(get("expectedRows").value), replacing = conflictDays().length;
     get("importFile").disabled = busy || !authorized || !canImport || !batch || batch.status !== "validated" ||
-      batch.validation.nothing_to_import || !get("confirmImport").checked ||
+      batch.validation.nothing_to_import || replacing > MAX_REPLACE_DAYS || !get("confirmImport").checked ||
       !Number.isInteger(count) || count < 1 || count !== batch.validation.summary.total_rows;
     get("importFile").textContent = replacing ? `Replace ${replacing} day${replacing === 1 ? "" : "s"} & import` : "Import";
     get("clearFile").disabled = busy || !selectedFile;
     get("workbook").disabled = busy;
     get("refreshHistory").disabled = busy || !authorized || historyLoading;
+    get("refreshModelHealth").disabled = busy || !authorized;
+    get("refreshReports").disabled = busy || !authorized;
+    get("loadAccuracy").disabled = busy || !authorized || !get("reportMonth").value || !get("reportMonth").checkValidity();
+    get("loadTraining").disabled = busy || !authorized;
+    get("requestTraining").disabled = busy || !authorized || !canTrain || !get("trainCutoff").value || !get("trainConfirm").checked;
+    get("downloadAccuracy").disabled = !authorized || !accuracyReport;
   }
   // What a batch covers: its days, or the month for batches staged before day ranges.
   function period(item) {
@@ -69,10 +77,12 @@
     batch = null; get("confirmImport").checked = false; get("expectedRows").value = "";
     uploadStatus("Not validated");
     message("validationState","Not run"); message("validationCounts","— / — / —");
-    get("validationIssues").replaceChildren(); message("importStatus",""); syncButtons();
+    get("validationIssues").replaceChildren();
+    get("dayReviewRows").replaceChildren(); get("dayReview").hidden = true; get("dayReview").open = false;
+    message("importStatus",""); syncButtons();
   }
   function hideContent() {
-    authorized = false; canImport = false; get("adminContent").hidden = true;
+    authorized = false; canImport = false; canTrain = false; get("adminContent").hidden = true;
     get("logout").hidden = true;
     get("authGate").hidden = false; get("userEmail").hidden = true; message("userEmail",""); syncButtons();
   }
@@ -84,6 +94,10 @@
     history = []; get("historyRows").replaceChildren(); resetValidation();
     historyLoaded = false; historyLoading = false;
     message("refreshHistory","Refresh history"); message("historyRefreshedAt","Not refreshed yet.");
+    updateReport(); renderModelHealth();
+    get("trainRuns").replaceChildren(); get("trainConfirm").checked = false;
+    message("trainStatus","Select Refresh runs to check retraining history.");
+    message("reportListStatus","");
   }
   function authError(error) {
     const code = error && error.error;
@@ -192,6 +206,14 @@
       }
     }
   }
+  async function actionRefreshHistory(version) {
+    try { await refreshHistory(); }
+    catch (error) {
+      if (!current(version)) return;
+      if (error.authCode || error.status === 401 || error.status === 403) throw error;
+      message("historyStatus",error.message);
+    }
+  }
   function showReport(report) {
     const summary = report.summary;
     message("validationState",report.ok ? "Passed" : "Failed");
@@ -201,6 +223,17 @@
     if (summary.days !== undefined) issue(`${summary.total_rows} calls, ${summary.first_day} to ${summary.last_day}.`);
     for (const error of report.file_errors || []) issue(error.message);
     const different = (report.days || []).filter(day => day.status === "conflict");
+    const detail = get("dayReviewRows");
+    detail.replaceChildren();
+    get("dayReview").hidden = different.length === 0 || different.length > MAX_REPLACE_DAYS;
+    for (const day of different.slice(0,MAX_REPLACE_DAYS)) {
+      const row = document.createElement("tr");
+      for (const value of [day.day,day.rows,day.existing_rows]) {
+        const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
+      }
+      detail.append(row);
+    }
+    if (different.length > MAX_REPLACE_DAYS) issue(`Split this workbook into smaller ranges before importing more than ${MAX_REPLACE_DAYS} replacement days.`);
     for (const day of different.slice(0,MAX_DAYS_LISTED)) issue(`${day.day}: the file has ${day.rows} calls, the database has ${day.existing_rows} and they differ.`);
     if (different.length > MAX_DAYS_LISTED) issue(`${different.length - MAX_DAYS_LISTED} more days differ.`);
     if (report.nothing_to_import) issue("Every day in this file is already loaded with the same calls. Nothing to import.");
@@ -251,13 +284,13 @@
       if (!current(version)) return;
       batch = result; showReport(batch.validation);
       uploadStatus(batch.status === "validated" ? "Validated batch" : batch.status === "invalid" ? "Validation failed" : `Batch ${batch.status}`,batch.status !== "validated");
-      message("fileStatus",`Batch ${batch.id}: ${batch.status}. This request did not change calls.`);
+      message("fileStatus",`${selectedFile.name}: batch ${batch.id} (${batch.status}). This request did not change calls.`);
       const replacing = conflictDays();
       message("importStatus",batch.status !== "validated" ? "This batch cannot be imported. Select a fresh workbook." :
         batch.validation.nothing_to_import ? "Every day in this file is already loaded. Nothing to import." :
         replacing.length ? `${replacing.length} day${replacing.length === 1 ? "" : "s"} already hold different calls (${listDays(replacing)}). Importing replaces exactly those days. Verify the source row count and confirm.` :
         "Verify the source row count and confirm before importing.");
-      await refreshHistory();
+      await actionRefreshHistory(version);
     });
   });
   get("stageFile").addEventListener("click",() => {
@@ -267,7 +300,7 @@
       const report = await api("/api/admin/validate",{method:"POST",body:workbookBody()});
       if (!current(version)) return;
       showReport(report); uploadStatus(report.ok ? "Checked, not staged" : "Validation failed");
-      message("fileStatus",report.ok ? "Checks passed. Nothing stored. Use Validate upload to stage this file for import." : "Validation failed. Correct the workbook and try again.");
+      message("fileStatus",report.ok ? `${selectedFile.name}: checks passed. Nothing stored. Use Validate upload to stage this file.` : "Validation failed. Correct the workbook and try again.");
     });
   });
   get("importFile").addEventListener("click",() => {
@@ -281,24 +314,166 @@
         if (!current(version)) return;
         batch = {...batch,status:result.status};
         uploadStatus("Imported",false);
-        message("importStatus",`Import completed: ${result.inserted_rows} calls added, ${result.deleted_rows} removed (${result.replaced_days.length} day(s) replaced), ${result.skipped_days.length} day(s) were already loaded. Retraining remains manual. Call-derived caches update after an API restart.`);
+        message("importStatus",`Import completed: ${result.inserted_rows} calls added, ${result.deleted_rows} removed (${result.replaced_days.length} day(s) replaced), ${result.skipped_days.length} day(s) were already loaded. Staffing data refreshes on the next request. Retraining is separate.`);
       } catch (error) {
         if (current(version) && error.status === 409) {
-          await refreshHistory();
+          await actionRefreshHistory(version);
           uploadStatus("Import conflict");
           message("importStatus",`${error.message} Validate the file again to see the current state.`); return;
         }
         throw error;
       }
-      await refreshHistory();
+      await Promise.all([actionRefreshHistory(version), refreshModelHealth(version)]);
     });
   });
   get("refreshHistory").addEventListener("click",() => action("historyStatus",refreshHistory));
-  function updateReport() {
-    const value = get("reportMonth").value; message("reportMonthLabel",value || "Select a month");
-    message("reportStatus",value ? `No report is connected for ${value}. Accuracy values remain unavailable.` : "Select a reporting month. Monthly reports are not connected.");
+  function renderModelHealth(model = null, status = "Not loaded") {
+    message("healthStatus",status);
+    for (const id of ["healthMae","healthRmse","healthBias"]) message(id,"—");
+    const gate = model?.historical_backtest;
+    const observed = model?.data_through;
+    message("healthData", observed ? `Latest observed call date: ${observed}. Coverage requires separate verification.` :
+      model?.data_status === "empty" ? "No calls are stored." : "Latest observed call date unavailable.");
+    const value = gate?.metrics.daily_mape_1_14;
+    message("healthBacktest", Number.isFinite(value) ?
+      `Saved rolling-origin training gate: passed, ${gate.origins} origins (${gate.first_origin} to ${gate.last_origin}); daily MAPE at 1-14 days: ${value.toFixed(2)}%.` :
+      "Saved training backtest unavailable.");
+    const report = model?.evaluation;
+    const period = report?.evaluation_period;
+    if (model) {
+      message("healthStatus",report ? `Evaluation: ${report.status}` : "No matching retrospective report");
+    }
+    message("healthPeriod",period ? `Evaluation period: ${period.start} to ${period.end} · ${period.timezone}` : "Evaluation period: not available");
+    message("healthModel",model ? `${model.name} ? ${model.version}. Trained ${model.trained_at}. Data through ${model.train_end} (${model.data_age_days} days old).` : "Model identity unavailable");
+    message("healthCompleteness",report && report.completeness.verified ? "Data completeness: verified for the evaluated period." : "Data completeness: not verified");
+    if (report && ["success","partial"].includes(report.status) && report.completeness.verified && report.metrics) {
+      for (const [id,key] of [["healthMae","hourly_mae"],["healthRmse","hourly_rmse"],["healthBias","signed_bias"]]) {
+        message(id,report.metrics[key].toLocaleString(undefined,{maximumFractionDigits:1}));
+      }
+    }
+    const list = get("healthWarnings"); list.replaceChildren();
+    for (const warning of report ? report.warnings : []) {
+      const li = document.createElement("li"); li.textContent = warning; list.append(li);
+    }
   }
+  async function refreshModelHealth(version) {
+    renderModelHealth(null,"Loading");
+    try {
+      const model = await api("/api/admin/model-health");
+      if (current(version)) renderModelHealth(model);
+    } catch (error) {
+      if (!current(version)) return;
+      if (error.authCode || error.status === 401 || error.status === 403) throw error;
+      renderModelHealth(null,"Unavailable");
+    }
+  }
+  get("refreshModelHealth").addEventListener("click",() => action("healthStatus",refreshModelHealth));
+  async function refreshTraining(version) {
+    message("trainStatus","Loading runs...");
+    const runs = await api("/api/admin/retraining");
+    if (!current(version)) return;
+    const list = get("trainRuns");
+    list.replaceChildren();
+    for (const run of runs) {
+      const line = document.createElement("li"), link = document.createElement("a");
+      link.href = run.html_url;
+      link.textContent = run.display_title;
+      line.append(link,document.createTextNode(` ? ${run.conclusion || run.status} ? ${new Date(run.created_at).toLocaleString()}`));
+      list.append(line);
+    }
+    message("trainStatus",runs.length ? "Open a run on GitHub for job details or failure logs." : "No retraining runs.");
+  }
+  for (const id of ["trainCutoff","trainConfirm"]) get(id).addEventListener("input",syncButtons);
+  get("loadTraining").addEventListener("click",() => action("trainStatus",refreshTraining));
+  get("requestTraining").addEventListener("click",() => action("trainStatus",async version => {
+    if (!canTrain || !get("trainConfirm").checked) return;
+    message("trainStatus","Requesting retraining...");
+    const run = await api("/api/admin/retraining", {method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({cutoff:get("trainCutoff").value, complete_history_confirmed:true})});
+    if (!current(version)) return;
+    get("trainConfirm").checked = false;
+    message("trainStatus",`GitHub accepted run ${run.id}. Refresh runs to check its progress.`);
+  }));
+  function renderComparisons() {
+    const rows = get("comparisonRows"), grain = get("reportGrain").value;
+    rows.replaceChildren();
+    const points = accuracyReport?.[grain] || [];
+    message("comparisonStatus",accuracyReport && !points.length ? "Comparison details unavailable for this report." : "");
+    for (const point of points) {
+      const row = document.createElement("tr");
+      for (const value of [point.day || point.hour.replace("T"," "),point.actual,
+                           point.predicted.toLocaleString(undefined,{maximumFractionDigits:1})]) {
+        const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
+      }
+      rows.append(row);
+    }
+  }
+  get("reportGrain").addEventListener("input",renderComparisons);
+  function updateReport() {
+    accuracyRequest++; accuracyReport = null;
+    message("accuracyStatus","Not loaded");
+    message("reportStatus",authorized ? "Choose a month and select View report." : "Sign in to view reports.");
+    for (const id of ["accuracyActual","accuracyPredicted","accuracyError"]) message(id,"—");
+    for (const id of ["accuracyPeriod","accuracyModel","accuracyDirection","accuracyDetail"]) message(id,"");
+    get("accuracyWarnings").replaceChildren(); renderComparisons(); syncButtons();
+  }
+  get("refreshReports").addEventListener("click",() => action("reportListStatus",async version => {
+    message("reportListStatus","Loading available months...");
+    const reportList = await api("/api/admin/reports");
+    if (!current(version)) return;
+    message("reportListStatus",reportList.months.length ?
+      `Available months: ${reportList.months.join(", ")}.` : "No completed months have reports.");
+  }));
   get("reportMonth").addEventListener("input",updateReport);
+  get("loadAccuracy").addEventListener("click",() => {
+    if (get("loadAccuracy").disabled) return;
+    return action("reportStatus",async version => {
+      updateReport();
+      const request = accuracyRequest, month = get("reportMonth").value;
+      message("accuracyStatus","Loading"); message("reportStatus","Loading report...");
+      let report;
+      try { report = await api(`/api/admin/reports/${encodeURIComponent(month)}`); }
+      catch (error) {
+        if (!current(version)) return;
+        // A month change invalidates report data, not an authorization denial.
+        // Let action() clear the session even if this report is now stale.
+        if (error.authCode || error.status === 401 || error.status === 403) throw error;
+        if (request !== accuracyRequest) return;
+        message("accuracyStatus","Unavailable");
+        if (error.status === 404) { message("reportStatus","No report has been prepared for this month yet."); return; }
+        throw error;
+      }
+      if (!current(version) || request !== accuracyRequest) return;
+      accuracyReport = report;
+      const labels = {success:"Ready",partial:"Partial month",incomplete:"Data not verified",no_data:"No eligible data",error:"Report failed"};
+      message("accuracyStatus",labels[report.status] || "Unavailable");
+      renderComparisons();
+      message("reportStatus",report.status === "success" ? "Report ready." : report.status === "partial" ? "Only part of this month was evaluated. These are not full-month results." : "Accuracy values are unavailable. Review the warnings below.");
+      const period = report.evaluation_period;
+      message("accuracyPeriod",period ? `${period.start} to ${period.end} · ${period.timezone}` : "No evaluation period available.");
+      const model = report.model || {};
+      const modelId = model.model_sha256 ? `Report model SHA-256: ${model.model_sha256}` : "Report model version unavailable";
+      message("accuracyModel",model.train_end ? `${modelId}. Trained through ${model.train_end.slice(0,10)}.` : `${modelId}.`);
+      if (["success","partial"].includes(report.status) && report.completeness.verified && report.metrics) {
+        const m = report.metrics, number = n => n.toLocaleString(undefined,{maximumFractionDigits:1});
+        message("accuracyActual",number(m.actual_calls)); message("accuracyPredicted",number(m.predicted_calls));
+        message("accuracyError",`${number(m.hourly_mae)} calls/hour`);
+        message("accuracyDirection",m.signed_bias > 0 ? `The model overestimated calls by an average of ${number(m.signed_bias)} calls/hour.` :
+          m.signed_bias < 0 ? `The model underestimated calls by an average of ${number(-m.signed_bias)} calls/hour.` : "Predicted and actual totals matched. Individual hours may still differ.");
+        message("accuracyDetail",`Average daily error: ${number(m.daily_total_mae)} calls/day. Larger-error measure (RMSE): ${number(m.hourly_rmse)} calls/hour.`);
+      }
+      for (const warning of report.warnings) {
+        const li = document.createElement("li"); li.textContent = warning; get("accuracyWarnings").append(li);
+      }
+    });
+  });
+  get("downloadAccuracy").addEventListener("click",() => {
+    if (!authorized || !accuracyReport || get("downloadAccuracy").disabled) return;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(accuracyReport,null,2)],{type:"application/json"}));
+    const link = document.createElement("a"); link.href = url;
+    link.download = `accuracy-${accuracyReport.reporting_month}.json`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url),1000);
+  });
   get("login").addEventListener("click",async () => {
     if (!client || get("login").disabled) return;
     get("login").disabled = true;
@@ -345,16 +520,18 @@
       const identity = await api("/api/admin/me"), user = await client.getUser();
       if (!current(version)) return;
       clearRecovery();
-      canImport = identity.permissions.includes("import:calls"); authorized = true;
+      canImport = identity.permissions.includes("import:calls");
+      canTrain = identity.permissions.includes("trigger:retraining"); authorized = true;
       message("apiStatus","Admin API access verified."); message("userEmail",user && user.email || "Signed in");
       get("userEmail").hidden = false; get("logout").hidden = false;
       get("authGate").hidden = true; get("adminContent").hidden = false; syncButtons();
-      try { await refreshHistory(); }
-      catch (error) {
-        if (!current(version)) return;
-        if (error.authCode || error.status === 401 || error.status === 403) {
-          expireSession(); showSessionFailure(error);
-        } else message("historyStatus",error.message);
+      const results = await Promise.allSettled([refreshHistory(), refreshModelHealth(version)]);
+      if (!current(version)) return;
+      for (const result of results) {
+        if (result.status !== "rejected") continue;
+        const error = result.reason;
+        if (error.authCode || error.status === 401 || error.status === 403) throw error;
+        message("historyStatus",error.message);
       }
     } catch (error) {
       if (current(version)) {

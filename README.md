@@ -251,6 +251,9 @@ calls it added. While recent days are missing from the database, plain
 
 The running API reloads the model on the next request after a retrain.
 
+For Model Health, monthly report generation, and candidate retraining approval,
+see the [admin follow-up in the project guide](docs/PROJECT_GUIDE.md#admin-follow-up-on-the-integrated-baseline).
+
 ## API
 
 ```

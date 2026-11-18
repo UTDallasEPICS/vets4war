@@ -7,8 +7,7 @@ rows, so it comes from $V4W_DATA_SOURCE ("partner" or "synthetic"). When it
 is not set the badge says so instead of guessing: demoing synthetic numbers
 while believing they are real is the failure this exists to prevent.
 
-The date range is read once per process from `calls`; the table only
-changes on a reload, which also restarts the server.
+The date range is cached by the ingestion ledger revision when available.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ LABELS = {
 
 RANGE_SQL = "SELECT min(start_ts)::date, max(start_ts)::date FROM calls"
 
-_range_cache: tuple[str, str] | None = None
+_range_cache: tuple[object, tuple[str, str]] | None = None
 
 
 def source_kind() -> str:
@@ -39,14 +38,19 @@ def source_kind() -> str:
 
 def _data_range(conn) -> tuple[str, str]:
     global _range_cache
-    if _range_cache is None:
-        with conn.cursor() as cur:
-            cur.execute(RANGE_SQL)
-            start, end = cur.fetchone()
-        if start is None:
-            raise ValueError("`calls` is empty; no data range")
-        _range_cache = (start.isoformat(), end.isoformat())
-    return _range_cache
+    key = getattr(conn, "_v4w_call_revision", None)
+    cached = _range_cache
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    with conn.cursor() as cur:
+        cur.execute(RANGE_SQL)
+        start, end = cur.fetchone()
+    if start is None:
+        raise ValueError("`calls` is empty; no data range")
+    value = (start.isoformat(), end.isoformat())
+    _range_cache = (key, value)
+    return value
+
 
 
 def describe_source(conn) -> dict:

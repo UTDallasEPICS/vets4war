@@ -1,0 +1,104 @@
+name: Evaluate retraining candidate
+run-name: Retraining through ${{ inputs.cutoff }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      cutoff:
+        description: Last complete Eastern day in the verified historical data (YYYY-MM-DD)
+        required: true
+        type: string
+      active_version:
+        description: Active model SHA-256 from the admin dashboard
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-retraining
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    if: github.ref == 'refs/heads/final-main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PYTHON_DOTENV_DISABLED: "1"
+      PGOPTIONS: "-c default_transaction_read_only=on"
+      CUTOFF: ${{ inputs.cutoff }}
+      ACTIVE_VERSION: ${{ inputs.active_version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: sudo apt-get update && sudo apt-get install --yes libgomp1
+      - run: python -m pip install --requirement requirements.txt
+      - name: Train and evaluate the candidate
+        env:
+          V4W_DATABASE_URL: ${{ secrets.V4W_READONLY_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          python -m db.candidate verify-incumbent --active-version "$ACTIVE_VERSION" --cutoff "$CUTOFF"
+          python -m db.train | tee -a "$GITHUB_STEP_SUMMARY"
+          python -m db.candidate verify-candidate --directory models --cutoff "$CUTOFF"
+          mkdir candidate
+          cp models/{volume_lgbm.txt,metadata.json} candidate/
+      - name: Upload evaluated candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 14
+
+  approve:
+    needs: candidate
+    if: github.ref == 'refs/heads/final-main' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    environment: model-approval
+    permissions:
+      actions: read
+      contents: read
+    env:
+      PYTHON_DOTENV_DISABLED: "1"
+      PGOPTIONS: "-c default_transaction_read_only=on"
+      CUTOFF: ${{ inputs.cutoff }}
+    steps:
+      - name: Verify a human approved the environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/approvals" |
+            jq -e 'any(.[]; .state == "approved" and .user.type == "User" and any(.environments[]; .name == "model-approval"))' > /dev/null
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: sudo apt-get update && sudo apt-get install --yes libgomp1
+      - run: python -m pip install --requirement requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: model-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate
+      - name: Recheck the approved candidate
+        run: |
+          set -euo pipefail
+          python -m db.candidate verify-candidate --directory candidate --cutoff "$CUTOFF" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish approved model pair
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-approved-${{ github.run_id }}
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 90

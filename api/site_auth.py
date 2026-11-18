@@ -87,10 +87,10 @@ BUSY_RETRY_SEC = 2
 LOGIN_PAGE = "/login.html"
 ADMIN_PAGE = "/admin.html"
 # Everything not listed here needs a session. Exact matches only. The admin
-# page's three files carry nothing private: what it shows comes from the
+# page's static files carry nothing private: what it shows comes from the
 # admin API, which Auth0 guards.
 PUBLIC_PATHS = frozenset({LOGIN_PAGE, "/login.js", "/api/login", "/api/logout",
-                          ADMIN_PAGE, "/admin.js", "/vendor/auth0-spa-js.production.js"})
+                          ADMIN_PAGE, "/admin.js", "/theme.js", "/vendor/auth0-spa-js.production.js"})
 # Routes under these prefixes are guarded by Auth0 access tokens (api/auth.py),
 # not by the session cookie. The trailing slash matters: "/api/administrator"
 # is not one of them.
@@ -372,7 +372,8 @@ def install_auth(app: FastAPI, env: Mapping[str, str] | None = None,
         if settings.mode == "misconfigured":
             refused = JSONResponse({"detail": "Sign-in is not configured on this server."}, status_code=503)
             return _harden(refused, request, settings)
-        path = request.url.path
+        # Check the path from the ASGI server before a URL helper can normalize it.
+        path = request.scope["path"]
         if path == "/api/login" and request.method == "POST":
             declared = request.headers.get("content-length", "")
             if not declared.isdigit() or int(declared) > MAX_LOGIN_BODY_BYTES:

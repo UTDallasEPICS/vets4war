@@ -3,31 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Vets4Warriors administration with secure monthly workbook validation, imports, and upload history.">
+<meta name="description" content="Vets4Warriors administration with secure day-range workbook validation, imports, and upload history.">
 <title>Vets4Warriors Admin</title>
+<script src="theme.js"></script>
 <style>
   :root {
     color-scheme: light;
-    --field: #eef2fb; --ink: #0f172a; --ink-2: #475569; --ink-3: #64748b;
-    --accent: #3b82f6; --accent-ink: #1d4ed8; --accent-soft: rgba(59,130,246,.14);
-    --glass: rgba(255,255,255,.55); --strong: rgba(255,255,255,.86);
-    --edge: rgba(255,255,255,.7); --hairline: rgba(15,23,42,.12);
-    --amber-ink: #92400e; --amber-soft: #fef3c7; --red-ink: #b91c1c;
-    --shadow: 0 1px 2px rgba(15,23,42,.06), 0 8px 24px -8px rgba(30,41,90,.18);
-    --blob-a: #7aa7ff; --blob-b: #b9a6ff; --blob-c: #a8f0e0;
-    --font: "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont, Inter, system-ui, "Segoe UI", Roboto, sans-serif;
+    --field: #fff; --ink: #111; --ink-2: #525252; --ink-3: #6b6b6b;
+    --accent: #1a4be0; --accent-ink: #1238b0; --accent-soft: #e6ecfd;
+    --glass: #f4f4f4; --strong: #fff; --edge: #e6e6e6; --hairline: #cfcfcf;
+    --amber-ink: #7c4900; --amber-soft: #fbefd9; --red-ink: #c5301c;
+    --shadow: 0 1px 2px rgba(0,0,0,.05), 0 16px 40px -18px rgba(0,0,0,.18);
+    --font: "Instrument Sans", -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, sans-serif;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      color-scheme: dark;
-      --field: #0b1020; --ink: #e2e8f0; --ink-2: #a3b0c4; --ink-3: #94a3b8;
-      --accent: #60a5fa; --accent-ink: #93c5fd; --accent-soft: rgba(96,165,250,.16);
-      --glass: rgba(20,28,52,.55); --strong: rgba(17,24,45,.92);
-      --edge: rgba(255,255,255,.12); --hairline: rgba(255,255,255,.14);
-      --amber-ink: #fbbf24; --amber-soft: rgba(251,191,36,.14); --red-ink: #f87171;
-      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px -12px rgba(0,0,0,.6);
-      --blob-a: #1e3a8a; --blob-b: #4c1d95; --blob-c: #134e4a;
-    }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --field: #111; --ink: #fff; --ink-2: #b5b5b5; --ink-3: #9a9a9a;
+    --accent: #7d9dff; --accent-ink: #a3baff; --accent-soft: rgba(125,157,255,.18);
+    --glass: #1c1c1c; --strong: #1c1c1c; --edge: #2a2a2a; --hairline: #404040;
+    --amber-ink: #fbbf24; --amber-soft: rgba(251,191,36,.14); --red-ink: #ff7a66;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 16px 40px -18px rgba(0,0,0,.8);
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
@@ -38,11 +33,6 @@
   :focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
   .skip { position: absolute; left: 16px; top: -100px; z-index: 50; padding: 12px; background: var(--strong); }
   .skip:focus { top: 12px; }
-  .field { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
-  .field i { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .55; width: 48vw; height: 48vw; }
-  .field i:nth-child(1) { background: var(--blob-a); left: -14vw; top: -18vw; }
-  .field i:nth-child(2) { background: var(--blob-b); right: -12vw; top: 6vh; }
-  .field i:nth-child(3) { background: var(--blob-c); left: 30vw; bottom: -24vw; }
   .page { max-width: 1440px; margin: auto; padding: 16px max(16px, 2vw) 48px; }
   .glass { background: var(--glass); border: 1px solid var(--edge); box-shadow: inset 0 1px 0 var(--edge), var(--shadow); backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); }
   .topbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; border-radius: 28px; padding: 10px 16px; }
@@ -66,7 +56,7 @@
   h3 { font-size: 14px; margin: 0 0 6px; }
   p { margin: 0 0 12px; }
   .muted, .sub { color: var(--ink-2); }
-  .sub { font-size: 12px; }
+  .sub { font-size: .875rem; overflow-wrap: anywhere; }
   .notice { padding: 14px 18px; border-radius: 16px; background: var(--amber-soft); color: var(--amber-ink); margin-bottom: 24px; }
   .nav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
   .nav a { text-decoration: none; padding: 8px 14px; border-radius: 999px; color: var(--ink-2); }
@@ -77,13 +67,18 @@
   .full { grid-column: 1 / -1; }
   .form-row { display: flex; flex-wrap: wrap; gap: 16px; margin: 20px 0; }
   .control { display: grid; gap: 6px; font-size: 12px; font-weight: 600; }
-  input[type=month] { padding: 8px 12px; min-height: 38px; border: 1px solid var(--hairline); border-radius: 12px; background: var(--glass); }
+  input[type=month], input[type=date], input[type=number], select { padding: 8px 12px; min-height: 38px; border: 1px solid var(--hairline); border-radius: 12px; background: var(--glass); }
   .dropzone { display: grid; place-items: center; text-align: center; padding: 28px 18px; border: 1.5px dashed var(--hairline); border-radius: 18px; background: var(--accent-soft); margin: 18px 0 14px; gap: 8px; }
   .dropzone.dragging { border-color: var(--accent-ink); outline: 3px solid var(--accent-soft); }
   .upload-icon { color: var(--accent-ink); font-size: 28px; line-height: 1; }
   input[type=file] { max-width: 100%; font-size: 12px; }
   input[type=file]::file-selector-button { border: 1px solid var(--hairline); border-radius: 999px; padding: 8px 14px; margin-right: 10px; background: var(--strong); color: var(--ink); cursor: pointer; }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+  :is(button, a, input, select, summary):focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 3px; }
+  .review-days { margin: 12px 0; }
+  .review-days summary { cursor: pointer; font-weight: 600; }
+  .review-days .table-scroll { max-height: 16rem; overflow: auto; }
+  .confirm-row { display: flex; gap: 8px; align-items: baseline; margin: 12px 0; }
   .feedback { min-height: 44px; margin: 0; overflow-wrap: anywhere; }
   .feedback.error { color: var(--red-ink); }
   .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 20px 0; }
@@ -114,18 +109,18 @@
 </head>
 <body>
 <a class="skip" href="#main">Skip to admin content</a>
-<div class="field" aria-hidden="true"><i></i><i></i><i></i></div>
 <div class="page">
   <header class="topbar glass">
     <div class="brand">
       <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><rect x="2" y="9" width="3.2" height="9" rx="1.6" opacity=".45"/><rect x="8.4" y="5" width="3.2" height="13" rx="1.6" opacity=".7"/><rect x="14.8" y="2" width="3.2" height="16" rx="1.6"/></svg>
       Vets4Warriors <span>Admin</span>
     </div>
-    <span class="badge pending">Administration</span>
+
     <span class="spacer"></span>
     <span class="user-email" id="userEmail" hidden></span>
+    <button type="button" class="pill" id="themeToggle" aria-pressed="false"><span class="theme-label">Dark</span></button>
     <button type="button" class="pill" id="logout" hidden>Log out</button>
-    <a class="pill" href="./">Public staffing dashboard ↗</a>
+    <a class="pill" href="./">Staffing dashboard ↗</a>
   </header>
   <main id="main">
     <p id="apiStatus" role="status" aria-live="polite"></p>
@@ -142,10 +137,10 @@
     <div id="adminContent" hidden>
     <div class="intro">
       <div><p class="eyebrow">Operations workspace</p><h1>Data &amp; model administration</h1><p class="muted">Manage call data and review forecast performance.</p></div>
-      <span class="badge pending">Call data ingestion</span>
+
     </div>
     <div class="notice"><strong>Call data administration.</strong> Validate upload stages a batch for review. Confirm the source row count before importing. Imports change call data; retraining remains a separate manual step.</div>
-    <nav class="nav glass" aria-label="Admin sections"><a href="#upload">Call data</a><a href="#reports">Accuracy reports</a><a href="#retraining">Retraining</a></nav>
+    <nav class="nav glass" aria-label="Admin sections"><a href="#upload">Call data</a><a href="#historyTitle">Upload history</a><a href="#health">Model health</a><a href="#retraining">Retraining</a><a href="#reports">Accuracy reports</a></nav>
     <section class="card" aria-labelledby="historyTitle">
       <div class="card-head"><h2 id="historyTitle">Upload history</h2><button type="button" class="pill" id="refreshHistory">Refresh history</button></div>
       <p id="historyStatus" role="status" aria-live="polite"></p>
@@ -156,7 +151,7 @@
       <section class="card" id="upload" aria-labelledby="uploadTitle">
         <div class="card-head"><h2 id="uploadTitle">Call data upload</h2><span class="badge pending" id="uploadStatus" role="status">Not validated</span></div>
         <p class="muted">Validate and stage a call export covering any range of whole days (a week, several weeks, across months), then review and confirm before importing.</p>
-        <p class="sub">Use the partner export columns: Skill_Name, Start_Date, start_time, InQueue, Agent_Time, Abandon_Time, Routing_Time, Abandon. Extra columns and reference tabs are fine. The call-data tab is identified by its headers; a day's calls must all be on one tab. Files over 4 MB (multi-year history) are loaded from the command line.</p>
+        <p class="sub">Use the partner export columns: Skill_Name, Start_Date, start_time, InQueue, Agent_Time, Abandon_Time, Routing_Time, Abandon. Extra columns and reference tabs are fine. The call-data tab is identified by its headers; Days split across tabs are combined when their calls do not overlap. Files over 4 MB (multi-year history) are loaded from the command line.</p>
         <div class="dropzone" id="dropzone">
           <span class="upload-icon" aria-hidden="true">↑</span>
           <strong>Drop one Excel workbook here</strong>
@@ -164,31 +159,64 @@
           <input type="file" id="workbook" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" aria-describedby="fileHelp fileStatus">
         </div>
         <p class="sub" id="fileHelp">Check without staging compares the file with what is loaded, day by day, and stores nothing. Validate upload does the same and stages a batch for review. Only finished days can be imported (up to yesterday, Eastern time). Import is a separate action that changes call data.</p>
-        <div class="actions"><button type="button" class="pill primary" id="checkFile" disabled>Validate upload</button><button type="button" class="pill" id="stageFile" disabled>Check without staging</button><button type="button" class="pill" id="clearFile" disabled>Clear file</button></div>
+        <div class="actions"><button type="button" class="pill" id="checkFile" disabled>Validate upload</button><button type="button" class="pill primary" id="stageFile" disabled>Check without staging</button><button type="button" class="pill" id="clearFile" disabled>Clear file</button></div>
         <p class="feedback sub" id="fileStatus" role="status" aria-live="polite">No file selected. Nothing has been uploaded.</p>
         <dl class="facts"><div><dt>Workbook validation</dt><dd id="validationState">Not run</dd></div><div><dt>New / already loaded / different days</dt><dd id="validationCounts">- / - / -</dd></div></dl>
         <ul id="validationIssues" aria-label="Validation issues"></ul>
+        <details id="dayReview" class="review-days" hidden>
+          <summary>Review every day that would be replaced</summary>
+          <div class="table-scroll">
+            <table><caption>Days with different calls</caption><thead><tr><th scope="col">Eastern date</th><th scope="col">In file</th><th scope="col">In database</th></tr></thead><tbody id="dayReviewRows"></tbody></table>
+          </div>
+        </details>
         <div class="actions"><button type="button" class="pill" id="importFile" disabled>Import</button></div>
         <p class="sub" id="importHelp">Import requires the read:admin and import:calls permissions. New days are added, days already loaded are skipped, and a day that differs is replaced only when you confirm it.</p>
         <label class="control" for="expectedRows">Source export row count<input type="number" id="expectedRows" min="1" max="100000" step="1" inputmode="numeric"></label>
-        <label><input type="checkbox" id="confirmImport"> I verified the export and its row count. Import changes call data; a day listed as different is deleted and replaced by the file's calls.</label>
+        <label class="confirm-row"><input type="checkbox" id="confirmImport"> I verified the export and its row count. Import changes call data; a day listed as different is deleted and replaced by the file's calls.</label>
         <p id="importStatus" role="status" aria-live="polite"></p>
       </section>
       <section class="card" id="retraining" aria-labelledby="retrainingTitle">
-        <div class="card-head"><h2 id="retrainingTitle">Model retraining</h2><span class="badge pending">Not connected</span></div>
-        <p class="muted">Training jobs and deployment status will appear here.</p>
-        <dl class="facts"><div><dt>Job status</dt><dd>Unknown · Placeholder</dd></div><div><dt>Last trained</dt><dd>Not available</dd></div><div><dt>Active model</dt><dd>Not connected</dd></div><div><dt>Training data through</dt><dd>Not available</dd></div></dl>
-        <h3>Planned workflow</h3>
-        <ol class="steps"><li><span class="step">1</span>Validate and import new call days</li><li><span class="step">2</span>Train and run backtest checks</li><li><span class="step">3</span>Review results and publish model</li></ol>
-        <button type="button" class="pill" disabled aria-describedby="trainHelp">Request retraining · Not connected</button>
-        <p class="sub" id="trainHelp">Retraining is manual. Importing calls does not retrain or replace the active model.</p>
+        <div class="card-head"><h2 id="retrainingTitle">Model retraining</h2></div>
+        <label class="control">Last verified Eastern day<input type="date" id="trainCutoff"></label>
+        <label><input type="checkbox" id="trainConfirm"> I verified historical data completeness through this day.</label>
+        <div class="actions">
+          <button type="button" class="pill" id="requestTraining" disabled>Request retraining</button>
+          <button type="button" class="pill" id="loadTraining" disabled>Refresh runs</button>
+        </div>
+        <p class="sub" id="trainStatus" role="status">Select Refresh runs to check retraining history.</p>
+        <ul id="trainRuns"></ul>
+      </section>
+      <section class="card full" id="health" aria-labelledby="healthTitle">
+        <div class="card-head"><h2 id="healthTitle">Model health</h2><button type="button" class="pill" id="refreshModelHealth" disabled>Refresh model health</button><span class="badge pending" id="healthStatus" role="status" aria-live="polite">Not loaded</span></div>
+        <p class="muted">Training cutoff, newest observed calls, saved training gate, and retrospective evaluation.</p>
+        <dl class="metrics"><div class="metric"><dt>MAE · calls/hour</dt><dd id="healthMae">—</dd><p>Average prediction error. Lower is better.</p></div><div class="metric"><dt>RMSE · calls/hour</dt><dd id="healthRmse">—</dd><p>Root mean squared error. Emphasizes larger misses.</p></div><div class="metric"><dt>Signed bias · calls/hour</dt><dd id="healthBias">—</dd><p>Predicted minus actual. Positive means overprediction; negative means underprediction.</p></div></dl>
+        <p class="sub" id="healthPeriod">Evaluation period: not available</p>
+        <p class="sub" id="healthModel" style="overflow-wrap:anywhere">Model identity: not available</p>
+        <p class="sub" id="healthCompleteness">Data completeness: not verified</p>
+        <p class="sub" id="healthData"></p>
+        <p class="sub" id="healthBacktest"></p>
+        <ul id="healthWarnings" aria-label="Selected-period performance warnings"></ul>
+        <p class="sub">Evaluation metrics come from retrospective model replay.</p>
       </section>
       <section class="card full" id="reports" aria-labelledby="reportsTitle">
-        <div class="card-head"><h2 id="reportsTitle">Monthly accuracy reports</h2><span class="badge pending">Reports not connected</span></div>
-        <p class="muted">Review forecast error by reporting month once verified results are available.</p>
-        <div class="form-row"><label class="control" for="reportMonth">Report month<input type="month" id="reportMonth" aria-describedby="reportStatus"></label><button type="button" class="pill" disabled aria-describedby="reportStatus">Download report · Not connected</button></div>
-        <p id="reportStatus" class="sub" role="status" aria-live="polite">No monthly accuracy reports are connected.</p>
-        <div class="table-scroll"><table><caption>Monthly report placeholders · No live or sample metrics</caption><thead><tr><th scope="col">Month</th><th scope="col">Evaluation</th><th scope="col">Daily-total MAE</th><th scope="col">Hourly MAE</th><th scope="col">RMSE</th><th scope="col">Bias</th></tr></thead><tbody><tr><th scope="row" id="reportMonthLabel">Select a month</th><td>Not connected</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td colspan="6" class="empty">No verified report available. Monitoring results are not yet connected to this report view.</td></tr></tbody></table></div>
+        <div class="card-head"><h2 id="reportsTitle">Accuracy reports</h2><span class="badge pending" id="accuracyStatus">Choose a month</span></div>
+        <p class="muted">Compare actual calls with a model replay for a completed month. Reports are prepared offline; this page does not run forecasts or training.</p>
+        <div class="form-row"><label class="control" for="reportMonth">Report month<input type="month" id="reportMonth" aria-describedby="reportStatus"></label><button type="button" class="pill" id="loadAccuracy" disabled>View report</button><button type="button" class="pill" id="downloadAccuracy" disabled>Download report</button></div>
+        <button type="button" class="pill" id="refreshReports" disabled>List available reports</button>
+        <p id="reportListStatus" class="sub" role="status"></p>
+        <p id="reportStatus" class="sub" role="status" aria-live="polite">Sign in to view reports.</p>
+        <p id="accuracyPeriod" class="sub"></p>
+        <p id="accuracyModel" class="sub"></p>
+        <dl class="metrics"><div class="metric"><dt>Actual calls</dt><dd id="accuracyActual">—</dd></div><div class="metric"><dt>Predicted calls</dt><dd id="accuracyPredicted">—</dd></div><div class="metric"><dt>Average hourly error</dt><dd id="accuracyError">—</dd><p>Calls per hour, in either direction. Lower is better.</p></div></dl>
+        <p id="accuracyDirection"></p>
+        <p id="accuracyDetail" class="sub"></p>
+        <label class="control">Comparison interval<select id="reportGrain"><option value="daily">Daily</option><option value="hourly">Hourly</option></select></label>
+        <p class="sub" id="comparisonStatus"></p>
+        <div style="max-height:22rem;overflow:auto">
+          <table aria-label="Actual and predicted calls"><thead><tr><th scope="col">Eastern date or hour</th><th scope="col">Actual calls</th><th scope="col">Predicted calls</th></tr></thead><tbody id="comparisonRows"></tbody></table>
+        </div>
+        <ul id="accuracyWarnings" aria-label="Report warnings"></ul>
+        <p class="sub">Model replay recalculates predictions using the selected model. It does not prove what the dashboard predicted before the calls happened.</p>
       </section>
     </div>
     </div>

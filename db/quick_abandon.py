@@ -38,7 +38,7 @@ QUICK_SQL = """
 
 # Process-wide cache, replaced wholesale on first use. `calls` only changes
 # on a load, after which the server is restarted.
-_cache: dict | None = None
+_cache: tuple[object, dict] | None = None
 
 
 def _share(part: int, whole: int) -> float | None:
@@ -66,6 +66,10 @@ def measure_quick_hangups(conn, threshold_sec: int = QUICK_HANGUP_SEC, window_da
 
 def quick_hangups(conn) -> dict:
     global _cache
-    if _cache is None:
-        _cache = measure_quick_hangups(conn)
-    return _cache
+    key = getattr(conn, "_v4w_call_revision", None)
+    cached = _cache
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    result = measure_quick_hangups(conn)
+    _cache = (key, result)
+    return result

@@ -595,3 +595,22 @@ def test_the_undo_script_changes_nothing_while_a_day_range_batch_exists(db):
         run_down(db)
     assert {"first_day", "last_day", "replaced_records"} <= batch_columns(db)
     assert db.execute("SELECT first_day FROM pipeline_batches").fetchone()["first_day"] == SEP_1
+
+def test_missing_date_is_left_untouched_even_when_it_holds_calls(db):
+    previous = pipeline.preview(db, workbook((SEP_2,)), "admin", today=TODAY)
+    pipeline.commit_import(db, previous["id"], expected_rows=3)
+    stage = pipeline.preview(db, workbook((SEP_1, SEP_3)), "admin", today=TODAY)
+    assert stage["validation"]["days_without_calls"] == [SEP_2.isoformat()]
+    assert "left untouched" in stage["validation"]["warnings"][0]
+    result = pipeline.commit_import(db, stage["id"], expected_rows=6)
+    assert result["deleted_rows"] == 0
+    assert count(db) == 9
+
+
+def test_same_conflict_day_with_changed_content_requires_restage(db):
+    earlier = pipeline.preview(db, workbook((SEP_1,)), "admin", today=TODAY)
+    pipeline.commit_import(db, earlier["id"], expected_rows=3)
+    stage = pipeline.preview(db, workbook((SEP_1,), agent=450), "admin", today=TODAY)
+    db.execute("UPDATE calls SET agent_sec = 350 WHERE agent_sec > 0")
+    with pytest.raises(pipeline.PipelineError, match="changed since staging"):
+        pipeline.commit_import(db, stage["id"], expected_rows=3, replace_days=[SEP_1])

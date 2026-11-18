@@ -119,22 +119,30 @@ def _load_cached(conn, recency: str = DEFAULT_RECENCY) -> tuple[lgb.Booster, dic
         )
 
     mtime = MODEL_PATH.stat().st_mtime
-    if _cache["mtime"] != mtime:
-        check_model_matches(_read_metadata(), MODEL_PATH.read_bytes())
-        _cache = {
+    revision = getattr(conn, "_v4w_call_revision", None)
+    current = _cache
+    if current["mtime"] != mtime:
+        metadata = _read_metadata()
+        check_model_matches(metadata, MODEL_PATH.read_bytes())
+        current = {
             "mtime": mtime,
             "booster": lgb.Booster(model_file=str(MODEL_PATH)),
-            "metadata": _read_metadata(),
+            "metadata": metadata,
+            "call_revision": revision,
             "aht": {},
             "real_share": {},
         }
-    if recency not in _cache["aht"]:
-        tables = {**_cache["aht"], recency: estimate_aht(conn, RECENCY_HALFLIFE_DAYS[recency])}
-        _cache = {**_cache, "aht": tables}
-    if recency not in _cache["real_share"]:
-        shares = {**_cache["real_share"], recency: estimate_real_share(conn, RECENCY_HALFLIFE_DAYS[recency])}
-        _cache = {**_cache, "real_share": shares}
-    return _cache["booster"], _cache["metadata"], _cache["aht"][recency], _cache["real_share"][recency]
+    elif current.get("call_revision") != revision:
+        current = {**current, "call_revision": revision, "aht": {}, "real_share": {}}
+    if recency not in current["aht"]:
+        tables = {**current["aht"], recency: estimate_aht(conn, RECENCY_HALFLIFE_DAYS[recency])}
+        current = {**current, "aht": tables}
+    if recency not in current["real_share"]:
+        shares = {**current["real_share"], recency: estimate_real_share(conn, RECENCY_HALFLIFE_DAYS[recency])}
+        current = {**current, "real_share": shares}
+    _cache = current
+    return current["booster"], current["metadata"], current["aht"][recency], current["real_share"][recency]
+
 
 
 # =============================================================================

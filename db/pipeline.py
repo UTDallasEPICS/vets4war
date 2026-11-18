@@ -85,7 +85,7 @@ TARGET = re.compile(rb'Target="([^"]*)"')
 EASTERN = ZoneInfo("America/New_York")
 # Stored in pipeline_batches.contract_hash: which reader produced the staged
 # rows. A batch staged by another reader has to be validated again.
-PARSER_VERSION = "client-call-records-v1"
+PARSER_VERSION = "client-call-records-v2"
 SOURCE_NAMESPACE = "client-export"
 ONE_DAY = timedelta(days=1)
 MAX_DAYS_IN_MESSAGE = 10
@@ -250,8 +250,8 @@ def _warnings(gaps: list[str], split_days: list[date]) -> list[str]:
     """Things worth a look that do not stop an import."""
     warnings = []
     if gaps:
-        warnings.append(f"{len(gaps)} day(s) inside the file's range have no calls: {_listed(gaps)}. "
-                        "Check the export is complete.")
+        warnings.append(f"{len(gaps)} date(s) have no calls recorded in this workbook: {_listed(gaps)}. "
+                        "They are unreported, are not verified zero-call days, and will be left untouched.")
     if split_days:
         warnings.append(f"{len(split_days)} day(s) have calls on more than one sheet and were combined: {_listed(split_days)}.")
     return warnings
@@ -283,7 +283,12 @@ def _count(plan: dict[date, str], status: str) -> int:
     return sum(1 for value in plan.values() if value == status)
 
 
-def _report(conn, calls: pd.DataFrame, today: date, max_rows: int | None) -> dict:
+def _day_snapshot(file_days, current_days):
+    return {day.isoformat(): current_days[day].fingerprint if day in current_days else None
+            for day in file_days}
+
+
+def _report(conn, calls: pd.DataFrame, today: date, max_rows: int | None, *, staged=False) -> dict:
     """The validation report for parsed calls: what the file covers, what is
     wrong with it, and what each of its days would do to the database."""
     file_days = summarize_days(calls)
@@ -299,6 +304,7 @@ def _report(conn, calls: pd.DataFrame, today: date, max_rows: int | None) -> dic
                     "days": len(plan), "new_days": _count(plan, NEW), "identical_days": _count(plan, IDENTICAL),
                     "conflict_days": _count(plan, CONFLICT)},
         "days": describe_plan(file_days, current_days),
+        **({"stored_day_snapshot": _day_snapshot(file_days, current_days)} if staged else {}),
         "days_without_calls": gaps,
         "file_errors": errors,
         "warnings": _warnings(gaps, calls.attrs.get(SPLIT_DAYS, [])),
@@ -356,7 +362,7 @@ def preview(conn, content: bytes, uploader: str, *, today: date | None = None) -
             raise
         calls, report = None, _unreadable_report(error)
     else:
-        report = _report(conn, calls, today or _today(), MAX_ROWS)
+        report = _report(conn, calls, today or _today(), MAX_ROWS, staged=True)
     batch_id = uuid.uuid4()
     status = "validated" if report["ok"] else "invalid"
     with conn.transaction():
@@ -364,7 +370,8 @@ def preview(conn, content: bytes, uploader: str, *, today: date | None = None) -
         conn.execute("UPDATE pipeline_batches SET records=NULL,status='expired' WHERE status='validated' AND expires_at<now()")
         _insert_batch(conn, batch_id, uploader, hashlib.sha256(content).hexdigest(), report, status=status,
                       records=_records(calls) if report["ok"] else None)
-    return {"id": str(batch_id), "status": status, "validation": report}
+    public_report = {key: value for key, value in report.items() if key != "stored_day_snapshot"}
+    return {"id": str(batch_id), "status": status, "validation": public_report}
 
 
 # =============================================================================
@@ -413,7 +420,7 @@ def _insert_calls(conn, batch_id, calls: pd.DataFrame) -> int:
     return linked
 
 
-def _apply(conn, batch_id, calls: pd.DataFrame, replace_days) -> dict:
+def _apply(conn, batch_id, calls: pd.DataFrame, replace_days, *, previous=None) -> dict:
     """Bring `calls` into the database. The caller holds the transaction and
     the import lock. Re-plans against the database as it is NOW, so a plan
     shown earlier cannot be applied to data that has since changed."""
@@ -421,7 +428,12 @@ def _apply(conn, batch_id, calls: pd.DataFrame, replace_days) -> dict:
     # Writers outside this ledger must also be kept out while days are compared.
     conn.execute("LOCK TABLE calls IN SHARE ROW EXCLUSIVE MODE")
     file_days = summarize_days(calls)
-    plan = plan_days(file_days, summarize_days(_stored_calls(conn, file_days)))
+    current = summarize_days(_stored_calls(conn, file_days))
+    snapshot = _day_snapshot(file_days, current)
+    if previous is not None and previous != snapshot:
+        changed = [day for day in snapshot if snapshot[day] != previous.get(day)]
+        raise PipelineError(f"Stored calls changed since staging ({_listed(changed)}). Validate the workbook again.")
+    plan = plan_days(file_days, current)
     conflicts = sorted(day for day, status in plan.items() if status == CONFLICT)
     if set(replace_days) != set(conflicts):
         if not conflicts:
@@ -466,7 +478,8 @@ def commit_import(conn, batch_id, *, expected_rows: int, replace_days=(), actor:
             raise PipelineError("This upload was staged by an older version. Validate the file again.")
         if len(batch["records"]) != expected_rows:
             raise PipelineError("The confirmed source row count does not match the upload.")
-        result = _apply(conn, batch_id, _calls_from_records(batch["records"]), replace_days)
+        result = _apply(conn, batch_id, _calls_from_records(batch["records"]), replace_days,
+                        previous=batch["summary"]["stored_day_snapshot"])
         conn.execute("""UPDATE pipeline_batches SET status='imported',imported_at=now(),imported_by=%s,records=NULL,
                                summary=summary || %s WHERE id=%s""",
                      (actor or batch["uploader"], Jsonb({"result": result}), batch_id))
@@ -501,7 +514,7 @@ def import_calls(conn, calls: pd.DataFrame, uploader: str, *, replace_days=(), c
 
 def history(conn):
     with conn.cursor(row_factory=dict_row) as cursor:
-        return cursor.execute("""SELECT id,created_at,uploader,month,first_day,last_day,status,summary,imported_at,
+        return cursor.execute("""SELECT id,created_at,uploader,month,first_day,last_day,status,summary - 'stored_day_snapshot' AS summary,imported_at,
                                         imported_by,replaced_batch_id
             FROM pipeline_batches ORDER BY created_at DESC LIMIT 100""").fetchall()
 
@@ -514,8 +527,15 @@ def purge_expired(conn):
     return result.rowcount
 
 
+def bind_call_revision(conn):
+    """Tag this request's connection so call-derived caches can follow imports."""
+    conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+    schema, ledger = conn.execute("SELECT current_schema(), to_regclass('pipeline_state')").fetchone()
+    if ledger is not None:
+        conn._v4w_call_revision = (conn.info.host, conn.info.port, conn.info.dbname, schema, revision(conn))
+
+
 def revision(conn):
-    # Available to future consumers; this module does not refresh model caches.
     with conn.cursor(row_factory=dict_row) as cursor:
         return cursor.execute("SELECT revision FROM pipeline_state WHERE singleton").fetchone()["revision"]
 

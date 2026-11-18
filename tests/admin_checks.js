@@ -23,6 +23,7 @@ function environment(options={}) {
     return {value:"",textContent:"",disabled:false,hidden:false,checked:false,files:[],children:[],events:{},
       append(child){this.children.push(child);},replaceChildren(){this.children=[];this.value="";},classList:{toggle(){}},
       addEventListener(name,fn){this.events[name]=fn;},
+      click(){actions.push(["download",this.download]);},
       checkValidity(){return !this.max || this.value <= this.max;}};
   }
   for (const id of ids) elements.set(id,element());
@@ -31,7 +32,12 @@ function environment(options={}) {
   let tokenAttempt = 0;
   const storage = options.storage || new Map();
   const TestDate=options.now ? class extends Date {constructor(...args){super(...(args.length ? args : [options.now]));}} : Date;
-  const context = {Intl,Date:TestDate,URL,URLSearchParams,AbortController,
+  class ReportURL extends URL {
+    static createObjectURL(blob){actions.push(["report-json",blob.parts[0]]);return "blob:report";}
+    static revokeObjectURL(){}
+  }
+  const context = {Intl,Date:TestDate,URL:ReportURL,URLSearchParams,AbortController,
+    Blob:class {constructor(parts){this.parts=parts;}},setTimeout(fn){fn();},
     FormData:class {constructor(){this.values=new Map();} append(k,v){this.values.set(k,v);}},
     document:{getElementById:get,createElement:element,title:"Admin"},
     window:{location:{origin:"http://127.0.0.1:8000",href:"http://127.0.0.1:8000/admin.html"+(options.search||""),search:options.search||""},
@@ -77,6 +83,13 @@ function environment(options={}) {
       let status=200,body;
       if(url==="/api/admin/me") {status=options.code||200;body={sub:"auth0|admin",permissions:options.readOnly?["read:admin"]:["read:admin","import:calls"]};}
       else if(url==="/api/admin/uploads" && !settings.method) {status=options.historyCode||200;body=options.history||[];}
+      else if(url==="/api/admin/model-health") body={name:"Test model",version:"synthetic",trained_at:"2026-08-30",
+        train_end:"2026-08-29",data_age_days:3,data_status:"available",data_through:"2026-08-31",
+        historical_backtest:null,evaluation:null};
+      else if(url==="/api/admin/reports") body={months:options.reportMonths||[]};
+      else if(url.startsWith("/api/admin/reports/")) {
+        status=options.report ? 200 : 404;body=options.report||{detail:"No report"};
+      }
       else if(url==="/api/admin/validate") body=options.invalid ? refused : report;
       else if(url==="/api/admin/uploads") {
         status=options.uploadCode||201;
@@ -185,9 +198,40 @@ function environment(options={}) {
   assert(failedLogout.get("adminContent").hidden);assert(failedLogout.get("logout").hidden);count++;
   let finishUser;const userPromise=new Promise(resolve=>{finishUser=resolve;});
   const race=environment({userPromise});await settle();await race.event("logout");finishUser({email:"late@example.test"});await settle();assert(race.get("adminContent").hidden);count++;
-  const reportUi=environment();await settle();reportUi.get("reportMonth").value="2026-09";await reportUi.event("reportMonth","input");assert.equal(reportUi.get("reportMonthLabel").textContent,"2026-09");assert(reportUi.get("reportStatus").textContent.includes("unavailable"));count++;
+  const historyOffline=environment({historyError:true});await settle();
+  assert(historyOffline.get("healthData").textContent.includes("2026-08-31"));
+  assert(!historyOffline.get("adminContent").hidden);count++;
+  const reportUi=environment();await settle();
+  assert(reportUi.get("healthData").textContent.includes("2026-08-31"));
+  assert.equal(reportUi.get("healthStatus").textContent,"No matching retrospective report");
+  reportUi.get("reportMonth").value="2026-09";await reportUi.event("reportMonth","input");
+  await reportUi.event("loadAccuracy");
+  assert(reportUi.get("reportStatus").textContent.includes("No report has been prepared"));
+  assert(reportUi.get("downloadAccuracy").disabled);
+  assert(reportUi.get("healthData").textContent.includes("2026-08-31"));count++;
+  const listing=environment({reportMonths:["2026-10","2026-09"]});await settle();
+  await listing.event("refreshReports");
+  assert.equal(listing.get("reportListStatus").textContent,"Available months: 2026-10, 2026-09.");
+  count++;
+  const payload={reporting_month:"2026-09",status:"success",warnings:[],completeness:{verified:true},
+    model:{model_sha256:"a".repeat(64),train_end:"2026-08-31T23:00:00"},
+    metrics:{actual_calls:24,predicted_calls:26,hourly_mae:1,hourly_rmse:1.5,daily_total_mae:2,signed_bias:0.1},
+    daily:[{day:"2026-09-01",actual:24,predicted:26}],
+    hourly:[{hour:"2026-09-01T12:00:00",actual:1,predicted:2}]};
+  const downloaded=environment({report:payload});await settle();
+  downloaded.get("reportMonth").value="2026-09";
+  downloaded.get("reportGrain").value="daily";await downloaded.event("reportMonth","input");
+  await downloaded.event("loadAccuracy");
+  assert(downloaded.get("accuracyModel").textContent.includes(payload.model.model_sha256));
+  assert(downloaded.get("accuracyModel").textContent.includes("2026-08-31"));
+  assert.equal(downloaded.get("comparisonRows").children[0].children[0].textContent,"2026-09-01");
+  downloaded.get("reportGrain").value="hourly";await downloaded.event("reportGrain","input");
+  assert.equal(downloaded.get("comparisonRows").children[0].children[0].textContent,"2026-09-01 12:00:00");
+  await downloaded.event("downloadAccuracy");
+  assert.deepEqual(JSON.parse(downloaded.actions.find(a=>a[0]==="report-json")[1]),payload);
+  assert(downloaded.actions.some(a=>a[0]==="download"&&a[1]==="accuracy-2026-09.json"));count++;
   const recovered=environment({failTokenAttempts:1,authError:{error:"timeout",error_description:"secret-token"}});
-  await settle();assert(!recovered.get("adminContent").hidden);assert.equal(recovered.actions.filter(a=>a==="token").length,3);count++;
+  await settle();assert(!recovered.get("adminContent").hidden);assert.equal(recovered.actions.filter(a=>a==="token").length,4);count++;
   const timeoutOptions={tokenError:true,authError:{error:"timeout",error_description:"secret-token"}};
   const timeout=environment(timeoutOptions);await settle();assert(timeout.get("adminContent").hidden);
   assert.equal(timeout.actions.filter(a=>a==="token").length,2);assert.equal(timeout.calls.length,0);
@@ -240,6 +284,7 @@ function environment(options={}) {
   const issues=detailed.get("validationIssues").children.map(li=>li.textContent);
   assert(issues.includes("250 calls, 2026-09-01 to 2026-09-12."));
   assert.equal(issues.filter(text=>/^2026-09-\d\d: the file has 5 calls/.test(text)).length,10);assert(issues.includes("2 more days differ."));
+  assert.equal(detailed.get("dayReviewRows").children.length,12);
   assert(issues.includes("Synthetic file-level issue"));assert(issues.includes("Synthetic completeness warning"));
   assert(issues.includes("<img src=x onerror=alert(1)>"));assert(detailed.get("importFile").disabled);count++;
   // A file that could not be read at all has no days to count.

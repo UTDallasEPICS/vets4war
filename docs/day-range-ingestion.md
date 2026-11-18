@@ -43,9 +43,11 @@ bigger file use the command line.
 Only two files are read at a time; a third request gets "try again in a few
 seconds" (HTTP 429).
 
-Warnings, not refusals: days inside the file's range that have no calls, and days
-whose calls are spread over more than one sheet (they are combined; the client's
-multi-year workbook does this at each year end).
+Dates with no workbook rows are **unreported** and are outside the import
+plan. They never authorize deleting existing calls. An explicitly verified
+zero-call day needs separate source evidence. This importer has no zero-day
+attestation input. Days with rows on multiple sheets are combined when the
+rows do not overlap.
 
 ## From the admin page
 
@@ -56,11 +58,11 @@ multi-year workbook does this at each year end).
    "Replace N days & import" and the request names exactly those days.
 
 The import re-reads the database inside one transaction. If anything changed
-since staging (a day that was new now holds calls, or the other way round),
+since staging, including changes within a day already marked as a conflict,
 it is refused and nothing is written: validate the file again.
 
 Any admin holding `import:calls` can import a batch another admin staged;
-`imported_by` records who did. Staged rows are cleared after seven days (the
+`imported_by` records who did. Re-stage any batch created by the previous parser version. Staged rows are cleared after seven days (the
 next upload clears expired ones).
 
 **What a replacement deleted is kept.** The calls removed from a replaced day
@@ -68,8 +70,18 @@ are stored as JSON in `pipeline_batches.replaced_records` of the batch that
 replaced them, so a wrong replacement can be put back without restoring the
 database.
 
-Importing does not retrain the model. Retraining stays a separate manual
-step: `make train`, then a deploy.
+Staffing and training read the existing `calls` table. Training groups calls
+into hourly buckets at query time. After an admin import commits, the next
+staffing request refreshes the source date range and call-derived estimates
+using the new ingestion revision. The public forecast chart continues to show
+predictions from the active model. Requesting candidate retraining, reviewing
+the candidate and promoting a model are separate steps.
+
+## Checking the workbook identity
+
+The September 1 through October 13 export contains 7,965 rows. The separate
+October 14 through 20 export contains 1,327. Check the file name, parsed
+first and last dates, and row count before staging or confirming replacement.
 
 ## From the command line
 
@@ -106,6 +118,13 @@ as `calls_start_ts_idx`, checked 2026-11-11) to stay quick while `calls` is lock
 Before applying to the shared database: agree with the team, take a
 schema-only backup, note the `calls` row count and last timestamp, run the
 dry run, then apply.
+
+If upload history or staging reports that migration 002 is needed, the API
+is connected to a ledger schema without the day-range columns. Check the
+running server's database and schema before running any migration. On a
+disposable loopback database, rehearse with `migrate --dry-run`, then apply
+001 and 002 through `migrate`. Check without staging can still compare calls
+when only the upload ledger is behind.
 
 ## Testing
 

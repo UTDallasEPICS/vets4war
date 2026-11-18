@@ -151,14 +151,14 @@ def test_main_registers_admin_before_static_mount(security):
 ])
 def test_real_jwt_permissions_on_ingestion_routes(security, monkeypatch, permissions, history_status, write_status):
     from contextlib import nullcontext
-    from api import admin, main
+    from api import main
     _, key, _, _ = security
     actors = []
     connections = []
     def connect():
         connections.append(True)
         return nullcontext(object())
-    monkeypatch.setattr(admin, "_pipeline_connection", connect)
+    monkeypatch.setattr(main.pipeline, "connect", connect)
     monkeypatch.setenv("V4W_ADMIN_IMPORTS", "1")
     monkeypatch.setattr(main.pipeline, "history", lambda conn: [])
     monkeypatch.setattr(main.pipeline, "preview", lambda conn, content, actor:

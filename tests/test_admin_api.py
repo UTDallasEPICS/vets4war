@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 import psycopg
 from psycopg import sql
+from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 import pytest
 
@@ -22,6 +23,7 @@ from api import admin
 from api.main import app
 from api.auth import verify_token
 from db import pipeline
+from db.dataset import load_dataset
 from ledger_workbooks import SEP_1, SEP_2, SEP_3, day_rows, workbook
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -203,6 +205,37 @@ def test_a_second_file_in_the_same_month_adds_days(admin_db):
     assert calls_in(admin_db) == 9
 
 
+def test_import_refreshes_staffing_data_and_is_visible_to_training(admin_db, test_dsn, monkeypatch):
+    schema = admin_db.execute("SELECT current_schema() AS name").fetchone()["name"]
+    dsn = make_conninfo(test_dsn, options=f"-c search_path={schema}")
+    monkeypatch.setenv("V4W_DATABASE_URL", dsn)
+    monkeypatch.setenv("V4W_DATA_SOURCE", "synthetic")
+    admin_db.execute("CREATE TABLE holidays(holiday_date date PRIMARY KEY)")
+    admin_db.execute("INSERT INTO holidays VALUES ('2026-12-25')")
+
+    def forecast():
+        response = client.get("/api/forecast", params={
+            "start": "2026-10-21", "end": "2026-10-21", "queue_model": "erlang_c",
+        })
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    load(workbook((SEP_1,), agent=300))
+    before = forecast()
+    load(workbook((SEP_2,), agent=600))
+    after = forecast()
+
+    assert before["data_source"]["end"] == "2026-09-01"
+    assert after["data_source"]["end"] == "2026-09-02"
+    assert [hour["predicted_calls"] for hour in before["hours"]] == [
+        hour["predicted_calls"] for hour in after["hours"]
+    ]
+    assert any(old["aht_sec"] != new["aht_sec"] for old, new in zip(before["hours"], after["hours"]))
+    dataset = load_dataset(dsn)
+    counts = dataset.hourly.groupby(dataset.hourly["hour_start"].dt.date)["offered"].sum()
+    assert counts.to_dict() == {SEP_1: 3, SEP_2: 3}
+
+
 def test_a_file_with_an_unfinished_day_is_staged_as_invalid_and_cannot_import(admin_db):
     today = datetime.now(pipeline.EASTERN).date()
     batch = stage(workbook((today - timedelta(days=1), today)))
@@ -292,3 +325,21 @@ def test_only_a_few_files_are_read_at_once(admin_db, monkeypatch, path):
     assert admin_db.execute("SELECT count(*) AS n FROM pipeline_batches").fetchone()["n"] == 0
     busy.release()
     assert post_file(path, workbook()).status_code in (200, 201)
+
+def test_month_schema_reports_upgrade_needed_then_recovers(admin_db):
+    admin_db.execute((pipeline.ROOT / "db/migrations/002_down.sql").read_text())
+    before = client.get("/api/admin/uploads")
+    refused = post_file("/api/admin/uploads", workbook())
+    for response in (before, refused):
+        assert response.status_code == 503
+        assert "migration 002" in response.json()["detail"]
+        assert "first_day" not in response.text
+    assert post_file("/api/admin/validate", workbook()).status_code == 200
+    pipeline.migrate(admin_db, dry_run=True)
+    assert client.get("/api/admin/uploads").status_code == 503
+    pipeline.migrate(admin_db)
+    pipeline.migrate(admin_db)
+    assert client.get("/api/admin/uploads").json() == []
+    stage()
+    assert len(client.get("/api/admin/uploads").json()) == 1
+    assert calls_in(admin_db) == 0

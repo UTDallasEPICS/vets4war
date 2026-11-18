@@ -320,17 +320,58 @@ Removed on Nov 11 (contained elsewhere): `forecast-mvp`, `model-final-run`,
    account on the Hobby plan (meant for non-commercial use), with the
    database address in its settings. Move it to an account the team or the
    client owns; change the shared password.
-8. **Model freshness on the admin page** (planned, not built): show "model
-   trained through" (`models/metadata.json`) against "data through" (latest
-   call), so staleness is visible.
-9. **Monitoring:** `db/monitor.py` on `feature/admin-integration` was left
-   out of the merge because it calls a function the final model code no
-   longer has; adapt it, then feed the admin "Accuracy" panel from it and
-   from `db.tune weeks`, `db.score_week`, `db.roster_check`.
-10. **Automated retraining** (later): a GitHub workflow that trains, runs the
-    backtest gate, commits the model and deploys. Needs repository secrets
-    from a UTDallasEPICS organisation admin; the same is true for attaching
-    Vercel to GitHub so pushes deploy by themselves.
+8. **Verify the admin follow-up** below, including live Auth0 sign-in,
+   report availability, and the hosted approval workflow.
+
+### Admin follow-up on the integrated baseline
+
+- **Model Health:** the packaged model hash and training cutoff identify the
+  running artifact. The newest observed database date measures freshness and
+  cannot establish complete coverage. The saved weekly-origin training gate
+  is a historical evaluation of the training procedure. An absent matched
+  retrospective artifact is shown as unavailable.
+- **Accuracy Reports:** the admin viewer reads a private monthly artifact.
+  To generate it, run
+  `python -m db.monitor --month YYYY-MM --completeness /private/evidence.json --output-dir /private/reports`.
+  Set `V4W_ACCURACY_REPORT_DIR` to that directory outside the public web tree.
+  The evidence JSON requires `complete_start`, `complete_end`, `source`,
+  `evidence`, `offered_count`, and `timezone` set to
+  `Eastern naive wall-clock`. The dates must match the evaluated window after
+  excluding the model's training dates and unfinished days. Generate archived
+  reports with the feature and calibration code that matches their model.
+  Use **List available reports** to find published months. Open a month to validate its report and display its model hash separately from Model Health.
+  A downloaded API report is for reference. The server directory expects
+  the original monitor artifact. Use `db.score_week` for an actual frozen forecast and
+  `db.roster_check` for queue and roster validation. `db.tune weeks` reports
+  rolling-origin procedure backtests. These evaluations answer different
+  questions and their results are reported separately.
+  The local October 21–31 replay used an October 20 training cutoff and
+  separate offline validation exports. October 21–27 contributed 1,300 calls,
+  and October 28–31 contributed 734 from the October 28–November 3 export.
+  The report contains 2,034 actual calls. Its presence in the dashboard does
+  not establish whether those records were imported into any database.
+- **Retraining:** the dashboard can request a candidate through GitHub.
+  `retrain.yml` calls the existing `db.train` production recipe and saved
+  weekly-origin seasonal gate in an isolated checkout. It verifies the active
+  version and requested completed-day cutoff, then requires recorded human
+  approval to publish a candidate artifact. Model promotion, changes to the
+  recipe, and additional evaluation criteria remain with the model owner.
+  Repository owners must make the dispatch workflow available on the GitHub
+  default branch, retain the `final-main` execution restriction, grant the
+  API a repository-scoped Actions read/write token through
+  `V4W_RETRAIN_GITHUB_TOKEN` and set `V4W_RETRAIN_REPOSITORY` to `owner/repo`.
+  On the repository, configure
+  `V4W_READONLY_DATABASE_URL` and the `model-approval` environment with
+  required reviewers, self-review disabled and administrator bypass disabled.
+- **Ownership and rollout:** Veda verifies live Auth0 settings. Quan reviews
+  the day-range workflow and coordinates the proposed migration with the
+  database owner. The model owner reviews training gate evidence and any
+  promotion. A repository administrator provisions Actions secrets and a
+  hosting owner handles Vercel configuration after team approval.
+- **Tests:** pytest clears the application DSN and refuses a non-loopback
+  `V4W_TEST_DATABASE_URL`. Use disposable PostgreSQL for ledger tests.
+  With a disposable DSN, database-backed forecast tests use a separate
+  synthetic schema and ledger tests use their own schemas.
 
 ## 13. Known limits and open points
 
