@@ -599,7 +599,7 @@ export function createConsoleState() {
     } catch (err) {
       if (id !== inflight) return
       cache = null
-      const failure = err as { code?: string; message?: string }
+      const failure = err as { code?: string; message?: string; data?: Record<string, unknown> }
       if (failure.code === 'no_forecast') {
         ui.noForecast = true
         ui.errorHidden = true
@@ -609,7 +609,9 @@ export function createConsoleState() {
         ui.errorText =
           failure.code === 'outside_horizon'
             ? String(failure.message)
-            : `The forecast did not load (${failure.message}). Change a date to retry.`
+            : failure.code === 'implausible_patience'
+              ? implausiblePatienceText(failure.data?.patience_sec)
+              : `The forecast did not load (${failure.message}). Change a date to retry.`
       }
       // The answer is in: the header stops saying it is loading. A data source shown by an
       // earlier load stays (it does not depend on the dates); before any load there is
@@ -632,6 +634,23 @@ export function createConsoleState() {
         ui.ready = true
       }
     }
+  }
+  // 503 implausible_patience: the forecast was written with a caller-patience estimate
+  // the read API refuses to compute with. No date can work until an admin corrects the
+  // call data, so the usual "Change a date to retry" would mislead; and the server's own
+  // sentence ends with advice for someone calling the API (send patience_sec, or use
+  // Erlang C), which this page has no controls for. So the page says it in its own words.
+  function implausiblePatienceText(storedSec: unknown): string {
+    const measured =
+      typeof storedSec === 'number' && Number.isFinite(storedSec)
+        ? `Measured from the call data, callers give up after ${Number(storedSec.toFixed(2))} s ` +
+          `on average, which is implausibly short: the waiting times in the call data look wrong.`
+        : `How long callers wait before they give up could not be measured from the call ` +
+          `data: its waiting times look wrong.`
+    return (
+      `The forecast cannot be shown. ${measured} An admin needs to correct the call data ` +
+      `and run a retrain.`
+    )
   }
   function renderSourceBadge(src: DataSource | null | undefined) {
     if (!src) return

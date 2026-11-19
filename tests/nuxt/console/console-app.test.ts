@@ -158,8 +158,8 @@ function expectNothingLoading(wrapper: {
   expect(wrapper.text()).not.toContain('Checking data source')
   expect(wrapper.find('#sourceBadge').attributes('hidden')).toBeDefined()
 }
-function apiError(status: number, code: string, message: string) {
-  return Object.assign(new Error(message), { status, code, data: { code } })
+function apiError(status: number, code: string, message: string, extra: object = {}) {
+  return Object.assign(new Error(message), { status, code, data: { code, ...extra } })
 }
 
 describe('console', () => {
@@ -344,6 +344,47 @@ describe('console', () => {
     expect(wrapper.get('#error').text()).toBe('The forecast covers 2026-11-16 to 2029-01-24.')
     expect(wrapper.get('#pageSub').text()).toBe('No forecast for these dates')
     expectNothingLoading(wrapper)
+  })
+
+  // The read API refuses (503) to compute with a stored caller-patience estimate below
+  // its minimum. Changing a date cannot help, and the server's sentence ends with advice
+  // for API callers, so the page words it itself.
+  it('says what is wrong with the call data when the stored caller patience is implausible', async () => {
+    const server =
+      'The stored caller-patience estimate (2 s) is implausibly small: the waiting times in ' +
+      'the call data look wrong. An admin should fix them, reload the call data and run a ' +
+      'retrain. Until then, send patience_sec (10 to 3600 s) or use queue_model=erlang_c.'
+    mocks.apiFetch.mockRejectedValue(
+      apiError(503, 'implausible_patience', server, { patience_sec: 2 })
+    )
+    const wrapper = await mountSuspended(ConsoleApp)
+    await until(() => expect(wrapper.get('#error').attributes('hidden')).toBeUndefined())
+    const text = wrapper.get('#error').text()
+    expect(text).toBe(
+      'The forecast cannot be shown. Measured from the call data, callers give up after 2 s ' +
+        'on average, which is implausibly short: the waiting times in the call data look ' +
+        'wrong. An admin needs to correct the call data and run a retrain.'
+    )
+    expect(text).not.toContain('Change a date')
+    expect(text).not.toContain('patience_sec')
+    expect(text).not.toContain('erlang_c')
+    expect(wrapper.find('#noForecast').exists()).toBe(false)
+    expect(wrapper.findAll('td.h')).toHaveLength(0)
+    expect(wrapper.get('#pageSub').text()).toBe('The forecast did not load')
+    expectNothingLoading(wrapper)
+  })
+
+  it('still names the problem when the stored caller patience is not a number at all', async () => {
+    mocks.apiFetch.mockRejectedValue(
+      apiError(503, 'implausible_patience', 'whatever the server says', { patience_sec: null })
+    )
+    const wrapper = await mountSuspended(ConsoleApp)
+    await until(() => expect(wrapper.get('#error').attributes('hidden')).toBeUndefined())
+    expect(wrapper.get('#error').text()).toBe(
+      'The forecast cannot be shown. How long callers wait before they give up could not be ' +
+        'measured from the call data: its waiting times look wrong. An admin needs to ' +
+        'correct the call data and run a retrain.'
+    )
   })
 
   it('a failed reload keeps the known data source and says the dates did not load', async () => {
