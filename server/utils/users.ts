@@ -1,6 +1,10 @@
 // People who may sign in, and their roles (PLAN.md section 8.5). Sign-up is off, so this
 // is the only way in besides V4W_ADMIN_EMAILS. Each check runs in the same transaction
 // as its write, so two admins acting at once cannot remove the last admin between them.
+//
+// Those transactions are IMMEDIATE: they take the write lock before the first read. A
+// deferred one that reads and then writes gets SQLITE_BUSY at once (no busy wait) while
+// the Python retrain holds the lock; an immediate one waits out the busy timeout.
 import { asc, count, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import type { PersonRow } from '#shared/types/api'
@@ -57,6 +61,8 @@ export function parsePersonPatch(body: unknown): PersonPatch {
 
 type Tx = Parameters<Parameters<AppDb['transaction']>[0]>[0]
 
+const WRITE = { behavior: 'immediate' } as const
+
 function find(tx: Tx, id: string) {
   const row = tx.select().from(user).where(eq(user.id, id)).get()
   if (!row) throw apiError(404, 'not_found', 'No person with this id.')
@@ -84,7 +90,7 @@ export function addPerson(db: AppDb, input: NewPerson): PersonRow {
       .returning()
       .get()
     return toPersonRow(row)
-  })
+  }, WRITE)
 }
 
 // Rename and/or change the role. Nobody can demote themselves, and the last admin
@@ -112,7 +118,7 @@ export function updatePerson(
       .returning()
       .get()
     return toPersonRow(row ?? target)
-  })
+  }, WRITE)
 }
 
 // Removes the person; their sessions and accounts go with them (foreign-key cascade).
@@ -124,5 +130,5 @@ export function removePerson(db: AppDb, actorId: string, id: string): void {
       throw apiError(409, 'conflict', LAST_ADMIN)
     }
     tx.delete(user).where(eq(user.id, id)).run()
-  })
+  }, WRITE)
 }
