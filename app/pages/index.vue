@@ -1,10 +1,13 @@
 <script setup lang="ts">
-  // Replaced by the console package (WP4).
+  // The staffing console. Rendered in the browser only, as the old page was: "today",
+  // the date formats and the stored theme are browser facts, and client-only rendering
+  // avoids hydration mismatches.
   definePageMeta({ layout: 'console' })
+  useHead({ title: 'Vets4Warriors Staffing' })
 </script>
 
 <template>
-  <UContainer class="py-10">
-    <UAlert title="Staffing console" description="The console arrives with the console package." />
-  </UContainer>
+  <ClientOnly>
+    <ConsoleApp />
+  </ClientOnly>
 </template>
