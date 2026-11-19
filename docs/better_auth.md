@@ -1,518 +1,182 @@
-# Better Auth Setup and Usage
+# Sign-in, roles and who may call what
 
-This guide covers Better Auth implementation for email OTP authentication in Nuxt applications.
+The app uses [Better Auth](https://www.better-auth.com/) with its email one-time-code plugin,
+as the EPICS Nuxt template does, with three additions: sign-up is switched off, every person
+has a role, and the API checks that role. This guide says how it behaves, where the code is,
+and what to change with care.
 
-## Basic Setup
+## What a person sees
 
-### 1. Install Dependencies
+1. They open the app and land on `/auth`.
+2. They type their email address and press **Send code**. The page says "If that address has
+   access, a code is on its way." whether or not the address has access.
+3. A mail with the subject "Vets4Warriors staffing: your sign-in code" brings a six-digit
+   code. They type it and press **Sign in**.
+4. They stay signed in for 7 days; the session is renewed while it is used. **Sign out** is
+   on every page.
+
+There are no passwords and no social sign-in.
+
+## The rules
+
+- **Only people on the list can sign in.** Sign-up is off (`disableSignUp: true`). An address
+  that nobody added gets the answer `{ "success": true }`, no mail and no account. Without
+  this setting Better Auth would create an account for any address that asks for a code.
+- **A person is a `viewer` or an `admin`.** The role is the column `user.role`, default
+  `viewer`. It is declared with `input: false`, so a client cannot set its own role: a
+  request to do so is refused with "role is not allowed to be set".
+- **The first admins come from configuration.** Every address in `V4W_ADMIN_EMAILS` is
+  created as an admin, or promoted to one, each time the server starts
+  (`server/plugins/01.bootstrap-admins.ts`) and by `pnpm db:seed`. Nobody is ever demoted or
+  removed by it, so taking an address out of the variable does not lock that person out.
+- **Admins manage everyone else** on the admin page, tab **People**, or through
+  `/api/admin/users` (`server/utils/users.ts`):
+  - an address is stored trimmed and in lower case; adding one that exists answers 409;
+  - nobody can demote or remove themselves;
+  - the last admin cannot be demoted or removed ("There must be at least one admin.");
+  - removing a person ends their sessions at once.
+- **A code** has 6 digits, is valid for 5 minutes, and dies after 3 wrong tries.
+
+## Who may call which API path
+
+Every request to `/api/` passes one gate, `server/middleware/auth.ts`. The rules are a pure
+function in `server/utils/access.ts`, so each of them has a unit test
+(`tests/server/foundation/access.test.ts`). In order:
+
+1. **Public prefixes.** `/api/auth/**` (Better Auth's own routes) and `/api/health` answer
+   without a session. Paths outside `/api/` are pages and assets; the gate does not apply to
+   them.
+2. **A session.** Every other API path needs a valid session cookie. Without one: 401,
+   `data.code` `unauthorized`, "Sign in to use this."
+3. **The admin prefix.** A path under `/api/admin/` needs the role `admin`. Otherwise: 403,
+   `forbidden`, "Only an admin can do this."
+4. **The origin of writes.** A `POST`, `PUT`, `PATCH` or `DELETE` that carries an `Origin`
+   header must come from the origin of `BETTER_AUTH_URL`. Otherwise: 403, `forbidden`, "This
+   request came from another site and was refused." A browser always sends `Origin` on such
+   requests from another site, so a page elsewhere cannot use a signed-in person's cookie to
+   change anything. Requests without the header (curl, scripts) carry no such risk and pass.
+
+The path is normalised before it is checked: percent-escapes are decoded, doubled slashes are
+collapsed, and the admin prefix is matched without regard to case, so `/api/%61dmin/...` or
+`/api//admin/...` cannot slip past rule 3.
+
+Admin route files call `requireAdmin(event)` themselves as well (`server/utils/session.ts`).
+That gives the handler a typed user and keeps a route protected if it is ever moved out of
+`/api/admin/`. Other routes call `requireUser(event)`.
+
+**Pages** are guarded separately, by `app/middleware/auth.global.ts`: signed-out visitors go
+to `/auth`, signed-in ones away from it, and only admins reach `/admin`. That guard is for
+navigation. The API never relies on it.
+
+When you add a route:
+
+- put it under `server/api/admin/` if only admins may call it, and call `requireAdmin` in it;
+- otherwise call `requireUser`;
+- do not add to the public prefixes unless the route truly must answer strangers.
+
+## Where the code is
+
+| File                                | What it does                                                                |
+| ----------------------------------- | --------------------------------------------------------------------------- |
+| `server/utils/auth.ts`              | The Better Auth configuration: database, role field, the code plugin, mail. |
+| `server/api/auth/[...all].ts`       | Hands `/api/auth/**` to Better Auth.                                        |
+| `server/middleware/auth.ts`         | The gate described above; puts the user on `event.context.user`.            |
+| `server/utils/access.ts`            | The gate's rules, as a pure function.                                       |
+| `server/utils/session.ts`           | `requireUser`, `requireAdmin`.                                              |
+| `server/db/admins.ts`               | `V4W_ADMIN_EMAILS`: parse it, create or promote the admins.                 |
+| `server/utils/users.ts`             | The people routes' logic.                                                   |
+| `app/utils/auth-client.ts`          | The browser's client; knows that a user has a `role`.                       |
+| `app/composables/useSessionUser.ts` | `{ user, isAdmin, signOut }` for page code.                                 |
+| `app/middleware/auth.global.ts`     | The page guard.                                                             |
+| `app/pages/auth.vue`                | The sign-in page.                                                           |
+| `server/db/schema.ts`               | The tables `user`, `session`, `account`, `verification`.                    |
+
+In server code:
+
+```ts
+import { defineEventHandler } from 'h3'
+import { requireUser } from '../utils/session'
+
+export default defineEventHandler((event) => {
+  const user = requireUser(event) // 401 when nobody is signed in
+  // user.id, user.email, user.name, user.role ('viewer' | 'admin')
+  return { hello: user.name }
+})
+```
+
+`requireAdmin(event)` works the same way and answers 403 to a viewer.
+
+In page code:
+
+```ts
+const { user, isAdmin, signOut } = await useSessionUser()
+```
+
+## Mail, and signing in without it
+
+How a code reaches a person is set by `EMAIL_TRANSPORT`.
+
+- `smtp` (the default) sends it through the mail server named by `EMAIL_HOST`,
+  `EMAIL_PORT`, `EMAIL_SECURE`, `EMAIL_USER`, `EMAIL_PASS`, from the address `EMAIL_FROM`.
+  Any SMTP service works. Only a local test mail server has been used so far; real delivery
+  is on the list in the README under "Before you rely on it".
+- `console` prints the code in the server log instead:
+
+  ```
+  [auth] sign-in code for admin@example.org: 301190
+  ```
+
+  It is for local work and is accepted by `pnpm dev` only. A production build refuses to
+  start with it, so a deployed server can never leak codes into its log.
+
+Scripts and tests on a development server can sign in without reading a mail or a log:
 
 ```bash
-npm install better-auth @better-auth/drizzle-adapter better-sqlite3 nodemailer
-npm install -D drizzle-kit drizzle-orm @types/better-sqlite3 @types/nodemailer
+node scripts/lib/dev-signin.mjs http://localhost:3000 dev.db admin@example.org
 ```
 
-### 2. Environment Variables
-
-```bash
-# Generate a Better Auth Secret
-BETTER_AUTH_SECRET=your-secret-key
-BETTER_AUTH_URL=http://localhost:3000
-```
-
-### 3. Database Configuration
-
-Create `server/db/schema.ts` with Better Auth models using Drizzle:
-
-```typescript
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core'
-import { relations } from 'drizzle-orm'
-
-export const user = sqliteTable('user', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  name: text('name').notNull(),
-  email: text('email').notNull().unique(),
-  emailVerified: integer('emailVerified', { mode: 'boolean' }).notNull().default(false),
-  image: text('image'),
-  createdAt: integer('createdAt', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
-  updatedAt: integer('updatedAt', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
-})
-
-export const session = sqliteTable('session', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  expiresAt: integer('expiresAt', { mode: 'timestamp' }).notNull(),
-  token: text('token').notNull().unique(),
-  createdAt: integer('createdAt', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
-  updatedAt: integer('updatedAt', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
-  ipAddress: text('ipAddress'),
-  userAgent: text('userAgent'),
-  userId: text('userId').notNull().references(() => user.id, { onDelete: 'cascade' }),
-}, (table) => [
-  index('session_userId_idx').on(table.userId),
-])
-
-export const account = sqliteTable('account', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  accountId: text('accountId').notNull(),
-  providerId: text('providerId').notNull(),
-  userId: text('userId').notNull().references(() => user.id, { onDelete: 'cascade' }),
-  accessToken: text('accessToken'),
-  refreshToken: text('refreshToken'),
-  idToken: text('idToken'),
-  accessTokenExpiresAt: integer('accessTokenExpiresAt', { mode: 'timestamp' }),
-  refreshTokenExpiresAt: integer('refreshTokenExpiresAt', { mode: 'timestamp' }),
-  scope: text('scope'),
-  password: text('password'),
-  createdAt: integer('createdAt', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
-  updatedAt: integer('updatedAt', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
-}, (table) => [
-  index('account_userId_idx').on(table.userId),
-])
-
-export const verification = sqliteTable('verification', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
-  identifier: text('identifier').notNull(),
-  value: text('value').notNull(),
-  expiresAt: integer('expiresAt', { mode: 'timestamp' }).notNull(),
-  createdAt: integer('createdAt', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
-  updatedAt: integer('updatedAt', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
-}, (table) => [
-  index('verification_identifier_idx').on(table.identifier),
-])
-
-export const userRelations = relations(user, ({ many }) => ({
-  sessions: many(session),
-  accounts: many(account),
-}))
-
-export const sessionRelations = relations(session, ({ one }) => ({
-  user: one(user, { fields: [session.userId], references: [user.id] }),
-}))
-
-export const accountRelations = relations(account, ({ one }) => ({
-  user: one(user, { fields: [account.userId], references: [user.id] }),
-}))
-```
-
-Configure Drizzle Kit in `drizzle.config.ts`:
-
-```typescript
-import { defineConfig } from 'drizzle-kit'
-
-export default defineConfig({
-  schema: './server/db/schema.ts',
-  out: './drizzle',
-  dialect: 'sqlite',
-  dbCredentials: {
-    url: process.env.DATABASE_URL!,
-  },
-})
-```
-
-### 4. Server Auth Configuration
-
-Create `server/utils/auth.ts`:
-
-```typescript
-import { betterAuth } from 'better-auth'
-import { drizzleAdapter } from '@better-auth/drizzle-adapter'
-import { db } from './db'
-
-export const auth = betterAuth({
-  database: drizzleAdapter(db, {
-    provider: 'sqlite',
-  }),
-})
-```
-
-### 5. API Route Handler
-
-Create `server/api/auth/[...all].ts`:
-
-```typescript
-import { auth } from '~~/server/utils/auth'
-
-export default auth.handler
-```
-
-### 6. Client Auth Configuration
-
-Create `app/utils/auth-client.ts`:
-
-```typescript
-import { createAuthClient } from 'better-auth/vue'
-
-export const authClient = createAuthClient()
-```
-
-## Email OTP Setup
-
-### 1. Add Email OTP Plugin
-
-Update `server/utils/auth.ts`:
-
-```typescript
-import { betterAuth } from 'better-auth'
-import { drizzleAdapter } from '@better-auth/drizzle-adapter'
-import { db } from './db'
-import { emailOTP } from 'better-auth/plugins/email-otp'
-import nodemailer from 'nodemailer'
-
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-})
-
-export const auth = betterAuth({
-  database: drizzleAdapter(db, {
-    provider: 'sqlite',
-  }),
-  plugins: [
-    emailOTP({
-      async sendVerificationOTP({ email, otp, type }) {
-        await transporter.sendMail({
-          from: process.env.EMAIL_USER,
-          to: email,
-          subject: 'Your OTP Code',
-          html: `<p>Your OTP code is: <strong>${otp}</strong></p>`,
-        })
-      },
-    }),
-  ],
-})
-```
-
-### 2. Update Client Configuration
-
-Update `app/utils/auth-client.ts`:
-
-```typescript
-import { createAuthClient } from 'better-auth/vue'
-import { emailOTPClient } from 'better-auth/client/plugins'
-
-export const authClient = createAuthClient({
-  plugins: [emailOTPClient()],
-})
-```
-
-### 3. Environment Variables
-
-Update `.env` file:
-
-```bash
-# The credentials of the OTP SENDING account
-EMAIL_USER=your-email@gmail.com
-EMAIL_PASS=your-gmail-app-password
-```
-
-## Authentication Flow Implementation
-
-### Email OTP Authentication Pattern
-
-Send OTP to user:
-
-```typescript
-const { data, error } = await authClient.emailOtp.sendVerificationOtp({
-  email: 'user@example.com',
-  type: 'sign-in',
-})
-```
-
-Verify OTP and sign in:
-
-```typescript
-const { data, error } = await authClient.signIn.emailOtp({
-  email: 'user@example.com',
-  otp: '123456',
-})
-```
-
-### Server-side Session Validation
-
-```typescript
-const session = await auth.api.getSession({
-  headers: event.headers,
-})
-
-if (!session) {
-  throw createError({ statusCode: 401, statusMessage: 'Unauthorized' })
-}
-
-// Use session.user.id for database operations
-```
-
-### Client-side Session Management
-
-```typescript
-const { data: session } = await authClient.useSession(useFetch)
-
-if (session.value) {
-  // User is authenticated
-  console.log(session.value.user.id)
-}
-```
-
-## Route Protection
-
-### Global Middleware
-
-Create `app/middleware/auth.global.ts`:
-
-```typescript
-import { authClient } from '../utils/auth-client'
-
-export default defineNuxtRouteMiddleware(async (to) => {
-  const { data: session } = await authClient.useSession(useFetch)
-
-  if (session.value) {
-    if (to.path === '/auth') {
-      return navigateTo('/')
-    }
-  } else {
-    if (to.path !== '/auth') {
-      return navigateTo('/auth')
-    }
-  }
-})
-```
-
-### Sign Out Implementation
-
-```typescript
-await authClient.signOut()
-await navigateTo('/auth')
-```
-
-## Advanced Usage Patterns
-
-### Form Validation with Zod
-
-Create dynamic schemas for multi-step authentication:
-
-```typescript
-import { z } from 'zod'
-
-const schema = computed(() => {
-  if (!isEmailSent.value) {
-    return z.object({
-      email: z.string().email('Invalid email'),
-    })
-  } else {
-    return z.object({
-      email: z.string().email('Invalid email'),
-      otp: z.array(z.string()).length(6, 'Must be 6 digits'),
-    })
-  }
-})
-```
-
-Handle form submission with typed validation:
-
-```typescript
-async function handleSubmit(event: FormSubmitEvent<any>) {
-  if (!isEmailSent.value) {
-    const { data, error } = await authClient.emailOtp.sendVerificationOtp({
-      email: state.email,
-      type: 'sign-in',
-    })
-
-    if (error) {
-      toast.add({ title: 'Error', description: error.message, color: 'error' })
-    } else {
-      isEmailSent.value = true
-      toast.add({ title: 'Success', description: 'OTP sent to your email', color: 'success' })
-    }
-  } else {
-    const { data, error } = await authClient.signIn.emailOtp({
-      email: state.email,
-      otp: state.otp.join(''),
-    })
-
-    if (error) {
-      toast.add({ title: 'Error', description: error.message, color: 'error' })
-    } else {
-      await navigateTo('/', { external: true })
-    }
-  }
-}
-```
-
-### 6-Digit OTP Input Component
-
-Create reactive OTP state and input:
-
-```typescript
-const state = reactive({
-  email: '',
-  otp: [] as string[],
-})
-```
-
-Render individual digit inputs:
-
-```vue
-<template>
-  <div class="flex gap-2" v-if="isEmailSent">
-    <UInput
-      v-for="(digit, index) in 6"
-      :key="index"
-      v-model="state.otp[index]"
-      type="text"
-      maxlength="1"
-      class="w-12 text-center"
-      @input="handleOtpInput(index, $event)"
-    />
-  </div>
-</template>
-```
-
-Handle OTP input navigation:
-
-```typescript
-function handleOtpInput(index: number, event: Event) {
-  const input = event.target as HTMLInputElement
-  const value = input.value
-
-  // Auto-focus next input
-  if (value && index < 5) {
-    const nextInput = input.parentElement?.children[index + 1] as HTMLInputElement
-    nextInput?.focus()
-  }
-}
-```
-
-### User Profile Management Integration
-
-Combine authentication with user features:
-
-```typescript
-// Protected route requiring authentication
-export default defineEventHandler(async (event) => {
-  const session = await auth.api.getSession({
-    headers: event.headers,
-  })
-
-  if (!session) {
-    throw createError({ statusCode: 401, statusMessage: 'Unauthorized' })
-  }
-
-  // Use authenticated user ID for user-specific operations
-  const userProfile = await db.query.user.findFirst({
-    where: (user, { eq }) => eq(user.id, session.user.id),
-  })
-
-  return userProfile
-})
-```
-
-File upload with session validation:
-
-```typescript
-export default defineEventHandler(async (event) => {
-  const session = await auth.api.getSession({
-    headers: event.headers,
-  })
-
-  if (!session) {
-    throw createError({ statusCode: 401, statusMessage: 'Unauthorized' })
-  }
-
-  // Process file upload for authenticated user
-  const form = await readMultipartFormData(event)
-  const file = form?.find((i) => i.name === 'file')
-
-  // Store file in user-specific directory
-  const userDir = path.join('uploads', session.user.id)
-  // ... file processing logic
-})
-```
-
-### Toast Notifications for Auth Feedback
-
-Set up toast notifications:
-
-```typescript
-const toast = useToast()
-```
-
-Provide feedback during authentication flow:
-
-```typescript
-// Success notification
-toast.add({
-  title: 'Success',
-  description: 'OTP sent to your email',
-  color: 'success',
-})
-
-// Error notification
-toast.add({
-  title: 'Error',
-  description: error.message,
-  color: 'error',
-})
-```
-
-### Public API with Optional Authentication
-
-Create APIs that work for both authenticated and unauthenticated users:
-
-```typescript
-export default defineEventHandler(async (event) => {
-  // Optional session check
-  const session = await auth.api.getSession({
-    headers: event.headers,
-  })
-
-  if (session) {
-    // Authenticated user gets full profile
-    return await db.query.user.findFirst({
-      where: (user, { eq }) => eq(user.id, session.user.id),
-      with: { sessions: true, accounts: true },
-    })
-  } else {
-    // Public user gets limited data
-    return await db.query.user.findMany({
-      columns: {
-        id: true,
-        name: true,
-        email: true,
-        emailVerified: true,
-      },
-    })
-  }
-})
-```
-
-Conditional data access based on authentication:
-
-```typescript
-export default defineEventHandler(async (event) => {
-  const session = await auth.api.getSession({
-    headers: event.headers,
-  })
-
-  const userId = getRouterParam(event, 'id')
-
-  // Users can only access their own full profile
-  if (session?.user.id !== userId) {
-    return {
-      id: userId,
-      name: 'Restricted User',
-      // Limited public information
-    }
-  }
-
-  // Full profile for own user
-  return await db.query.user.findFirst({
-    where: (user, { eq }) => eq(user.id, userId),
-    with: {
-      sessions: true,
-      accounts: true,
-      // Add other sensitive fields
-    },
-  })
-})
-```
+prints the value for a `Cookie` header. It asks for a code and reads it from the
+`verification` table of the database file you name, which works because Better Auth stores
+codes there as plain text. Two things follow from that:
+
+- the helper needs read access to the server's database file, so it is a development tool;
+- **anyone who can read the database file can sign in as anyone.** The file holds the codes
+  of the last five minutes and the tokens of all open sessions. Protect it, and its
+  backups, like a password file.
+
+## The rate limit
+
+Better Auth limits how often one client may ask for a code and how often it may try one: 3
+requests per 60 seconds for each of the two, per client address. Put exactly: a request is
+refused (HTTP 429, "Too many requests. Please try again later.") when the three before it
+each came less than 60 seconds after the one before; 60 seconds without an accepted request
+start the count again.
+
+- It is on in every production build and off under `pnpm dev`
+  (`rateLimit` in `server/utils/auth.ts`).
+- It tells clients apart by the `X-Forwarded-For` header, and trusts that header only when
+  it holds exactly one address. Everyone whose address cannot be read that way shares one
+  allowance.
+- There is no separate limit per email address.
+
+Whether this protects the app depends on the proxy in front of it. Behind the wrong
+arrangement all visitors share one allowance, or a client can dodge the limit altogether.
+**Read [deployment.md](deployment.md#the-sign-in-rate-limit-and-the-client-address) before
+going live**: it has the four cases, what to configure in `server/utils/auth.ts`
+(`advanced.ipAddress`), and how to check the result.
+
+## Changing things
+
+- **The session length** is Better Auth's default (7 days, renewed after a day of use). To
+  change it, add `session: { expiresIn: <seconds> }` to the configuration.
+- **The code's length, lifetime and number of tries** are options of the `emailOTP` plugin
+  (`otpLength`, `expiresIn`, `allowedAttempts`).
+- **`BETTER_AUTH_URL`** must be the address in the browser's address bar. From any other
+  address a person can still sign in and read, but the gate's rule 4 refuses every change,
+  and Better Auth refuses to sign them out ("Invalid origin"). Locally that means
+  `http://localhost:<port>`, not `http://127.0.0.1:<port>`.
+- **`BETTER_AUTH_SECRET`** signs the session cookies. Changing it signs everyone out.
+- **Do not switch sign-up back on** without thinking about who may then see the forecast:
+  with it, anyone who can receive mail could make themselves a viewer.
+
+Better Auth's own documentation: <https://www.better-auth.com/docs>.

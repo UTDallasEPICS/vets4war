@@ -82,8 +82,8 @@ pnpm forecast:setup   # Python 3.12 environment for retraining, in forecast/.ven
 pnpm dev              # http://localhost:3000
 ```
 
-Open `http://localhost:3000` (use `localhost`, not `127.0.0.1`: the address must match
-`BETTER_AUTH_URL`). You land on the sign-in page. Type `admin@example.org` and press
+Open `http://localhost:3000` (use `localhost`, not `127.0.0.1`: the address must be the one
+in `BETTER_AUTH_URL`, or every change you try is refused). You land on the sign-in page. Type `admin@example.org` and press
 **Send code**. The terminal that runs `pnpm dev` prints a line like
 
 ```
@@ -377,8 +377,9 @@ build does not (give it real environment variables, or use `pnpm start`).
 | `V4W_DEV_API_PROXY`         | not set                | `pnpm dev` only. Leave it unset.                           |
 
 - `DATABASE_URL`: a relative path starts at the folder the server starts in.
-- `BETTER_AUTH_URL`: sign-in and every change are refused when the browser's address is
-  another one, so it must be the public address, with `https` in a deployment.
+- `BETTER_AUTH_URL`: when the browser's address is another one, people can still sign in
+  and read, but every change and signing out are refused with 403. So it must be the public
+  address, with `https` in a deployment.
 - `EMAIL_TRANSPORT=console` is accepted by `pnpm dev` only; a production build refuses to
   start with it.
 - `V4W_ADMIN_EMAILS`: comma-separated; also what `pnpm db:seed` reads. It never demotes or
@@ -388,7 +389,8 @@ build does not (give it real environment variables, or use `pnpm start`).
 - `V4W_PYTHON`: by default `forecast/.venv/bin/python` when that file exists, else `python3`
   from `PATH`.
 - `V4W_RETRAIN_CRON`: a cron line in the server's local time (UTC in the image). It is read
-  when the app is built (`pnpm build`), not when it starts.
+  when the app is built (`pnpm build`), not when it starts; for the image it is a build
+  argument.
 - `V4W_GATE_WORKERS`: by default 4, or the number of CPUs when there are fewer.
   `V4W_HOLIDAYS_THROUGH_YEAR`: by default the year after the one the forecast ends in.
   These two and `V4W_HORIZON_DAYS` are read by the Python script. The server hands its own
