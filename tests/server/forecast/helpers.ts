@@ -186,13 +186,25 @@ export function seedForecast(db: AppDb, options: SeedOptions = {}) {
   return { run, model }
 }
 
-// The H3Error a call throws (fails the test when it does not throw one).
-export function caught(fn: () => unknown): H3Error {
+// The data every API error carries (PLAN.md section 8.1).
+export type ErrorData = { code: string; [extra: string]: unknown }
+
+export interface CaughtError {
+  statusCode: number
+  statusMessage: string
+  message: string
+  data: ErrorData
+}
+
+// The API error a call throws (fails the test when it throws anything else, or nothing).
+export function caught(fn: () => unknown): CaughtError {
   try {
     fn()
   } catch (error) {
-    if (error instanceof H3Error) return error
-    throw error
+    if (!(error instanceof H3Error)) throw error
+    const { statusCode, statusMessage = '', message, data } = error as H3Error<ErrorData>
+    if (!data) throw new Error(`the error has no data: ${message}`, { cause: error })
+    return { statusCode, statusMessage, message, data }
   }
   throw new Error('expected an H3Error, nothing was thrown')
 }
