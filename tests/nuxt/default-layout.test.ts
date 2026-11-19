@@ -103,3 +103,21 @@ describe('theme toggle', () => {
     colorMode.preference = 'light'
   })
 })
+
+describe('header on a phone', () => {
+  // At 390 px the one-row header needed 409 px and the page scrolled sideways (review
+  // finding W0-3). happy-dom has no layout, so this pins the two things that keep it
+  // inside 360 px: the row may wrap, and below `sm` Sign out is an icon button whose
+  // name stays readable to assistive technology. The width itself is measured in a
+  // production build with a real browser.
+  it('lets the header wrap and shortens Sign out below sm', async () => {
+    session.current = admin
+    const wrapper = await mountSuspended(DefaultLayout)
+    const row = wrapper.get('header > div')
+    expect(row.classes()).toContain('flex-wrap')
+    expect(row.classes()).not.toContain('h-16')
+    const signOut = wrapper.get('button[aria-label="Sign out"]')
+    expect(signOut.get('span.hidden').text()).toBe('Sign out')
+    expect(signOut.get('span.hidden').classes()).toContain('sm:inline')
+  })
+})
