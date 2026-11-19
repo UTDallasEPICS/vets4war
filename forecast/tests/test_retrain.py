@@ -375,6 +375,21 @@ def test_an_unexpected_error_exits_1_and_is_recorded_without_its_text(db, monkey
     assert "2026-05-04T08:15:00" not in out.err + out.out
 
 
+def test_an_error_before_the_claim_is_recorded_on_the_queued_row(db, monkeypatch, capsys):
+    """Reading the calls fails (a malformed stored value): the run never claimed
+    its row, and the row still says what happened."""
+    def broken(*args, **kwargs):
+        raise ValueError("unconverted data remains")
+
+    monkeypatch.setattr(store, "read_snapshot", broken)
+    run_id = _node_run(db)
+
+    assert _in_process(db, "--run-id", str(run_id)) == 1
+    run = _rows(db, "SELECT status, message, finished_at FROM forecast_runs WHERE id = ?", run_id)[0]
+    assert run["status"] == "failed" and run["finished_at"] > 0
+    assert run["message"].startswith("Unexpected error: ValueError (its text is not shown")
+
+
 def test_a_database_error_keeps_its_text(db, monkeypatch):
     def locked(*args, **kwargs):
         raise store.DatabaseError("database is locked")

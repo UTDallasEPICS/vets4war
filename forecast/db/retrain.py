@@ -388,13 +388,14 @@ def _print_traceback(error: Exception) -> None:
     print(_describe(error), file=sys.stderr, flush=True)
 
 
-def _record_failure(conn, run_id: int | None, message: str) -> None:
+def _record_failure(conn, run_id: int | None, message: str, unclaimed: bool = False) -> None:
     """Best effort: the run row is the report, but a broken database must not
-    hide the original error."""
+    hide the original error. unclaimed: the web app's row, still queued because
+    the run failed before it could claim it."""
     if conn is None or run_id is None:
         return
     try:
-        store.finish_run(conn, run_id, status="failed", message=message)
+        store.finish_run(conn, run_id, status="failed", message=message, unclaimed=unclaimed)
     except Exception as error:  # noqa: BLE001  (already failing; report and go on)
         print(f"could not record the failure on run {run_id}: {type(error).__name__}: {error}", file=sys.stderr)
 
@@ -459,7 +460,10 @@ def _main(argv: list[str] | None) -> int:
         raise
     except Exception as error:  # noqa: BLE001  (reported on the run row, then exit 1)
         _print_traceback(error)
-        _record_failure(conn, run_id, f"Unexpected error: {_describe(error)}")
+        if run_id is not None:
+            _record_failure(conn, run_id, f"Unexpected error: {_describe(error)}")
+        else:  # failed before the claim (reading the calls, say): the web app's row is still queued
+            _record_failure(conn, settings.run_id, f"Unexpected error: {_describe(error)}", unclaimed=True)
         _print_result(run_id or settings.run_id, "failed", None, None)
         return EXIT_UNEXPECTED
     finally:

@@ -272,14 +272,14 @@ def _not_open(conn: sqlite3.Connection, run_id: int, needed: str) -> RunNotOpen:
     return RunNotOpen(f"run {run_id} is {status}, not {needed}")
 
 
-def _update_run(conn: sqlite3.Connection, run_id: int, columns: dict) -> None:
-    """Only a running row: once the web app has closed a run (a restart marks it
-    interrupted), a late write from its process must change nothing."""
+def _update_run(conn: sqlite3.Connection, run_id: int, columns: dict, current: str = "running") -> None:
+    """Only a row in status `current` (running): once the web app has closed a run
+    (a restart marks it interrupted), a late write from its process must change nothing."""
     clause, values = _set_clause(columns)
-    cursor = conn.execute(f"UPDATE forecast_runs SET {clause} WHERE id = ? AND status = 'running'",
-                          [*values, run_id])
+    cursor = conn.execute(f"UPDATE forecast_runs SET {clause} WHERE id = ? AND status = ?",
+                          [*values, run_id, current])
     if cursor.rowcount != 1:
-        raise _not_open(conn, run_id, "running")
+        raise _not_open(conn, run_id, current)
 
 
 def start_run(conn: sqlite3.Connection, run_id: int | None, *, mode: str, pid: int, calls_revision: int,
@@ -309,11 +309,14 @@ def start_run(conn: sqlite3.Connection, run_id: int | None, *, mode: str, pid: i
         return run_id
 
 
-def finish_run(conn: sqlite3.Connection, run_id: int, *, status: str, message: str, **columns) -> None:
+def finish_run(conn: sqlite3.Connection, run_id: int, *, status: str, message: str, unclaimed: bool = False,
+               **columns) -> None:
     """Close a run that writes no forecast: status, message, finished_at now,
-    plus any other run column given."""
+    plus any other run column given. unclaimed: the run failed before it could
+    claim the row Node created for it, so the row is still 'queued'."""
     with _transaction(conn, write=True):
-        _update_run(conn, run_id, {**columns, "status": status, "message": message, "finished_at": now_seconds()})
+        _update_run(conn, run_id, {**columns, "status": status, "message": message, "finished_at": now_seconds()},
+                    current="queued" if unclaimed else "running")
 
 
 def _prune_artifacts(conn: sqlite3.Connection, serving_id: int) -> None:
