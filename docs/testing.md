@@ -54,13 +54,14 @@ pnpm test
 ends like this:
 
 ```
- Test Files  43 passed (43)
-      Tests  619 passed (619)
+ Test Files  46 passed (46)
+      Tests  620 passed | 7 skipped (627)
 ```
 
-The counts grow as tests are added, and a few tests skip themselves when the Python
-environment is missing. What matters: it says _passed_, nothing says _failed_, and
-`echo $?` right after prints `0`.
+The counts grow as tests are added. The skipped ones start the real retrain script and
+skip themselves until the Python environment exists (`pnpm forecast:setup`); with it they
+run too. What matters: it says _passed_, nothing says _failed_, and `echo $?` right after
+prints `0`.
 
 ## Everyday commands
 
@@ -157,12 +158,13 @@ When you ask for help, paste the exact command, the full output including the su
 
 They run in plain Node (`environment: 'node'` in `vitest.config.ts`).
 
-- `tests/unit/shared/`: the Erlang and staffing arithmetic, dates, formatting.
+- `tests/unit/shared/`: the Erlang and staffing arithmetic, dates, formatting, and that the
+  bounds of the staffing controls are the same in TypeScript and in the Python script.
 - `tests/unit/console/`: every number the staffing page derives, its export, its status
   note, and that its stylesheet stays scoped to the page.
 - `tests/unit/shell/`: every icon the pages name is in the installed icon sets.
 - `tests/server/foundation/`: the access rules, the environment check, the error shape,
-  the schema, the first admins.
+  the schema, the first admins, the sign-in rate limit.
 - `tests/server/forecast/`: parameters, the arithmetic of the forecast answers, the routes'
   services, and a frozen set of answers of the old API (below).
 - `tests/server/ingest/`: the workbook reader, hostile and damaged files, the per-day plan,
