@@ -370,6 +370,7 @@ describe('console', () => {
       ['#slNum', '100', 'Calls answered in time must be a number from 1 to 99%.'],
       ['#slNum', '99.6', 'Calls answered in time must be a number from 1 to 99%.'],
       ['#slNum', '0', 'Calls answered in time must be a number from 1 to 99%.'],
+      ['#tsec', '301', 'Answer time must be a number from 0 to 300 s.'],
     ] as const) {
       setInput(wrapper.get(field).element, value)
       await until(() => expect(wrapper.get('#controlError').attributes('hidden')).toBeUndefined())
@@ -377,19 +378,30 @@ describe('console', () => {
         `${words} The numbers below are for the last valid setting.`
       )
       expect(cellText()).toEqual(atDefault)
-      // leaving the field puts the slider's value back, as on the old page
-      wrapper.get(field).element.dispatchEvent(new Event('change', { bubbles: true }))
-      await until(() => expect(wrapper.get('#controlError').attributes('hidden')).toBeDefined())
+      if (field !== '#tsec') {
+        // leaving the field puts the slider's value back, as on the old page
+        wrapper.get(field).element.dispatchEvent(new Event('change', { bubbles: true }))
+        await until(() => expect(wrapper.get('#controlError').attributes('hidden')).toBeDefined())
+      }
       // back to the default for the next case
-      setInput(wrapper.get(field).element, field === '#effNum' ? '65.6' : '80')
+      setInput(
+        wrapper.get(field).element,
+        field === '#effNum' ? '65.6' : field === '#slNum' ? '80' : '30'
+      )
       wrapper.get(field).element.dispatchEvent(new Event('change', { bubbles: true }))
       await until(() => expect(cellText()).toEqual(atDefault))
+      await until(() => expect(wrapper.get('#controlError').attributes('hidden')).toBeDefined())
     }
     // a date change while a value is refused still loads, with the last valid setting
     setInput(wrapper.get('#slNum').element, '100')
+    setInput(wrapper.get('#tsec').element, '500')
     setInput(wrapper.get('#end').element, '2027-01-31', 'change')
     await until(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(2))
-    expect(mocks.apiFetch.mock.calls[1]![1].query).toMatchObject({ target_pct: '0.80' })
+    expect(mocks.apiFetch.mock.calls[1]![1].query).toMatchObject({
+      target_pct: '0.80',
+      target_sec: '30',
+    })
+    setInput(wrapper.get('#tsec').element, '30')
     expect(mocks.apiFetch.mock.calls[1]![1].query.target_pct).not.toBe('1.00')
 
     // a value both accept is used as typed (the old page did the same)

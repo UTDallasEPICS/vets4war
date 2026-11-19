@@ -107,8 +107,10 @@ export const CURRENT_ROSTER: Roster = { Overnight: 4, Day: 4, Evening: 6 }
 // Staff-per-shift sliders go to this, above the shift caps, so what-ifs are not cut off.
 export const ROSTER_SLIDER_MAX = 10
 const TSEC_MAX = 3600
-// The read API's upper bound on target_pct.
+// The read API's bounds (server/utils/forecast/params.ts): target_pct at most 0.999,
+// target_sec at most 300.
 const MAX_TARGET_PCT = 0.999
+const MAX_TARGET_SEC = 300
 const TSEC_DEFAULT = 30
 
 export interface Cache {
@@ -421,10 +423,11 @@ export function createConsoleState() {
       patienceSec: patienceSec(),
     }
   }
-  // What the efficiency and service-level fields hold is used as typed (as on the old
-  // page) while the arithmetic and the read API accept it. A value they refuse (the old
-  // page threw and silently stopped updating) leaves the page on the last valid setting,
-  // with a message, until the field is corrected or snaps back when it loses focus.
+  // What the efficiency, service-level and answer-time fields hold is used as typed (as
+  // on the old page) while the arithmetic and the read API accept it. A value they
+  // refuse (the old page threw and silently stopped updating, or sent a value the API
+  // now refuses) leaves the page on the last valid setting, with a message, until the
+  // field is corrected or snaps back when it loses focus.
   let lastValid: Controls | null = null
   function controlProblem(c: Controls): string | null {
     if (!(c.efficiency >= 0 && c.efficiency <= 1)) {
@@ -436,6 +439,9 @@ export function createConsoleState() {
     if (!(c.targetPct >= 0.01 && c.targetPct <= 0.99 && sent <= MAX_TARGET_PCT)) {
       return 'Calls answered in time must be a number from 1 to 99%.'
     }
+    if (c.targetSec > MAX_TARGET_SEC) {
+      return `Answer time must be a number from 0 to ${MAX_TARGET_SEC} s.`
+    }
     return null
   }
   function controls(): Controls {
@@ -444,7 +450,7 @@ export function createConsoleState() {
       lastValid = c
       return c
     }
-    return { ...lastValid, targetSec: c.targetSec, patienceSec: c.patienceSec }
+    return { ...lastValid, patienceSec: c.patienceSec }
   }
   function checkControls() {
     const problem = controlProblem(rawControls())
