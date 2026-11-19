@@ -95,8 +95,8 @@
           </template>
           <template v-else>
             Retrain (run {{ followed.id }}): <strong>{{ WORDS[followed.status] }}</strong
-            >.
-            <span v-if="followed.message"> {{ followed.message }}</span>{{ ' ' }}
+            >. <span v-if="followed.message"> {{ followed.message }}</span
+            >{{ ' ' }}
           </template>
           <NuxtLink to="/admin?tab=runs" class="underline">Follow it under Forecast runs</NuxtLink>.
         </li>
