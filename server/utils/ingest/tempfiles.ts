@@ -2,6 +2,7 @@
 // OS temp directory, named after the process that made it, so a process cleaning up at
 // start-up removes only what a stopped process left (review W3-8: another server on the
 // same host, or a dev server next to a preview, may be reading a file right now).
+import { readFileSync } from 'node:fs'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,13 +13,24 @@ export function makeUploadFolder(dir: string = tmpdir()): Promise<string> {
   return mkdtemp(join(dir, `${UPLOAD_FOLDER_PREFIX}${process.pid}-`))
 }
 
-function isAlive(pid: number): boolean {
+// A process that has exited but was not reaped yet (a zombie: its parent, often PID 1
+// in a container, has not collected it) still answers kill(pid, 0); it reads nothing.
+function isZombie(pid: number): boolean {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) === 'Z'
+  } catch {
+    return false
+  }
+}
+
+export function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
-    return true
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM'
   }
+  return !isZombie(pid)
 }
 
 // At start-up nothing in this process is reading yet: a folder of this pid (a reused pid
