@@ -340,6 +340,51 @@ describe('console', () => {
     expect(wrapper.get('#sourceBadge').text()).toContain('Synthetic data')
   })
 
+  it('an efficiency or service level the arithmetic refuses keeps the last valid numbers and says why', async () => {
+    const data = fixture()
+    mocks.apiFetch.mockResolvedValue(data)
+    const wrapper = await mountSuspended(ConsoleApp)
+    await until(() => expect(wrapper.findAll('td.h[data-k]')).toHaveLength(48))
+    const cellText = () => wrapper.findAll('td.h[data-k] .n').map((n) => n.text())
+    const atDefault = cellText()
+    expect(wrapper.get('#controlError').attributes('hidden')).toBeDefined()
+
+    for (const [field, value, words] of [
+      ['#effNum', '150', 'Staff efficiency must be a number from 0 to 100%.'],
+      ['#effNum', '-5', 'Staff efficiency must be a number from 0 to 100%.'],
+      ['#slNum', '100', 'Calls answered in time must be a number from 1 to 99%.'],
+      ['#slNum', '99.6', 'Calls answered in time must be a number from 1 to 99%.'],
+      ['#slNum', '0', 'Calls answered in time must be a number from 1 to 99%.'],
+    ] as const) {
+      setInput(wrapper.get(field).element, value)
+      await until(() => expect(wrapper.get('#controlError').attributes('hidden')).toBeUndefined())
+      expect(wrapper.get('#controlError').text()).toBe(
+        `${words} The numbers below are for the last valid setting.`
+      )
+      expect(cellText()).toEqual(atDefault)
+      // leaving the field puts the slider's value back, as on the old page
+      wrapper.get(field).element.dispatchEvent(new Event('change', { bubbles: true }))
+      await until(() => expect(wrapper.get('#controlError').attributes('hidden')).toBeDefined())
+      // back to the default for the next case
+      setInput(wrapper.get(field).element, field === '#effNum' ? '65.6' : '80')
+      wrapper.get(field).element.dispatchEvent(new Event('change', { bubbles: true }))
+      await until(() => expect(cellText()).toEqual(atDefault))
+    }
+    // a date change while a value is refused still loads, with the last valid setting
+    setInput(wrapper.get('#slNum').element, '100')
+    setInput(wrapper.get('#end').element, '2027-01-31', 'change')
+    await until(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(2))
+    expect(mocks.apiFetch.mock.calls[1]![1].query).toMatchObject({ target_pct: '0.80' })
+    expect(mocks.apiFetch.mock.calls[1]![1].query.target_pct).not.toBe('1.00')
+
+    // a value both accept is used as typed (the old page did the same)
+    wrapper.get('#slNum').element.dispatchEvent(new Event('change', { bubbles: true }))
+    setInput(wrapper.get('#slNum').element, '50')
+    const at50 = computeHours(data.hours, { ...controls(EFF), targetPct: 0.5 })
+    await until(() => expect(cellText()).toEqual(at50.map((h) => String(h.staff_to_schedule))))
+    expect(wrapper.get('#controlError').attributes('hidden')).toBeDefined()
+  })
+
   it('has Sign out always and Admin for admins', async () => {
     mocks.apiFetch.mockResolvedValue(fixture())
     const wrapper = await mountSuspended(ConsoleApp)

@@ -107,6 +107,8 @@ export const CURRENT_ROSTER: Roster = { Overnight: 4, Day: 4, Evening: 6 }
 // Staff-per-shift sliders go to this, above the shift caps, so what-ifs are not cut off.
 export const ROSTER_SLIDER_MAX = 10
 const TSEC_MAX = 3600
+// The read API's upper bound on target_pct.
+const MAX_TARGET_PCT = 0.999
 const TSEC_DEFAULT = 30
 
 export interface Cache {
@@ -369,6 +371,7 @@ export function createConsoleState() {
     badgeHidden: false,
     errorHidden: true,
     errorText: '',
+    controlProblem: '',
     noForecast: false,
     holidayNoteHidden: true,
     holidayNote: '',
@@ -410,13 +413,44 @@ export function createConsoleState() {
   function patienceSec(): number | null {
     return cache ? cache.params.patience_sec : null
   }
-  function controls(): Controls {
+  function rawControls(): Controls {
     return {
       efficiency: Number(ctl.effNum) / 100,
       targetPct: Number(ctl.slNum) / 100,
       targetSec: targetSec(),
       patienceSec: patienceSec(),
     }
+  }
+  // What the efficiency and service-level fields hold is used as typed (as on the old
+  // page) while the arithmetic and the read API accept it. A value they refuse (the old
+  // page threw and silently stopped updating) leaves the page on the last valid setting,
+  // with a message, until the field is corrected or snaps back when it loses focus.
+  let lastValid: Controls | null = null
+  function controlProblem(c: Controls): string | null {
+    if (!(c.efficiency >= 0 && c.efficiency <= 1)) {
+      return 'Staff efficiency must be a number from 0 to 100%.'
+    }
+    // 1 to 99 whole or decimal percent: sent with two decimals that is 0.01 to 0.99,
+    // inside the read API's 0 < target_pct <= MAX_TARGET_PCT
+    const sent = Number(c.targetPct.toFixed(2))
+    if (!(c.targetPct >= 0.01 && c.targetPct <= 0.99 && sent <= MAX_TARGET_PCT)) {
+      return 'Calls answered in time must be a number from 1 to 99%.'
+    }
+    return null
+  }
+  function controls(): Controls {
+    const c = rawControls()
+    if (controlProblem(c) === null || lastValid === null) {
+      lastValid = c
+      return c
+    }
+    return { ...lastValid, targetSec: c.targetSec, patienceSec: c.patienceSec }
+  }
+  function checkControls() {
+    const problem = controlProblem(rawControls())
+    ui.controlProblem = problem
+      ? `${problem} The numbers below are for the last valid setting.`
+      : ''
   }
   const rangeKey = () => `${ctl.start}|${ctl.end}|${ctl.holidays}`
   function hourRange(): [number, number] {
@@ -647,6 +681,7 @@ export function createConsoleState() {
 
   // ---- recompute (no network) ----
   function recompute() {
+    checkControls()
     if (!cache) return
     const c = controls()
     const next = computeHours(cache.hours, c)
