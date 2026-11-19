@@ -52,7 +52,9 @@ const SECONDS_PER_DAY = 86_400
 // A time cell is a fraction of a day counted from the workbook's date origin.
 const EXCEL_EPOCH = Date.UTC(1899, 11, 30)
 const EXCEL_EPOCH_1904 = Date.UTC(1904, 0, 1)
-const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/
+// One reading of each digit (no nested quantifiers to backtrack through): a long run of
+// digits that ends badly is refused in linear time (review N-2 class).
+const DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/
 const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?$/
 const US_DAY = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/
 const CLOCK = /^(\d{1,2}):(\d{2}):(\d{2})$/

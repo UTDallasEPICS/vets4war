@@ -23,11 +23,27 @@
   // this import started. A queued import has none until the re-run begins.
   const followed = ref<RunDetail | RunSummary | null>(props.queued ? null : props.run)
   // The import itself succeeded; a retrain that then failed must not read as success.
+  // A rejected FIRST model kept nothing: nothing was served before, nothing is now
+  // (the runs tab says the same).
+  const nothingServed = computed(
+    () => followed.value?.status === 'rejected' && followed.value.forecast_written === false
+  )
+  const word = computed(() =>
+    !followed.value
+      ? ''
+      : nothingServed.value
+        ? 'Rejected, nothing served'
+        : WORDS[followed.value.status]
+  )
+  // The import itself succeeded; a retrain that then failed, or left nothing served,
+  // must not read as success.
   const color = computed(() =>
-    followed.value && ['failed', 'interrupted'].includes(followed.value.status)
+    nothingServed.value ||
+    (followed.value && ['failed', 'interrupted'].includes(followed.value.status))
       ? 'warning'
       : 'success'
   )
+
   const elapsed = ref(0)
   let timer: ReturnType<typeof setTimeout> | null = null
   let stopped = false
@@ -100,7 +116,7 @@
             Retraining (run {{ followed.id }}): {{ duration(elapsed) }} so far.
           </template>
           <template v-else>
-            Retrain (run {{ followed.id }}): <strong>{{ WORDS[followed.status] }}</strong
+            Retrain (run {{ followed.id }}): <strong>{{ word }}</strong
             >. <span v-if="followed.message"> {{ followed.message }}</span
             >{{ ' ' }}
           </template>

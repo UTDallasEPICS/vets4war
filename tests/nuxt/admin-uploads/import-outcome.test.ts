@@ -84,3 +84,59 @@ describe('ImportOutcome', () => {
     )
   })
 })
+
+// Review W3-7: a rejected run kept the previous model only when there was one.
+describe('ImportOutcome for a rejected retrain', () => {
+  async function ended(id: number, forecastWritten: boolean) {
+    registerEndpoint(
+      `/api/admin/uploads/${id}`,
+      defineEventHandler(() => ({
+        upload: upload({ id, status: 'imported', run_id: id * 10, result: RESULT }),
+      }))
+    )
+    registerEndpoint(
+      `/api/admin/runs/${id * 10}`,
+      defineEventHandler(() => ({
+        run: {
+          ...run({
+            id: id * 10,
+            status: 'rejected',
+            upload_id: id,
+            forecast_written: forecastWritten,
+            message: 'SYNTHETIC message from the script.',
+          }),
+          gate: null,
+          log_tail: null,
+          exit_code: 3,
+        },
+      }))
+    )
+    const wrapper = await mountSuspended(ImportOutcome, {
+      props: {
+        upload: upload({ id, status: 'imported', run_id: id * 10, result: RESULT }),
+        run: run({ id: id * 10, upload_id: id }),
+        queued: false,
+      },
+    })
+    for (let i = 0; i < 20 && !wrapper.find('[data-testid="retrain-ended"]').exists(); i++) {
+      await flushPromises()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    return wrapper
+  }
+
+  it('a first model that was rejected: nothing is served', async () => {
+    const wrapper = await ended(7, false)
+    const text = wrapper.find('[data-testid="retrain-ended"]').text()
+    expect(text).toContain('Rejected, nothing served')
+    expect(text).not.toContain('Kept the previous model')
+    expect(wrapper.find('[data-testid="import-outcome"]').classes().join(' ')).toContain('warning')
+  })
+
+  it('a later model that was rejected: the previous one is kept', async () => {
+    const wrapper = await ended(8, true)
+    expect(wrapper.find('[data-testid="retrain-ended"]').text()).toContain(
+      'Kept the previous model'
+    )
+  })
+})

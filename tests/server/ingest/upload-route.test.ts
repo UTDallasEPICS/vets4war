@@ -25,6 +25,7 @@ const { default: handler } = await import('../../../server/api/admin/uploads/ind
 const schema = await import('../../../server/db/schema')
 const { readBodyWithin } = await import('../../../server/utils/ingest/body')
 const { rawLayout, wholeDay, withTempDir, writeWorkbook } = await import('./fixtures/workbooks')
+const { handmadeWorkbook, headerRow } = await import('./fixtures/handmade')
 
 const MIGRATIONS = fileURLToPath(new URL('../../../drizzle', import.meta.url))
 let server: Server
@@ -186,6 +187,42 @@ describe('POST /api/admin/uploads', () => {
     expect(answer.status === 0 || answer.status >= 400).toBe(true)
     await settled()
     expect(uploadCount()).toBe(before)
+    expect(await ourTempFolders()).toEqual([])
+  })
+})
+
+describe('POST /api/admin/uploads: a hostile workbook (review N-2)', () => {
+  it('one row of 200,000 unclosed <f> ends failed in well under a second, the server answering throughout', async () => {
+    await settled()
+    const book = handmadeWorkbook({
+      rows: headerRow() + `<row r="2"><c r="B2"><v>1</v>${'<f>'.repeat(200_000)}</c></row>`,
+    })
+    // The longest the event loop is held while the file is received and read.
+    let worst = 0
+    let last = performance.now()
+    const probe = setInterval(() => {
+      const now = performance.now()
+      worst = Math.max(worst, now - last - 10)
+      last = now
+    }, 10)
+    const started = performance.now()
+    const { body, type } = multipart(book)
+    const answer = await post(body, type)
+    expect(answer.status, answer.text).toBe(202)
+    const id = JSON.parse(answer.text).upload.id as number
+    await settled()
+    const took = performance.now() - started
+    clearInterval(probe)
+    expect(
+      db
+        .select()
+        .from(schema.uploads)
+        .all()
+        .find((u) => u.id === id)?.status
+    ).toBe('failed')
+    // the old normaliser held the event loop for about 40 s on this file
+    expect(took).toBeLessThan(3000)
+    expect(worst).toBeLessThan(250)
     expect(await ourTempFolders()).toEqual([])
   })
 })

@@ -4,6 +4,7 @@ import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import {
   createPartNormalizer,
+  MalformedPartError,
   PartTooLargeError,
   type PartKind,
 } from '../../../server/utils/ingest/xml'
@@ -55,8 +56,30 @@ describe('createPartNormalizer', () => {
     )
   })
 
-  it('refuses a row it would have to hold beyond the limit instead of growing without end', async () => {
+  it('refuses a row of more cells than Excel allows (16,384) instead of growing without end', async () => {
     const huge = '<worksheet><sheetData><row r="1">' + '<c><v>1</v></c>'.repeat(1_200_000)
     await expect(run('worksheet', [huge])).rejects.toBeInstanceOf(PartTooLargeError)
+  })
+
+  it('leaves comments alone and does not count a cell written inside one', async () => {
+    const sheet =
+      '<worksheet><sheetData><row><c><v>1</v></c><!-- <c><v>9</v></c> --><c><v>2</v></c></row></sheetData></worksheet>'
+    expect(await run('worksheet', [sheet])).toBe(
+      '<worksheet><sheetData><row r="1"><c r="A1"><v>1</v></c><!-- <c><v>9</v></c> -->' +
+        '<c r="B1"><v>2</v></c></row></sheetData></worksheet>'
+    )
+  })
+
+  it('reads CDATA text in an inline string, escaped', async () => {
+    const sheet =
+      '<worksheet><row><c t="inlineStr"><is><t><![CDATA[Y<&]]></t></is></c></row></worksheet>'
+    expect(await run('worksheet', [sheet])).toBe(
+      '<worksheet><row r="1"><c r="A1" t="inlineStr"><is><t xml:space="preserve">Y&lt;&amp;</t></is></c></row></worksheet>'
+    )
+  })
+
+  it('refuses markup inside a formula instead of swallowing the cells after it', async () => {
+    const sheet = '<worksheet><row><c><f>A1+<c><v>1</v></c></f><v>0</v></c></row></worksheet>'
+    await expect(run('worksheet', [sheet])).rejects.toBeInstanceOf(MalformedPartError)
   })
 })

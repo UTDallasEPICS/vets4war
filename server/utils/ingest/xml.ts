@@ -20,38 +20,42 @@
 //   prefix of the spreadsheet namespace is removed.
 // - date1904="true" (a valid spelling) is not recognised; it becomes "1".
 //
-// The text is cut only after complete units (a row, a shared string, a tag), so a
-// rewrite never sees half an element.
+// It is a small state machine over the text, tag by tag (tags.ts), so its work is
+// linear in the size of the part whatever the part holds, and each chunk is handled
+// as it arrives: nothing waits for the end of a row (review N-2). Only one tag, comment
+// or CDATA section, or one inline string, is ever held, up to MAX_HELD_CHARS.
 import { StringDecoder } from 'node:string_decoder'
 import { Transform, type TransformCallback } from 'node:stream'
+import { Finder, closeOf, localName, readTag, tagEnd, type Tag } from './tags'
 
 export type PartKind = 'worksheet' | 'sharedStrings' | 'workbook' | 'other'
 
-// A unit bigger than this (one row of one sheet) is not a call-records export.
-export const MAX_UNIT_CHARS = 16 * 1024 * 1024
+// One tag, comment, CDATA section or inline string longer than this is not part of a
+// call-records export (an Excel cell holds at most 32,767 characters).
+export const MAX_HELD_CHARS = 1024 * 1024
+// Excel's last column is XFD: no row of a real worksheet has more cells.
+export const MAX_CELLS_PER_ROW = 16_384
 
 const SPREADSHEET_NAMESPACES = [
   'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
   'http://purl.oclc.org/ooxml/spreadsheetml/main',
 ]
+// Elements that cannot appear inside an inline string: meeting one there means the
+// markup is broken, and reading on would swallow cells.
+const NOT_IN_INLINE = new Set(['c', 'row', 'is', 'v', 'f', 'sheetData', 'worksheet'])
 
 export class PartTooLargeError extends Error {
   constructor() {
-    super('a single row of this workbook is too large to read')
+    super('a row, tag or text of this workbook is too large to read')
     this.name = 'PartTooLargeError'
   }
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-// The prefix bound to the spreadsheet namespace on the root element, if any.
-function spreadsheetPrefix(head: string): string | null {
-  for (const match of head.matchAll(/xmlns:([A-Za-z_][\w.-]*)\s*=\s*["']([^"']*)["']/g)) {
-    if (SPREADSHEET_NAMESPACES.includes(match[2]!)) return match[1]!
+export class MalformedPartError extends Error {
+  constructor(what: string) {
+    super(`the workbook's XML is broken (${what})`)
+    this.name = 'MalformedPartError'
   }
-  return null
 }
 
 function columnNumber(letters: string): number {
@@ -70,116 +74,264 @@ function columnLetters(n: number): string {
   return letters
 }
 
-const FORMULA = /<f\b[^>]*\/>|<f\b[^>]*>[\s\S]*?<\/f>/g
-const PHONETIC = /<rPh\b[^>]*>[\s\S]*?<\/rPh>|<phoneticPr\b[^>]*\/>/g
-const TEXT_RUN = /<t\b[^>]*>([\s\S]*?)<\/t>/g
-const ROW_CELL_OR_INLINE = /<row\b([^>]*?)(\/?)>|<c\b([^>]*?)(\/?)>|<is>([\s\S]*?)<\/is>/g
-const R_ATTRIBUTE = /\sr\s*=\s*["']([A-Za-z]*)(\d*)["']/
-const ISO_DATE_TYPE = /(\st\s*=\s*)(["'])d\2/
+const escapeText = (text: string) =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+// The tag text with one attribute set: replaced in place, or added after the name.
+function withAttribute(text: string, tag: Tag, name: string, value: string): string {
+  const found = tag.attributes.find((a) => a.name === name)
+  if (found) return text.slice(0, found.valueStart) + value + text.slice(found.valueEnd)
+  return `${text.slice(0, tag.nameEnd)} ${name}="${value}"${text.slice(tag.nameEnd)}`
+}
+
+type State = 'normal' | 'formula' | 'inline' | 'phonetic'
 
 export function createPartNormalizer(kind: PartKind): Transform {
-  let raw = '' // text after the last complete tag
-  let units = '' // complete tags not yet ending a unit
-  let prefix: RegExp | null | undefined // undefined: root not seen yet
+  const decoder = new StringDecoder('utf8')
+  let held = '' // the start of a construct not complete yet
+  let rootSeen = false
+  let prefix: string | null = null
+  let state: State = 'normal'
+  let afterPhonetic: State = 'normal'
+  let runs: string[] = []
+  let runChars = 0
+  let inText = false
   let row = 0
   let column = 0
-  const decoder = new StringDecoder('utf8')
+  let cells = 0
 
-  const unitEnd = kind === 'worksheet' ? '</row>' : kind === 'sharedStrings' ? '</si>' : null
-
-  let head = '' // text before the root element's start tag is complete
-
-  // The prefix is decided by the root element's own namespace declarations, so the
-  // text is held until that start tag is complete (a chunk may end before it).
-  function unprefix(text: string): string | null {
-    if (prefix === undefined) {
-      head += text
-      const root = /<(?![?!])[^>]*>/.exec(head)
-      if (!root) {
-        if (head.length > MAX_UNIT_CHARS) throw new PartTooLargeError()
-        return null
-      }
-      const found = spreadsheetPrefix(root[0])
-      prefix = found ? new RegExp(`<(/?)${escapeRegExp(found)}:`, 'g') : null
-      text = head
-      head = ''
-    }
-    return prefix ? text.replace(prefix, '<$1') : text
+  function addRun(text: string) {
+    runChars += text.length
+    if (runChars > MAX_HELD_CHARS) throw new PartTooLargeError()
+    runs.push(text)
   }
 
-  function rewriteRows(text: string): string {
-    return text
-      .replace(FORMULA, '')
-      .replace(
-        ROW_CELL_OR_INLINE,
-        (
-          whole,
-          rowAttrs?: string,
-          rowEnd?: string,
-          cellAttrs?: string,
-          cellEnd?: string,
-          inline?: string
-        ) => {
-          if (rowAttrs !== undefined) {
-            const ref = R_ATTRIBUTE.exec(rowAttrs)
-            column = 0
-            if (ref && ref[2]) {
-              row = Number(ref[2])
-              return whole
-            }
-            row++
-            return `<row r="${row}"${rowAttrs}${rowEnd}>`
-          }
-          if (cellAttrs !== undefined) {
-            let attrs = cellAttrs.replace(ISO_DATE_TYPE, '$1$2str$2')
-            const ref = R_ATTRIBUTE.exec(attrs)
-            if (ref && ref[1]) {
-              column = columnNumber(ref[1].toUpperCase())
-            } else {
-              column++
-              attrs = ` r="${columnLetters(column)}${row}"${attrs.replace(R_ATTRIBUTE, '')}`
-            }
-            return `<c${attrs}${cellEnd}>`
-          }
-          const runs = [...inline!.replace(PHONETIC, '').matchAll(TEXT_RUN)].map((m) => m[1])
+  function rowTag(tagText: string, tag: Tag): string {
+    column = 0
+    cells = 0
+    const digits = tag.attributes.find((a) => a.name === 'r')?.value.match(/^\d+$/)
+    if (digits) {
+      row = Number(digits[0])
+      return tagText
+    }
+    row++
+    return withAttribute(tagText, tag, 'r', String(row))
+  }
+
+  // The usual cell (r="B12", not an ISO date cell) needs no rewrite: read its column
+  // from the text without parsing every attribute.
+  function plainCell(tagText: string): boolean {
+    if (tagText.includes('t="d"') || tagText.includes("t='d'")) return false
+    const at = tagText.indexOf(' r="')
+    if (at === -1) return false
+    let end = at + 4
+    for (; end < tagText.length; end++) {
+      const ch = tagText.charCodeAt(end) | 32 // lower case
+      if (ch < 97 || ch > 122) break
+    }
+    if (end === at + 4) return false
+    if (++cells > MAX_CELLS_PER_ROW) throw new PartTooLargeError()
+    column = columnNumber(tagText.slice(at + 4, end).toUpperCase())
+    return true
+  }
+
+  function cellTag(tagText: string, tag: Tag): string {
+    if (++cells > MAX_CELLS_PER_ROW) throw new PartTooLargeError()
+    let out = tagText
+    let current = tag
+    if (tag.attributes.find((a) => a.name === 't')?.value === 'd') {
+      out = withAttribute(out, current, 't', 'str')
+      current = readTag(out)
+    }
+    const letters = current.attributes.find((a) => a.name === 'r')?.value.match(/^[A-Za-z]+/)
+    if (letters) {
+      column = columnNumber(letters[0].toUpperCase())
+      return out
+    }
+    column++
+    return withAttribute(out, current, 'r', `${columnLetters(column)}${row}`)
+  }
+
+  // Names that may need a rewrite, or a change of state, in each kind of part. Every
+  // other tag in the normal state is passed on as it is, without reading its attributes.
+  const WATCHED: Record<PartKind, Set<string>> = {
+    worksheet: new Set(['f', 'row', 'c', 'is']),
+    sharedStrings: new Set(['rPh', 'phoneticPr']),
+    workbook: new Set(['workbookPr']),
+    other: new Set(),
+  }
+
+  // The name of the tag input[start..end], read up to the first space, '/' or '>'.
+  function quickName(input: string, start: number, end: number) {
+    const closing = input.charCodeAt(start + 1) === 47 // '/'
+    const from = closing ? start + 2 : start + 1
+    let j = from
+    for (; j < end; j++) {
+      const ch = input.charCodeAt(j)
+      if (ch === 32 || ch === 9 || ch === 10 || ch === 13 || ch === 47 || ch === 62) break
+    }
+    return { closing, name: input.slice(from, j) }
+  }
+
+  // One element tag. Returns what to write instead of it, or undefined to pass it on.
+  function element(input: string, start: number, end: number): string | undefined {
+    const quick = quickName(input, start, end)
+    const closing = quick.closing
+    let name = quick.name
+    if (state === 'normal' && rootSeen && prefix === null && !WATCHED[kind].has(name)) {
+      return undefined // the common case: nothing to read, nothing to change
+    }
+    const raw = input.slice(start, end + 1)
+    let tagText = raw
+    let changed = false
+    if (!rootSeen && !closing) {
+      rootSeen = true
+      for (const a of readTag(raw).attributes) {
+        if (a.name.startsWith('xmlns:') && SPREADSHEET_NAMESPACES.includes(a.value)) {
+          prefix = a.name.slice('xmlns:'.length)
+        }
+      }
+    }
+    if (prefix !== null && name.startsWith(`${prefix}:`)) {
+      const start = closing ? 2 : 1
+      name = localName(name)
+      tagText = raw.slice(0, start) + name + raw.slice(start + prefix.length + 1 + name.length)
+      changed = true
+    }
+    if (state === 'normal' && !WATCHED[kind].has(name)) return changed ? tagText : undefined
+    if (state === 'normal' && kind === 'worksheet' && name === 'c' && !closing) {
+      if (plainCell(tagText)) return changed ? tagText : undefined
+    }
+    const tag = readTag(tagText)
+    switch (state) {
+      case 'formula':
+        if (closing && name === 'f') state = 'normal'
+        else throw new MalformedPartError(`<${name}> inside a formula`)
+        return ''
+      case 'phonetic':
+        if (closing && name === 'rPh') state = afterPhonetic
+        else if (name !== 't') throw new MalformedPartError(`<${name}> inside a phonetic guide`)
+        return ''
+      case 'inline':
+        if (closing && name === 'is') {
+          state = 'normal'
           return `<is><t xml:space="preserve">${runs.join('')}</t></is>`
         }
-      )
+        if (name === 't' && !tag.selfClosing) inText = !closing
+        else if (name === 'rPh' && !closing && !tag.selfClosing) {
+          afterPhonetic = 'inline'
+          state = 'phonetic'
+        } else if (NOT_IN_INLINE.has(name)) {
+          throw new MalformedPartError(`<${name}> inside an inline string`)
+        }
+        return ''
+      case 'normal':
+        break
+    }
+    if (closing) return changed ? tagText : undefined
+    if (kind === 'worksheet') {
+      if (name === 'f') {
+        if (!tag.selfClosing) state = 'formula'
+        return ''
+      }
+      if (name === 'row') return rowTag(tagText, tag)
+      if (name === 'c') return cellTag(tagText, tag)
+      if (name === 'is' && !tag.selfClosing) {
+        state = 'inline'
+        runs = []
+        runChars = 0
+        inText = false
+        return ''
+      }
+    }
+    if (kind === 'sharedStrings') {
+      if (name === 'phoneticPr') return ''
+      if (name === 'rPh') {
+        if (!tag.selfClosing) {
+          afterPhonetic = 'normal'
+          state = 'phonetic'
+        }
+        return ''
+      }
+    }
+    if (kind === 'workbook' && name === 'workbookPr') {
+      if (tag.attributes.find((a) => a.name === 'date1904')?.value === 'true') {
+        return withAttribute(tagText, tag, 'date1904', '1')
+      }
+    }
+    return changed ? tagText : undefined
   }
 
-  function rewrite(text: string): string {
-    switch (kind) {
-      case 'worksheet':
-        return rewriteRows(text)
-      case 'sharedStrings':
-        return text.replace(PHONETIC, '')
-      case 'workbook':
-        return text.replace(/(\sdate1904\s*=\s*)(["'])true\2/, '$1$21$2')
-      default:
-        return text
+  // Handles the text from the start: what to pass on, and the incomplete construct at
+  // the end that waits for more text. Unchanged stretches are passed on as slices of the
+  // input, so an honest part costs one copy.
+  function handle(input: string, final: boolean): { out: string[]; rest: string } {
+    const finder = new Finder(input)
+    const out: string[] = []
+    let copyFrom = 0 // start of the stretch passed on unchanged (normal state only)
+    const flushTo = (at: number) => {
+      if (at > copyFrom) out.push(input.slice(copyFrom, at))
     }
+    let i = 0
+    while (i < input.length) {
+      const lt = finder.lt.next(i)
+      const textEnd = lt === -1 ? input.length : lt
+      if (state !== 'normal' && textEnd > i) {
+        if (state === 'inline' && inText) addRun(input.slice(i, textEnd))
+        copyFrom = textEnd
+      }
+      if (lt === -1) break
+      let end: number
+      let kindOf: 'comment' | 'cdata' | 'other' | 'element'
+      const second = input.charCodeAt(lt + 1)
+      if (second === 33 /* ! */ && input.startsWith('<!--', lt)) {
+        end = closeOf(finder, '-->', lt + 4)
+        kindOf = 'comment'
+      } else if (second === 33 && input.startsWith('<![CDATA[', lt)) {
+        end = closeOf(finder, ']]>', lt + 9)
+        kindOf = 'cdata'
+      } else if (second === 63 /* ? */) {
+        end = closeOf(finder, '?>', lt + 2)
+        kindOf = 'other'
+      } else {
+        end = tagEnd(finder, lt)
+        kindOf = second === 33 ? 'other' : 'element'
+      }
+      if (end === -1) {
+        if (state === 'normal') flushTo(lt)
+        if (final) {
+          // Broken at the very end: pass it on, the XML reader refuses it.
+          if (state === 'normal') out.push(input.slice(lt))
+          return { out, rest: '' }
+        }
+        if (input.length - lt > MAX_HELD_CHARS) throw new PartTooLargeError()
+        return { out, rest: input.slice(lt) }
+      }
+      const before = state
+      let replacement: string | undefined
+      if (kindOf === 'element') replacement = element(input, lt, end)
+      else if (before === 'inline' && inText && kindOf === 'cdata') {
+        addRun(escapeText(input.slice(lt + 9, end - 2)))
+      }
+      if (before !== 'normal') {
+        // Everything read while not in the normal state is consumed here.
+        if (replacement) out.push(replacement)
+        copyFrom = end + 1
+      } else if (replacement !== undefined) {
+        flushTo(lt)
+        if (replacement) out.push(replacement)
+        copyFrom = end + 1
+      }
+      i = end + 1
+    }
+    if (state === 'normal') flushTo(input.length)
+    return { out, rest: '' }
   }
 
-  function take(text: string, final: boolean): string {
-    const plain = unprefix(text)
-    if (plain === null) {
-      if (!final) return ''
-      units += head // a part without a root element: nothing to rewrite
-      head = ''
-    } else units += plain
-    if (final || unitEnd === null) {
-      const out = units
-      units = ''
-      return rewrite(out)
-    }
-    const cut = units.lastIndexOf(unitEnd)
-    if (cut < 0) {
-      if (units.length > MAX_UNIT_CHARS) throw new PartTooLargeError()
-      return ''
-    }
-    const ready = units.slice(0, cut + unitEnd.length)
-    units = units.slice(cut + unitEnd.length)
-    return rewrite(ready)
+  function run(input: string, final: boolean): string | undefined {
+    const { out, rest } = handle(held + input, final)
+    held = rest
+    return out.join('') || undefined
   }
 
   return new Transform({
@@ -187,25 +339,14 @@ export function createPartNormalizer(kind: PartKind): Transform {
     encoding: 'utf8',
     transform(chunk: string | Buffer, _encoding, done: TransformCallback) {
       try {
-        raw += typeof chunk === 'string' ? chunk : decoder.write(chunk)
-        const lastTag = raw.lastIndexOf('>')
-        if (lastTag < 0) {
-          if (raw.length > MAX_UNIT_CHARS) throw new PartTooLargeError()
-          return done()
-        }
-        const complete = raw.slice(0, lastTag + 1)
-        raw = raw.slice(lastTag + 1)
-        const out = take(complete, false)
-        done(null, out || undefined)
+        done(null, run(typeof chunk === 'string' ? chunk : decoder.write(chunk), false))
       } catch (error) {
         done(error as Error)
       }
     },
     flush(done: TransformCallback) {
       try {
-        const out = take(raw + decoder.end(), true)
-        raw = ''
-        done(null, out || undefined)
+        done(null, run(decoder.end(), true))
       } catch (error) {
         done(error as Error)
       }
