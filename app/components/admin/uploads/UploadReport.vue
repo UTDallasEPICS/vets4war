@@ -4,14 +4,59 @@
 
   const props = defineProps<{ upload: UploadDetail }>()
 
-  // Long files show only the days that would change something, unless asked.
+  // A long file (the multi-year export has over 2,000 days) groups runs of consecutive
+  // days with the same outcome into one line, so the import form below stays in reach;
+  // a different day is always its own line. "Show every day" lists them all.
   const COLLAPSE_OVER = 14
   const showAll = ref(false)
 
+  interface Line {
+    key: string
+    first: string
+    last: string
+    days: number
+    rows: number
+    existing: number
+    status: DayStatus
+  }
+
   const report = computed(() => props.upload.report!)
-  const changing = computed(() => report.value.days.filter((d) => d.status !== 'identical'))
   const collapsed = computed(() => report.value.days.length > COLLAPSE_OVER && !showAll.value)
-  const shown = computed(() => (collapsed.value ? changing.value : report.value.days))
+  const nextDay = (day: string) => {
+    const date = new Date(`${day}T00:00:00Z`)
+    date.setUTCDate(date.getUTCDate() + 1)
+    return date.toISOString().slice(0, 10)
+  }
+  const lines = computed<Line[]>(() => {
+    const out: Line[] = []
+    for (const day of report.value.days) {
+      const last = out[out.length - 1]
+      if (
+        collapsed.value &&
+        last &&
+        day.status !== 'conflict' &&
+        last.status === day.status &&
+        nextDay(last.last) === day.day
+      ) {
+        last.last = day.day
+        last.days++
+        last.rows += day.rows
+        last.existing += day.existing_rows
+        continue
+      }
+      out.push({
+        key: day.day,
+        first: day.day,
+        last: day.day,
+        days: 1,
+        rows: day.rows,
+        existing: day.existing_rows,
+        status: day.status,
+      })
+    }
+    return out
+  })
+  const grouped = computed(() => lines.value.length < report.value.days.length)
 
   const STATUS: Record<DayStatus, { label: string; color: 'success' | 'neutral' | 'warning' }> = {
     new: { label: 'New', color: 'success' },
@@ -76,25 +121,36 @@
         </thead>
         <tbody>
           <tr
-            v-for="day in shown"
-            :key="day.day"
+            v-for="line in lines"
+            :key="line.key"
             class="border-t border-gray-100 dark:border-gray-800"
           >
-            <td class="py-1 pr-4 tabular-nums">{{ day.day }}</td>
-            <td class="py-1 pr-4 text-right tabular-nums">{{ number(day.rows) }}</td>
-            <td class="py-1 pr-4 text-right tabular-nums">{{ number(day.existing_rows) }}</td>
+            <td class="py-1 pr-4 whitespace-nowrap tabular-nums">
+              <template v-if="line.days === 1">{{ line.first }}</template>
+              <template v-else>
+                {{ line.first }} to {{ line.last }}
+                <span class="text-gray-500 dark:text-gray-400">({{ number(line.days) }} days)</span>
+              </template>
+            </td>
+            <td class="py-1 pr-4 text-right tabular-nums">{{ number(line.rows) }}</td>
+            <td class="py-1 pr-4 text-right tabular-nums">{{ number(line.existing) }}</td>
             <td class="py-1">
-              <UBadge :color="STATUS[day.status].color" variant="subtle">
-                {{ STATUS[day.status].label }}
+              <UBadge :color="STATUS[line.status].color" variant="subtle">
+                {{ STATUS[line.status].label }}
               </UBadge>
             </td>
           </tr>
         </tbody>
       </table>
-      <p v-if="collapsed" class="mt-2 text-sm text-gray-600 dark:text-gray-300">
-        Showing the {{ changing.length }} day(s) that would change; the other
-        {{ report.days.length - changing.length }} are already loaded.
-        <UButton variant="link" class="px-1" label="Show all days" @click="showAll = true" />
+      <p v-if="grouped" class="mt-2 text-sm text-gray-600 dark:text-gray-300">
+        Days in a row with the same outcome are shown as one line.
+        <UButton
+          variant="link"
+          class="px-1"
+          :label="`Show all ${number(report.days.length)} days`"
+          data-testid="show-all-days"
+          @click="showAll = true"
+        />
       </p>
     </div>
   </div>

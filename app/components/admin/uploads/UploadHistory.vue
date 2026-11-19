@@ -48,7 +48,7 @@
             :key="upload.id"
             class="border-t border-gray-100 dark:border-gray-800"
           >
-            <td class="py-1 pr-4 break-all">
+            <td class="max-w-80 min-w-48 py-1 pr-4 break-words">
               <button
                 v-if="OPENABLE.includes(upload.status)"
                 type="button"
@@ -59,9 +59,9 @@
               </button>
               <span v-else>{{ upload.filename }}</span>
             </td>
-            <td class="py-1 pr-4">{{ upload.uploaded_by }}</td>
+            <td class="py-1 pr-4 whitespace-nowrap">{{ upload.uploaded_by }}</td>
             <td class="py-1 pr-4 whitespace-nowrap">{{ when(upload.created_at) }}</td>
-            <td class="py-1 pr-4">
+            <td class="py-1 pr-4 whitespace-nowrap">
               <UBadge :color="STATUS[upload.status].color" variant="subtle">
                 {{ STATUS[upload.status].label }}
               </UBadge>
@@ -71,10 +71,16 @@
                 {{ upload.first_day }} to {{ upload.last_day }}
               </template>
             </td>
-            <td class="py-1 pr-4">
+            <td class="py-1 pr-4 whitespace-nowrap">
               <NuxtLink v-if="upload.run_id" to="/admin?tab=runs" class="underline">
                 Run {{ upload.run_id }}
               </NuxtLink>
+              <span
+                v-else-if="upload.status === 'imported'"
+                class="text-gray-500 dark:text-gray-400"
+              >
+                Waiting for a retrain
+              </span>
             </td>
             <td class="py-1 text-right">
               <UButton

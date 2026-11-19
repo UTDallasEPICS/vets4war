@@ -5,7 +5,7 @@
 
   const props = defineProps<{ upload: UploadDetail }>()
   const emit = defineEmits<{
-    imported: [result: { upload: UploadDetail; run: RunSummary | null }]
+    imported: [result: { upload: UploadDetail; run: RunSummary | null; queued: boolean }]
     refused: [message: string]
   }>()
 
@@ -47,10 +47,11 @@
         total_rows: count.value,
         replace_days: replaceConfirmed.value ? conflicts.value : [],
       }
-      const result = await apiFetch<{ upload: UploadDetail; run: RunSummary | null }>(
-        `/api/admin/uploads/${props.upload.id}/import`,
-        { method: 'POST', body }
-      )
+      const result = await apiFetch<{
+        upload: UploadDetail
+        run: RunSummary | null
+        queued: boolean
+      }>(`/api/admin/uploads/${props.upload.id}/import`, { method: 'POST', body })
       emit('imported', result)
     } catch (error) {
       emit('refused', error instanceof Error ? error.message : 'The import failed.')
