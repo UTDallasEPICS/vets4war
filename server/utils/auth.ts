@@ -37,9 +37,18 @@ async function sendVerificationOTP({ email, otp }: { email: string; otp: string 
   })
 }
 
+// Better Auth limits how often one client may ask for or try a sign-in code (3 a minute
+// on those routes). That limit is what keeps someone who knows an address from guessing
+// its codes, so it must not hang on how the server was started: left to its default,
+// Better Auth switches it on only when the PROCESS runs with NODE_ENV=production, which
+// a production build started with plain `node .output/server/index.mjs` does not have.
+// So it is switched on here, for every build; only `nuxt dev` runs without it.
+const RATE_LIMIT_ENABLED = import.meta.dev !== true
+
 export const auth = betterAuth({
   baseURL: env.BETTER_AUTH_URL,
   secret: env.BETTER_AUTH_SECRET,
+  rateLimit: { enabled: RATE_LIMIT_ENABLED },
   database: drizzleAdapter(db, {
     provider: 'sqlite',
   }),
