@@ -126,7 +126,16 @@ export function parseEnv(source: Source, options: { dev: boolean; cwd: string })
       : resolve(options.cwd, forecastDir)
     : join(options.cwd, 'forecast')
   const venvPython = join(V4W_FORECAST_DIR, '.venv', 'bin', 'python')
-  const V4W_PYTHON = read('V4W_PYTHON') ?? (existsSync(venvPython) ? venvPython : 'python3')
+  // A path is made absolute because the script runs with cwd = V4W_FORECAST_DIR; a bare
+  // command name ('python3') is left to PATH.
+  const python = read('V4W_PYTHON')
+  const V4W_PYTHON = python
+    ? python.includes('/') && !isAbsolute(python)
+      ? resolve(options.cwd, python)
+      : python
+    : existsSync(venvPython)
+      ? venvPython
+      : 'python3'
 
   const result: Env = {
     DATABASE_URL,

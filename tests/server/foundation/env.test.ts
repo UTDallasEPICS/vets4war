@@ -47,6 +47,10 @@ describe('parseEnv', () => {
       '/usr/bin/python3.12'
     )
     expect(prod({ ...BASE, V4W_FORECAST_DIR: './py' }).V4W_FORECAST_DIR).toBe(join(CWD, 'py'))
+    expect(prod({ ...BASE, V4W_PYTHON: './forecast/.venv/bin/python' }).V4W_PYTHON).toBe(
+      join(CWD, 'forecast/.venv/bin/python')
+    )
+    expect(prod({ ...BASE, V4W_PYTHON: 'python3.12' }).V4W_PYTHON).toBe('python3.12')
   })
 
   it('reads explicit values', () => {

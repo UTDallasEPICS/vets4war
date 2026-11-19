@@ -1,3 +1,7 @@
+**Rebuild in progress on this branch.** The app is being rebuilt on the EPICS Nuxt
+template; the text below still describes the Python app of `final-main` and is replaced
+when the rebuild is integrated.
+
 # Vets4Warriors staffing forecast
 
 Forecasts inbound call volume per hour for the Vets4Warriors peer-support line
