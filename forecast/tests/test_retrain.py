@@ -188,6 +188,52 @@ def test_the_research_forecast_reads_the_same_numbers_from_the_database(trained_
     assert served["predicted_aht_sec"].tolist() == pytest.approx(stored["aht_sec"].tolist(), rel=1e-12)
 
 
+# ---- caller patience floor ---------------------------------------------------------------
+
+def _shrink_waits(path: Path, seconds: float) -> None:
+    """Queue and abandon times far below anything real (a units mix-up, say)."""
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE calls SET in_queue_sec = ?, abandon_sec = ?", (seconds, seconds))
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.parametrize("mode, prefix", [("full", "Cannot retrain: "),
+                                          ("forecast-only", "Cannot refresh the forecast: ")])
+def test_a_patience_estimate_under_the_floor_is_refused_and_the_forecast_kept(trained_db, tmp_path, mode, prefix):
+    path = Path(shutil.copy(trained_db, tmp_path / "app.db"))
+    served = [_rows(path, f"SELECT * FROM {table}") for table in ("forecast_state", "forecast_hours", "model_artifacts")]
+    _shrink_waits(path, 0.1)
+
+    process = _run(path, "--mode", mode)
+
+    assert process.returncode == 2, process.stderr
+    run = _rows(path, "SELECT status, message FROM forecast_runs ORDER BY id DESC LIMIT 1")[0]
+    assert run["status"] == "failed"
+    assert run["message"].startswith(f"{prefix}the caller patience measured from the calls is ")
+    assert f"below the floor of {retrain.MIN_PATIENCE_SEC:g} s" in run["message"]
+    assert "(InQueue, Abandon_Time)" in run["message"]
+    assert [_rows(path, f"SELECT * FROM {table}") for table in
+            ("forecast_state", "forecast_hours", "model_artifacts")] == served
+
+
+def test_a_patience_estimate_just_above_the_floor_is_written(trained_db, tmp_path):
+    """Only below the floor is refused; no upper bound (a patient line is fine)."""
+    path = Path(shutil.copy(trained_db, tmp_path / "app.db"))
+    conn = sqlite3.connect(path)
+    n_calls, n_abandoned = conn.execute("SELECT count(*), sum(abandoned) FROM calls").fetchone()
+    conn.close()
+    # Every wait the same: patience = n_calls * wait / n_abandoned, just above the floor.
+    target = retrain.MIN_PATIENCE_SEC * 1.001
+    _shrink_waits(path, target * n_abandoned / n_calls)
+
+    process = _run(path, "--mode", "forecast-only")
+
+    assert process.returncode == 0, process.stderr
+    stored = _rows(path, "SELECT patience_sec FROM forecast_state")[0]["patience_sec"]
+    assert stored == pytest.approx(target)
+
+
 # ---- forecast-only ------------------------------------------------------------------------
 
 def test_forecast_only_reuses_the_model_and_moves_the_horizon(trained_db, tmp_path):

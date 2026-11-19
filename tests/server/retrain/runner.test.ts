@@ -20,6 +20,7 @@ import {
   getRun,
   runsOverview,
   type RetrainConfig,
+  type CliLock,
   type ProcessInfo,
   type RetrainDeps,
   type RetrainRun,
@@ -54,6 +55,8 @@ let spawned: { command: string; args: string[]; options: Record<string, unknown>
 let nextPid: number | undefined
 let killed: [number, string][]
 let table: ProcessInfo[]
+let locks: Map<number, CliLock>
+let removed: number[]
 
 function runner(config: Partial<RetrainConfig> = {}, deps: RetrainDeps = {}) {
   const fakeSpawn = ((command: string, args: string[], options: Record<string, unknown>) => {
@@ -73,6 +76,10 @@ function runner(config: Partial<RetrainConfig> = {}, deps: RetrainDeps = {}) {
         killed.push([pid, signal])
       },
       processes: () => table,
+      cliLock: (runId) => locks.get(runId) ?? 'missing',
+      removeCliLock: (runId) => {
+        removed.push(runId)
+      },
       ...deps,
     }
   )
@@ -165,6 +172,8 @@ beforeEach(() => {
   nextPid = 5000
   killed = []
   table = []
+  locks = new Map()
+  removed = []
 })
 
 // The script as the runner starts it, for the process table.
@@ -535,11 +544,13 @@ describe('recover (start-up)', () => {
 })
 
 describe('runs started from a shell', () => {
+  // Judged by the lock the script holds next to the database, never by pid or command
+  // line: those may spell the database another way or belong to another pid namespace.
   it('a request while one runs is queued, and starts once that run ends', () => {
     vi.useFakeTimers()
     seedCalls()
     const shell = addRun({ trigger: 'cli', status: 'running', pid: 4500, requestedByLabel: 'cli' })
-    table = [{ pid: 4500, pgid: 4500, args: script(null) }]
+    locks.set(shell.id, 'held')
     const r = runner()
     expect(r.request({ trigger: 'manual', requestedBy: 'a@example.org' })).toEqual({
       run: expect.objectContaining({ id: shell.id }),
@@ -548,18 +559,40 @@ describe('runs started from a shell', () => {
     vi.advanceTimersByTime(WATCH_MS)
     expect(spawned).toEqual([])
 
-    pythonWrites(shell.id, 'succeeded') // the shell's run reports and exits
-    table = []
+    pythonWrites(shell.id, 'succeeded') // the shell's run reports, drops its lock, exits
+    locks.delete(shell.id)
     vi.advanceTimersByTime(WATCH_MS)
     expect(spawned).toHaveLength(1)
     expect(runs().at(-1)).toMatchObject({ trigger: 'import', requestedByLabel: 'queued' })
     expect(getRun(db, shell.id).status).toBe('succeeded')
   })
 
-  it('a run whose process is gone without a word is closed, and does not block', () => {
+  it.each([
+    ['its pid is not on this machine (another pid namespace)', []],
+    ['its pid names another process here', [{ pid: 4500, pgid: 4500, args: ['/usr/bin/vim'] }]],
+    [
+      'its command line spells the database another way',
+      [{ pid: 4500, pgid: 4500, args: ['python', '-m', 'db.train', '--db=/data/./v4w.db'] }],
+    ],
+  ])('a live one is never closed while it holds its lock: %s', (_name, processes) => {
+    vi.useFakeTimers()
     seedCalls()
     const shell = addRun({ trigger: 'cli', status: 'running', pid: 4500 })
-    table = [{ pid: 4500, pgid: 4500, args: ['/usr/bin/vim'] }] // the pid was reused
+    locks.set(shell.id, 'held')
+    table = processes as ProcessInfo[]
+    const r = runner()
+    expect(r.request({ trigger: 'manual', requestedBy: 'a@example.org' }).queued).toBe(true)
+    vi.advanceTimersByTime(10 * WATCH_MS)
+    r.reconcile()
+    expect(getRun(db, shell.id).status).toBe('running')
+    expect(spawned).toEqual([])
+  })
+
+  it('one whose lock is free ended without a word: closed, its lock file removed, nothing blocked', () => {
+    seedCalls()
+    const shell = addRun({ trigger: 'cli', status: 'running', pid: 4500 })
+    locks.set(shell.id, 'free')
+    table = [{ pid: 4500, pgid: 4500, args: script(null) }] // even if a process still matches
     const r = runner()
     const { run, queued } = r.request({ trigger: 'manual', requestedBy: 'a@example.org' })
     expect(queued).toBe(false)
@@ -570,13 +603,43 @@ describe('runs started from a shell', () => {
       message:
         'The run started from a shell (process 4500) ended without reporting a result. The forecast in use did not change.',
     })
+    expect(removed).toEqual([shell.id])
     expect(killed).toEqual([]) // never signalled: it is not ours
+  })
+
+  it('one with no lock file to judge by counts as running until it is older than the run timeout', () => {
+    seedCalls()
+    const minute = 60_000
+    const young = addRun({
+      trigger: 'cli',
+      status: 'running',
+      startedAt: new Date(NOW.getTime() - CONFIG.timeoutMs + minute),
+    })
+    const r = runner()
+    expect(r.request({ trigger: 'manual', requestedBy: 'a@example.org' }).queued).toBe(true)
+    expect(getRun(db, young.id).status).toBe('running')
+
+    db.update(schema.forecastRuns)
+      .set({ startedAt: new Date(NOW.getTime() - CONFIG.timeoutMs - minute) })
+      .where(eq(schema.forecastRuns.id, young.id))
+      .run()
+    // Closed: the request queued behind it starts, and this one queues behind that.
+    expect(r.request({ trigger: 'manual', requestedBy: 'a@example.org' }).queued).toBe(true)
+    expect(spawned).toHaveLength(1)
+    expect(runs().at(-1)).toMatchObject({ requestedByLabel: 'queued', status: 'queued' })
+    expect(getRun(db, young.id)).toMatchObject({
+      status: 'failed',
+      message:
+        'The run started from a shell has not reported a result within 1 minutes (V4W_RETRAIN_TIMEOUT_MIN) and has no lock file the server can check, so it is taken as ended. The forecast in use did not change.',
+    })
+    expect(removed).toEqual([])
   })
 
   it('start-up leaves a live one alone and starts nothing beside it', () => {
     seedCalls(2)
     setRevision(2, true)
     const shell = addRun({ trigger: 'cli', status: 'running', pid: 4500 })
+    locks.set(shell.id, 'held')
     table = [{ pid: 4500, pgid: 4500, args: script(null) }]
     expect(runner().recover()).toEqual({ interrupted: [], started: null })
     expect(killed).toEqual([])

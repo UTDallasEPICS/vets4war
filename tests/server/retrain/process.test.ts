@@ -3,11 +3,11 @@
 // mode builds the process tree the real gate can leave at its worst (workers that hold
 // the pipes, ignore SIGTERM and outlive their parent), so the kill, timeout, shutdown
 // and start-up tests below prove the runner itself leaves nothing behind.
-import { spawn } from 'node:child_process'
-import { readdirSync, readFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
@@ -385,5 +385,241 @@ describe('while Python holds the write lock', () => {
       expect(getRun(db, run.id).status).toBe('succeeded')
     },
     SLOW
+  )
+})
+
+// N-1 of the second review: a retrain started from a shell is judged by the lock it
+// holds next to the database, so the server never closes one that is alive, however
+// its command line spells the database and whatever pid namespace it runs in, and
+// still closes one that died. These use the REAL script (forecast/.venv) on SYNTHETIC
+// calls; without that interpreter they are skipped.
+const FORECAST = fileURLToPath(new URL('../../../forecast', import.meta.url))
+const PYTHON = join(FORECAST, '.venv/bin/python')
+const REAL = existsSync(PYTHON)
+const BUSY = [
+  '--gate-origins',
+  '4',
+  '--workers',
+  '2',
+  '--today',
+  '2026-10-20',
+  '--horizon-days',
+  '30',
+]
+const unshareWorks =
+  spawnSync('unshare', ['--pid', '--fork', '--mount-proc', 'true'], { stdio: 'ignore' }).status ===
+  0
+
+describe.skipIf(!REAL)('runs started from a shell, real script', () => {
+  let real: string // a migrated database with 250 days of SYNTHETIC calls (enough for 26 origins)
+
+  beforeEach(() => {
+    real = join(folder, 'real.db')
+    const made = spawnSync(
+      PYTHON,
+      [
+        '-c',
+        'import sys; sys.path.insert(0, "tests"); from pathlib import Path; ' +
+          'from conftest import apply_migrations, insert_calls, synthetic_calls; ' +
+          'insert_calls(apply_migrations(Path(sys.argv[1])), synthetic_calls("2026-02-10", 250))',
+        real,
+      ],
+      { cwd: FORECAST, encoding: 'utf8' }
+    )
+    expect(made.status, made.stderr).toBe(0)
+  }, SLOW)
+
+  function shellRun(command: string[]) {
+    const child = spawn(command[0]!, command.slice(1), {
+      cwd: FORECAST,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    })
+    let stderr = ''
+    child.stderr!.on('data', (chunk) => (stderr += chunk))
+    const exited = new Promise<number | null>((resolve) =>
+      child.on('exit', (code) => resolve(code))
+    )
+    return { child, exited, stderr: () => stderr }
+  }
+
+  // Polls the server's view of the shell run, as the runs page does, until the run exits.
+  async function watchUntilExit(
+    runner: RetrainRunner,
+    readDb: Database.Database,
+    run: ReturnType<typeof shellRun>
+  ) {
+    const seen = new Set<string>()
+    let done = false
+    void run.exited.then(() => (done = true))
+    while (!done) {
+      runner.reconcile()
+      const row = readDb.prepare("SELECT status FROM forecast_runs WHERE trigger = 'cli'").get() as
+        { status: string } | undefined
+      if (row) seen.add(row.status)
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    return { code: await run.exited, seen }
+  }
+
+  const spellings: [string, (path: string) => string[]][] = [
+    [
+      'through a symlink',
+      (path) => {
+        mkdirSync(join(folder, 'other'))
+        symlinkSync(path, join(folder, 'other', 'link.db'))
+        return ['-m', 'db.retrain', '--db', join(folder, 'other', 'link.db')]
+      },
+    ],
+    [
+      'as an unnormalised path',
+      (path) => {
+        mkdirSync(join(folder, 'sub'))
+        return ['-m', 'db.retrain', '--db', `${folder}/sub/../${basename(path)}`]
+      },
+    ],
+    ['as --db=<path>', (path) => ['-m', 'db.retrain', `--db=${path}`]],
+    ['through the db.train alias', (path) => ['-m', 'db.train', '--db', path]],
+  ]
+  const command = (spell: (path: string) => string[]) => (path: string) => [
+    PYTHON,
+    ...spell(path),
+    ...BUSY,
+  ]
+
+  it.each(spellings)(
+    'the database spelled %s: never closed while alive, and it records its own result',
+    async (_name, spell) => {
+      const readDb = new Database(real, { timeout: 15_000 })
+      const runner = createRetrainRunner(drizzle(readDb, { schema }), {
+        ...config,
+        pythonPath: PYTHON,
+        forecastDir: FORECAST,
+        dbPath: real,
+      })
+      try {
+        const run = shellRun(command(spell)(real))
+        leftovers.push(run.child.pid!)
+        const { code, seen } = await watchUntilExit(runner, readDb, run)
+        expect(code, run.stderr()).toBe(0)
+        expect([...seen].filter((s) => s !== 'running' && s !== 'succeeded')).toEqual([])
+        const row = readDb
+          .prepare("SELECT status, message FROM forecast_runs WHERE trigger = 'cli'")
+          .get()
+        expect(row).toMatchObject({ status: 'succeeded' })
+      } finally {
+        await runner.shutdown() // stops its watcher before the connection goes
+        readDb.close()
+      }
+    },
+    SLOW * 4
+  )
+
+  it(
+    'the documented command (make retrain DB=<path>, from forecast/): never closed while alive',
+    async () => {
+      const readDb = new Database(real, { timeout: 15_000 })
+      const runner = createRetrainRunner(drizzle(readDb, { schema }), {
+        ...config,
+        pythonPath: PYTHON,
+        forecastDir: FORECAST,
+        dbPath: real,
+      })
+      try {
+        const run = shellRun(['make', 'retrain', `DB=${real}`])
+        leftovers.push(run.child.pid!)
+        const { code, seen } = await watchUntilExit(runner, readDb, run)
+        expect(code, run.stderr()).toBe(0)
+        expect([...seen].filter((s) => s !== 'running' && s !== 'succeeded')).toEqual([])
+        expect(
+          readDb.prepare("SELECT status FROM forecast_runs WHERE trigger = 'cli'").get()
+        ).toEqual({
+          status: 'succeeded',
+        })
+      } finally {
+        await runner.shutdown()
+        readDb.close()
+      }
+    },
+    SLOW * 6
+  )
+
+  it.skipIf(!unshareWorks)(
+    'started in another pid namespace (as from another container on the volume): never closed while alive',
+    async () => {
+      const readDb = new Database(real, { timeout: 15_000 })
+      const runner = createRetrainRunner(drizzle(readDb, { schema }), {
+        ...config,
+        pythonPath: PYTHON,
+        forecastDir: FORECAST,
+        dbPath: real,
+      })
+      try {
+        const run = shellRun([
+          'unshare',
+          '--pid',
+          '--fork',
+          '--mount-proc',
+          PYTHON,
+          '-m',
+          'db.retrain',
+          '--db',
+          real,
+          ...BUSY,
+        ])
+        leftovers.push(run.child.pid!)
+        const { code, seen } = await watchUntilExit(runner, readDb, run)
+        expect(code, run.stderr()).toBe(0)
+        const row = readDb
+          .prepare("SELECT status, pid FROM forecast_runs WHERE trigger = 'cli'")
+          .get() as { status: string; pid: number }
+        expect(row.status).toBe('succeeded')
+        expect(row.pid).toBe(1) // the pid it recorded means nothing on this side
+        expect([...seen].filter((s) => s !== 'running' && s !== 'succeeded')).toEqual([])
+      } finally {
+        await runner.shutdown() // stops its watcher before the connection goes
+        readDb.close()
+      }
+    },
+    SLOW * 4
+  )
+
+  it(
+    'one killed with -9 is closed within seconds and its lock file removed',
+    async () => {
+      const readDb = new Database(real, { timeout: 15_000 })
+      const runner = createRetrainRunner(drizzle(readDb, { schema }), {
+        ...config,
+        pythonPath: PYTHON,
+        forecastDir: FORECAST,
+        dbPath: real,
+      })
+      try {
+        const run = shellRun([PYTHON, '-m', 'db.retrain', '--db', real, ...BUSY])
+        leftovers.push(run.child.pid!)
+        const running = () =>
+          readDb
+            .prepare("SELECT 1 FROM forecast_runs WHERE trigger = 'cli' AND status = 'running'")
+            .get() !== undefined
+        expect(await until(running)).toBe(true)
+        runner.reconcile()
+        const status = () =>
+          (
+            readDb.prepare("SELECT status FROM forecast_runs WHERE trigger = 'cli'").get() as {
+              status: string
+            }
+          ).status
+        expect(status()).toBe('running')
+        run.child.kill('SIGKILL')
+        await run.exited
+        const killedAt = Date.now()
+        expect(await until(() => (runner.reconcile(), status() === 'failed'), 5_000)).toBe(true)
+        expect(Date.now() - killedAt).toBeLessThan(3_000)
+        expect(existsSync(`${real}-cli-run-1.lock`)).toBe(false) // removed with the row
+      } finally {
+        await runner.shutdown() // stops its watcher before the connection goes
+        readDb.close()
+      }
+    },
+    SLOW * 4
   )
 })

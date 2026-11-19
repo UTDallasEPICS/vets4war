@@ -205,6 +205,40 @@ def test_start_run_without_an_id_inserts_a_cli_row(migrated_db):
     assert row["created_at"] == row["started_at"] > 0
 
 
+def _locked(path) -> bool:
+    """What the web app asks: can another process take the lock now?"""
+    probe = sqlite3.connect(path, timeout=0, isolation_level=None)
+    try:
+        probe.execute("BEGIN IMMEDIATE")
+        probe.execute("ROLLBACK")
+        return False
+    except sqlite3.OperationalError as error:
+        assert "locked" in str(error)
+        return True
+    finally:
+        probe.close()
+
+
+def test_a_shell_run_holds_a_lock_next_to_the_database_until_released(migrated_db):
+    run_id = store.start_run(store.connect(migrated_db), None, mode="full", pid=7, calls_revision=1,
+                             calls_count=0, data_start=None, data_end=None)
+    lock = migrated_db.with_name(f"{migrated_db.name}-cli-run-{run_id}.lock")
+    assert store.cli_lock_path(migrated_db, run_id) == lock.resolve()
+    assert lock.is_file() and _locked(lock)
+
+    store.release_cli_lock(run_id)
+
+    assert not lock.exists()
+
+
+def test_another_spelling_of_the_database_finds_the_same_lock(migrated_db, tmp_path):
+    (tmp_path / "elsewhere").mkdir()
+    link = tmp_path / "elsewhere" / "link.db"
+    link.symlink_to(migrated_db)
+    spellings = [link, tmp_path / "elsewhere" / ".." / migrated_db.name, migrated_db]
+    assert {store.cli_lock_path(path, 3) for path in spellings} == {store.cli_lock_path(migrated_db, 3)}
+
+
 def test_start_run_with_an_unknown_id_raises(migrated_db):
     with pytest.raises(ValueError, match="no row 42"):
         store.start_run(store.connect(migrated_db), 42, mode="full", pid=1, calls_revision=0, calls_count=0,

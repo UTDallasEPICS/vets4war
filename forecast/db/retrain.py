@@ -39,7 +39,9 @@ Stopping (db/lifetime.py): SIGTERM, SIGINT or SIGHUP kill the gate workers
 at once, roll back any open write and end the process by that same signal,
 so nothing of the run is left running. A run the web app started
 (--run-id) also ends when the web app's process ends; the web app records
-how such a run ended. A run started from a shell records `failed` itself.
+how such a run ended. A run started from a shell records `failed` itself,
+and holds a lock next to the database while it lives (store.cli_lock_path)
+by which the web app tells it is still running.
 
 The last line printed is `V4W_RESULT {...}` (run id, status, model id and
 fingerprint). Nothing printed holds a call record: aggregates only.
@@ -100,6 +102,11 @@ RESULT_PREFIX = "V4W_RESULT"
 GATE_METRIC = "daily_mape_1_14"
 DAYS_PER_WEEK = 7
 MAX_MISMATCHES_SHOWN = 3
+# Lowest caller-patience estimate a forecast may be written with, in seconds. Every
+# call waits through routing, so a smaller mean patience cannot come from sane queue
+# and abandon times; the read API also bounds a requested patience_sec from here up
+# (a tiny value makes its Erlang A computation extremely slow).
+MIN_PATIENCE_SEC = 10.0
 
 
 class Refusal(Exception):
@@ -222,9 +229,17 @@ def _derived(calls: pd.DataFrame, refuse: str) -> tuple[list[tuple], dict, dict]
             aht = aht_from_calls(calls, halflife)
             share = real_share_table(counts, halflife)
             cells += [(recency, dow, hour, aht[(dow, hour)], share[(dow, hour)]) for dow, hour in sorted(aht)]
-        return cells, patience_from_calls(calls), quick_hangups_from_calls(calls)
+        patience = patience_from_calls(calls)
+        quick = quick_hangups_from_calls(calls)
     except ValueError as error:
         raise Refusal(f"{refuse}{error}. Check the loaded call data.") from error
+    if not patience["patience_sec"] >= MIN_PATIENCE_SEC:
+        raise Refusal(f"{refuse}the caller patience measured from the calls is {patience['patience_sec']:.2f} s "
+                      f"({patience['n_abandoned']:,} hang-ups over {patience['n_calls']:,} calls), below the floor "
+                      f"of {MIN_PATIENCE_SEC:g} s. Every call waits through routing, so the queue and abandon times "
+                      f"(InQueue, Abandon_Time) of the loaded calls are probably wrong: check the units and columns "
+                      f"of the call-records files, then run again.")
+    return cells, patience, quick
 
 
 def _hour_rows(frame: pd.DataFrame) -> list[tuple]:
@@ -469,6 +484,8 @@ def _main(argv: list[str] | None) -> int:
     finally:
         if conn is not None:
             conn.close()
+        if settings.run_id is None and run_id is not None:
+            store.release_cli_lock(run_id)  # the row says how it ended by now
     _print_result(run_id, outcome.status, outcome.model_id, outcome.model_sha256)
     return outcome.exit_code
 

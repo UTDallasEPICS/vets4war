@@ -13,9 +13,13 @@
 // whatever is left in the group is then killed. A stop (timeout, shutdown) signals the
 // whole group, SIGTERM then SIGKILL. At start-up every web-app run of the script on our
 // database is a leftover of an earlier server process and is killed with its workers.
-// A run started from a shell (trigger 'cli') is watched until its process ends.
+// A run started from a shell (trigger 'cli') is watched until it ends: it holds a lock
+// next to the database while it lives (forecast/db/store.py), whatever its command line
+// or pid namespace; its row is closed only once that lock is free.
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process'
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
+import Database from 'better-sqlite3'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { calls, dataState, forecastRuns, forecastState } from '../../db/schema'
 import type { RunMode, RunTrigger } from '../../../shared/types/api'
@@ -64,7 +68,15 @@ export interface RetrainDeps {
   kill?: (pid: number, signal: NodeJS.Signals) => void
   // Every process on the machine (Linux /proc); empty where that cannot be read.
   processes?: () => ProcessInfo[]
+  // The lock a run started from a shell holds while it lives (forecast/db/store.py),
+  // and its removal once the run is closed.
+  cliLock?: (runId: number) => CliLock
+  removeCliLock?: (runId: number) => void
 }
+
+// held: the shell's run is alive; free: it ended (however); missing: no lock file to
+// judge by (another directory layout, or a script from before the lock).
+export type CliLock = 'held' | 'free' | 'missing'
 
 // What the admin page keeps of a run's output.
 export const LOG_TAIL_BYTES = 16 * 1024
@@ -125,6 +137,42 @@ function defaultProcesses(): ProcessInfo[] {
   return found
 }
 
+// The lock file of shell run `runId`, as forecast/db/store.py cli_lock_path names it:
+// next to the database file with symlinks resolved.
+export function cliLockPath(dbPath: string, runId: number): string {
+  let real = dbPath
+  try {
+    real = realpathSync(dbPath)
+  } catch {
+    // not there (yet): the name as given
+  }
+  return join(dirname(real), `${basename(real)}-cli-run-${runId}.lock`)
+}
+
+// Whether another process holds the lock: SQLite's own RESERVED lock on the side file,
+// tried without waiting. The kernel drops it the moment its holder ends.
+function defaultCliLock(lockPath: string): CliLock {
+  if (!existsSync(lockPath)) return 'missing'
+  let probe: Database.Database | null = null
+  try {
+    probe = new Database(lockPath, { fileMustExist: true, timeout: 0 })
+    probe.exec('BEGIN IMMEDIATE')
+    probe.exec('ROLLBACK')
+    return 'free'
+  } catch (error) {
+    const code = (error as { code?: string }).code
+    if (code === 'SQLITE_BUSY') return 'held'
+    if (code === 'SQLITE_CANTOPEN') return 'missing'
+    throw error
+  } finally {
+    probe?.close()
+  }
+}
+
+function defaultRemoveCliLock(lockPath: string) {
+  for (const path of [lockPath, `${lockPath}-journal`]) rmSync(path, { force: true })
+}
+
 function optionValue(args: string[], name: string): string | undefined {
   const i = args.indexOf(name)
   return i >= 0 ? args[i + 1] : undefined
@@ -150,6 +198,11 @@ export function createRetrainRunner(
   const now = deps.now ?? (() => new Date())
   const kill = deps.kill ?? defaultKill
   const processes = deps.processes ?? defaultProcesses
+  const cliLock =
+    deps.cliLock ?? ((runId: number) => defaultCliLock(cliLockPath(config.dbPath, runId)))
+  const removeCliLock =
+    deps.removeCliLock ??
+    ((runId: number) => defaultRemoveCliLock(cliLockPath(config.dbPath, runId)))
 
   let current: Current | null = null
   let stopping = false
@@ -208,13 +261,13 @@ export function createRetrainRunner(
       .get()
 
   // The retrain script working on our database. With a run id: only that run's
-  // process (a run of the web app); with null: any web-app run; 'cli': a shell's run.
-  function isScript(args: string[], runId: number | null | 'cli'): boolean {
+  // process (a run of the web app); with null: any web-app run. A shell's run is
+  // never matched by command line: it is judged by its lock (closeIfGone).
+  function isScript(args: string[], runId: number | null): boolean {
     const m = args.indexOf('-m')
     if (m < 0 || args[m + 1] !== config.module) return false
     if (optionValue(args, '--db') !== config.dbPath) return false
     const id = optionValue(args, '--run-id')
-    if (runId === 'cli') return id === undefined
     return id !== undefined && (runId === null || id === String(runId))
   }
 
@@ -222,14 +275,12 @@ export function createRetrainRunner(
   // process (by pid and command line) and everything in the process group the
   // web app gave it, which is where the gate workers are.
   function processesOf(row: RetrainRun, table: ProcessInfo[]): ProcessInfo[] {
-    if (!row.pid) return []
-    const tag = row.trigger === 'cli' ? 'cli' : row.id
-    const leader = table.find((p) => p.pid === row.pid && isScript(p.args, tag))
+    if (!row.pid || row.trigger === 'cli') return []
+    const leader = table.find((p) => p.pid === row.pid && isScript(p.args, row.id))
     return table.filter(
       (p) =>
         p === leader ||
-        (row.trigger !== 'cli' &&
-          p.pgid === row.pid &&
+        (p.pgid === row.pid &&
           (isScript(p.args, row.id) || p.args.some((a) => a.includes('multiprocessing'))))
     )
   }
@@ -399,20 +450,36 @@ export function createRetrainRunner(
   }
 
   // An active row this server holds no process for: a shell's run, or a row left
-  // by a run that could not be stopped cleanly. It ends when its process is gone.
+  // by a run that could not be stopped cleanly. Closed once it has surely ended.
   function closeIfGone(row: RetrainRun, table: ProcessInfo[]): boolean {
     if (current?.run.id === row.id) return false
-    if (processesOf(row, table).some((p) => p.pid === row.pid)) return false
-    const message =
-      row.trigger === 'cli'
-        ? `The run started from a shell (process ${row.pid ?? 'unknown'}) ended without reporting a result. ${UNCHANGED}`
-        : `The retrain script is gone without reporting a result. ${UNCHANGED}`
+    let message: string
+    let lock: CliLock | null = null
+    if (row.trigger === 'cli') {
+      // Its command line may spell the database another way and its pid may belong to
+      // another pid namespace (another container on the same volume): only the lock
+      // it holds next to the database says whether it lives.
+      lock = cliLock(row.id)
+      if (lock === 'held') return false
+      if (lock === 'missing') {
+        const since = (row.startedAt ?? row.createdAt).getTime()
+        if (now().getTime() - since < config.timeoutMs) return false
+        const minutes = Math.round((config.timeoutMs / 60_000) * 100) / 100
+        message = `The run started from a shell has not reported a result within ${minutes} minutes (V4W_RETRAIN_TIMEOUT_MIN) and has no lock file the server can check, so it is taken as ended. ${UNCHANGED}`
+      } else {
+        message = `The run started from a shell (process ${row.pid ?? 'unknown'}) ended without reporting a result. ${UNCHANGED}`
+      }
+    } else {
+      if (processesOf(row, table).some((p) => p.pid === row.pid)) return false
+      message = `The retrain script is gone without reporting a result. ${UNCHANGED}`
+    }
     const closed = db
       .update(forecastRuns)
       .set({ status: 'failed', finishedAt: now(), message })
       .where(and(eq(forecastRuns.id, row.id), inArray(forecastRuns.status, [...ACTIVE])))
       .run()
-    if (closed.changes) console.log(`[retrain] run ${row.id} closed: its process is gone`)
+    if (closed.changes) console.log(`[retrain] run ${row.id} closed: it has ended`)
+    if (lock === 'free') removeCliLock(row.id)
     return true
   }
 
