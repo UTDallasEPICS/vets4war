@@ -5,6 +5,7 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import type {
   DataSource,
   HourRow,
+  PlannedShiftResult,
   ForecastParams,
   ForecastResponse,
   ModelResponse,
@@ -24,11 +25,17 @@ import {
   hourRows,
   judgePlanned,
   resolvePatience,
+  type RolledDay,
   rollupShifts,
   staffingDays,
   windowSummary,
 } from './compute'
-import { parseForecastQuery, parsePlannedBody, type ForecastInput } from './params'
+import {
+  parseForecastQuery,
+  parsePlannedBody,
+  type ForecastInput,
+  type PlannedInput,
+} from './params'
 import { describeSource } from './source'
 import { readForecastSnapshot, readServingModel, readStatus, type ForecastSnapshot } from './store'
 
@@ -89,7 +96,31 @@ async function evaluate(db: AppDb, runtime: ForecastRuntime, input: ForecastInpu
   const patience = resolvePatience(input, snapshot.state)
   const hours = await hourRowsByDay(snapshot, input, patience.patienceSec)
   const source: DataSource = describeSource(runtime.dataSourceKind, snapshot.state)
-  return { snapshot, patience, hours, rolled: rollupShifts(hours), source }
+  await yieldToEventLoop()
+  const rolled = rollupShifts(hours)
+  await yieldToEventLoop()
+  return { snapshot, patience, hours, rolled, source }
+}
+
+// Each roster item evaluates the Erlang chain over its shift's hours (two Erlang A
+// calls per hour), so 1,098 items are about as much work as a long range: judged in
+// slices, with the event loop given back between them. The first refusal still wins
+// in item order, and efficiency 0 is refused before any item.
+const PLANNED_PER_SLICE = 24
+
+async function judgePlannedInSlices(
+  hours: HourRow[],
+  rolled: RolledDay[],
+  input: PlannedInput,
+  patienceSec: number | null
+): Promise<PlannedShiftResult[]> {
+  const results: PlannedShiftResult[] = []
+  for (let i = 0; i === 0 || i < input.planned.length; i += PLANNED_PER_SLICE) {
+    if (i > 0) await yieldToEventLoop()
+    const slice = { ...input, planned: input.planned.slice(i, i + PLANNED_PER_SLICE) }
+    results.push(...judgePlanned(hours, rolled, slice, patienceSec))
+  }
+  return results
 }
 
 export async function getForecast(
@@ -99,12 +130,14 @@ export async function getForecast(
 ): Promise<ForecastResponse> {
   const input = parseForecastQuery(query, runtime.today)
   const { snapshot, patience, hours, rolled, source } = await evaluate(db, runtime, input)
+  const days = forecastDays(rolled, hours, snapshot.holidayNames)
+  await yieldToEventLoop()
   return {
     params: params(input, patience),
     data_source: source,
     holiday_coverage: holidayCoverage(snapshot.lastHoliday, input.end),
     hours,
-    days: forecastDays(rolled, hours, snapshot.holidayNames),
+    days,
     window: windowSummary(
       hours,
       input,
@@ -140,7 +173,7 @@ export async function postPlanned(
   return {
     params: params(input, patience),
     data_source: source,
-    shifts: judgePlanned(hours, rolled, input, patience.patienceSec),
+    shifts: await judgePlannedInSlices(hours, rolled, input, patience.patienceSec),
   }
 }
 
