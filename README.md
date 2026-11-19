@@ -20,8 +20,8 @@ How a number on the page is made:
    week" inputs, because the forecast runs weeks ahead and those numbers would not exist yet.
 2. **Handle time.** The average talk time per weekday and hour, over answered calls, with
    recent calls weighted more.
-3. **Caller patience.** How long callers wait before they hang up, estimated from the calls
-   where they did.
+3. **Caller patience.** How long callers are willing to wait, estimated from the waiting
+   times of all calls and from which callers hung up.
 4. **Staffing.** Queueing arithmetic (Erlang A, where callers hang up; Erlang C is available
    in the API) gives the people needed on the phones so that a target share of callers (80% by
    default) is answered within a target time (30 seconds by default). Dividing by staff
@@ -82,9 +82,10 @@ pnpm forecast:setup   # Python 3.12 environment for retraining, in forecast/.ven
 pnpm dev              # http://localhost:3000
 ```
 
-Open `http://localhost:3000` (use `localhost`, not `127.0.0.1`: the address must be the one
-in `BETTER_AUTH_URL`, or every change you try is refused). You land on the sign-in page. Type `admin@example.org` and press
-**Send code**. The terminal that runs `pnpm dev` prints a line like
+Open `http://localhost:3000`. Use `localhost`, not `127.0.0.1`: the address must be the one
+in `BETTER_AUTH_URL`, or every change you try is refused. You land on the sign-in page. Type
+`admin@example.org` and press **Send code**. The terminal that runs `pnpm dev` prints a line
+like
 
 ```
 [auth] sign-in code for admin@example.org: 301190
@@ -230,8 +231,8 @@ The page at `/` is one screen for a supervisor.
   recommended** sets each shift to its recommended peak, never above the cap.
 - **If staffed as recommended.** The same numbers when every hour is staffed as the grid
   says, the hang-ups with one person fewer, and hang-ups by shift for both rosters.
-- **Four totals.** Predicted calls, real calls (calls that last more than 2 minutes),
-  expected talk time, and person-hours to schedule.
+- **Four totals.** Predicted calls, real calls (those with more than 2 minutes of talk
+  time), expected talk time, and person-hours to schedule.
 - **Hang-ups day by day.** One pair of bars per day: your roster against the recommendation.
   Click a day to open it.
 - **People to schedule, hour by hour.** One row per day, one column per hour, grouped into
@@ -245,6 +246,9 @@ The page at `/` is one screen for a supervisor.
 - **Notes.** While new call data is being processed, or when it was loaded but the forecast
   could not be updated, a note above the cards says so and says which calls the forecast
   still uses.
+- **When there is nothing to show**, the page says why: there is no forecast yet, the dates
+  are outside what the forecast covers, or the caller patience measured from the call data
+  is implausibly short and an admin has to correct the data.
 
 The console always uses Erlang A with the measured caller patience and the default
 handle-time weighting; those are parameters of the API, not controls on the page. It loads
@@ -345,7 +349,9 @@ own `patience_sec`, or `queue_model=erlang_c`, is still answered.
 ## Environment variables
 
 `.env.example` lists every variable with a comment. `pnpm dev` reads `.env`; a production
-build does not (give it real environment variables, or use `pnpm start`).
+build does not: give it real environment variables, or start it with `pnpm start`, which
+passes `.env` to it. (With the `.env` of the quick start `pnpm start` refuses to run,
+because printing sign-in codes to the log is allowed under `pnpm dev` only.)
 
 | Name                        | Default                | Meaning                                                    |
 | --------------------------- | ---------------------- | ---------------------------------------------------------- |

@@ -33,9 +33,10 @@ They are stored without a time zone and never converted.
 
 An `.xlsx` workbook. A sheet counts as a call-records sheet when its **first row** holds all
 seven column names above, in any order and with any other columns beside them. Every such
-sheet is read; all other sheets are skipped. So all three layouts the partner has sent work:
-the plain export with one sheet, the workbook with summary sheets in front of the calls, and
-the multi-year workbook with one sheet per year.
+sheet is read; all other sheets are skipped. That covers the three layouts the old tool's
+tests describe: the plain export with one sheet, the workbook with summary sheets in front
+of the calls, and the multi-year workbook with one sheet per year. (They were tried as
+generated files in those layouts, not as real ones: see the last section.)
 
 What a cell may hold:
 
@@ -100,7 +101,7 @@ What an upload's status means:
 | Discarded             | `discarded` | Thrown away, by hand or after 7 days.                                    |
 | Could not be read     | `failed`    | Reading stopped (a damaged file, or the server restarted while reading). |
 
-(The API also knows the status `importing`; the app never shows it, because an import is a
+(The API also lists a status `importing`. Nothing sets it today, because an import is a
 single short transaction.)
 
 ## Refusals
@@ -231,7 +232,7 @@ Discarding an upload that is not `ready`, `invalid` or `failed` answers 409 as w
 | How long a checked file is kept    | 7 days                | code                  |
 | Days or rows listed in one message | 10, then "and N more" | code                  |
 
-The fixed ones are in `server/utils/ingest/limits.ts`.
+Most of the fixed ones are in `server/utils/ingest/limits.ts`.
 
 The proxy in front of the app may have a lower limit on request size than the app. If large
 files are refused before they reach the app, raise that limit, or load the history with the

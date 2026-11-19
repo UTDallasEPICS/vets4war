@@ -73,7 +73,8 @@ Four consequences of how the image is made:
 ### Running as root, or not
 
 The image runs as `root` by default. That is what the EPICS template's image does, and the
-platform's database volume is written by that user.
+platform's database volume is expected to be written by that user (confirm it with the
+platform owner).
 
 The image also contains an unprivileged user, `app` (user id 10001). To run as that user,
 build with
