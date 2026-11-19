@@ -20,6 +20,7 @@ import type {
   QuickHangups,
   WindowSummary,
 } from '#shared/types/api'
+import { MAX_TARGET_PCT, MAX_TARGET_SEC } from '#shared/utils/constants'
 import {
   SHIFTS,
   SECONDS_PER_HOUR,
@@ -106,11 +107,11 @@ export const DEFAULT_EFF_PCT = 65.6
 export const CURRENT_ROSTER: Roster = { Overnight: 4, Day: 4, Evening: 6 }
 // Staff-per-shift sliders go to this, above the shift caps, so what-ifs are not cut off.
 export const ROSTER_SLIDER_MAX = 10
+// The answer-time field's own cap, as on the old page (its markup keeps max="3600" so
+// the page compares equal to the old one). It is not what the read API accepts: that
+// bound, and the one on the service level, are MAX_TARGET_SEC and MAX_TARGET_PCT of
+// shared/utils/constants.ts, and controlProblem() below refuses a setting past them.
 const TSEC_MAX = 3600
-// The read API's bounds (server/utils/forecast/params.ts): target_pct at most 0.999,
-// target_sec at most 300.
-const MAX_TARGET_PCT = 0.999
-const MAX_TARGET_SEC = 300
 const TSEC_DEFAULT = 30
 
 export interface Cache {

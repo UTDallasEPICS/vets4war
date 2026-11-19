@@ -173,6 +173,9 @@
           %</span
         >
         <label class="muted" for="tsec">within</label>
+        <!-- max="3600" is the old page's markup, kept so both pages compare equal. The
+             read API takes at most MAX_TARGET_SEC (shared/utils/constants.ts): a larger
+             value is refused with a message by controlProblem() in useConsoleState.ts. -->
         <input
           class="field-in"
           type="number"

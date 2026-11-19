@@ -106,6 +106,8 @@ MAX_MISMATCHES_SHOWN = 3
 # call waits through routing, so a smaller mean patience cannot come from sane queue
 # and abandon times; the read API also bounds a requested patience_sec from here up
 # (a tiny value makes its Erlang A computation extremely slow).
+# The web app cannot import this file: MIN_PATIENCE_SEC in shared/utils/constants.ts
+# must stay equal to it (tests/unit/shared/constants.test.ts compares the two).
 MIN_PATIENCE_SEC = 10.0
 
 

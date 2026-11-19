@@ -5,7 +5,7 @@
 import { MAX_AGENTS, SECONDS_PER_HOUR } from '#shared/utils/erlang'
 import { formatDuration, pyRound } from '#shared/utils/format'
 import { addDays, isoWeekday } from '#shared/utils/dates'
-import { TALK_TIME_CAVEAT } from '#shared/utils/constants'
+import { MAX_PATIENCE_SEC, MIN_PATIENCE_SEC, TALK_TIME_CAVEAT } from '#shared/utils/constants'
 import {
   SHIFTS,
   abandonShare,
@@ -28,12 +28,7 @@ import type {
   WindowSummary,
 } from '#shared/types/api'
 import { apiError } from '../http'
-import {
-  ACCEPTED_PATIENCE_SEC_MAX,
-  ACCEPTED_PATIENCE_SEC_MIN,
-  type ForecastInput,
-  type PlannedInput,
-} from './params'
+import type { ForecastInput, PlannedInput } from './params'
 import { cellIndex, type ForecastSnapshot, type ForecastStateRow } from './store'
 
 // ISO weekday of Saturday: is_weekend = weekday >= 6.
@@ -66,14 +61,14 @@ export function resolvePatience(
   // itself means the waiting times in the call data are wrong: refuse, rather than
   // compute with it or replace it by a number that was never measured.
   const stored = state.patienceSec
-  if (!(stored >= ACCEPTED_PATIENCE_SEC_MIN)) {
+  if (!(stored >= MIN_PATIENCE_SEC)) {
     throw apiError(
       503,
       'implausible_patience',
       `The stored caller-patience estimate (${stored} s) is implausibly small: the waiting ` +
         `times in the call data look wrong. An admin should fix them, reload the call ` +
         `data and run a retrain. Until then, send patience_sec ` +
-        `(${ACCEPTED_PATIENCE_SEC_MIN} to ${ACCEPTED_PATIENCE_SEC_MAX} s) or use ` +
+        `(${MIN_PATIENCE_SEC} to ${MAX_PATIENCE_SEC} s) or use ` +
         `queue_model=erlang_c.`,
       { patience_sec: Number.isFinite(stored) ? stored : null }
     )
