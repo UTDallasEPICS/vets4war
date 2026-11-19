@@ -113,9 +113,19 @@
          and an empty server-rendered table does not hydrate cleanly. -->
     <UTable v-else :data="people" :columns="columns" class="w-full">
       <template #email-cell="{ row }">
-        <div class="font-medium">{{ row.original.email }}</div>
-        <div v-if="isMe(row.original)" class="text-xs text-gray-500 dark:text-gray-400">
-          This is you: you cannot remove yourself or your own admin access.
+        <!-- The table's cells do not wrap, so on a phone the note under the admin's own
+             address ran past the edge of the table's scrolling box and could not be
+             read. Below `sm` this cell has a width of its own and wraps (a long address
+             breaks too); the other columns are reached by scrolling the box sideways,
+             as in the uploads and runs tables. -->
+        <div
+          class="max-w-64 min-w-48 break-words whitespace-normal sm:max-w-none sm:whitespace-nowrap"
+          data-testid="person-email"
+        >
+          <div class="font-medium">{{ row.original.email }}</div>
+          <div v-if="isMe(row.original)" class="text-xs text-gray-500 dark:text-gray-400">
+            This is you: you cannot remove yourself or your own admin access.
+          </div>
         </div>
       </template>
       <template #role-cell="{ row }">
