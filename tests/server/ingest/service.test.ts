@@ -21,7 +21,7 @@ import {
   uploadDetail,
   type IngestDeps,
 } from '../../../server/utils/ingest/service'
-import type { RunRow } from '../../../server/utils/retrain/runner'
+import type { RetrainRun } from '../../../server/utils/retrain/runner'
 import {
   HEADER,
   call,
@@ -59,7 +59,7 @@ function deps(overrides: Partial<IngestDeps> = {}): IngestDeps {
           createdAt: new Date(),
         })
         .returning()
-        .get() as RunRow
+        .get() as RetrainRun
       return { run, queued: false }
     },
     ...overrides,
@@ -576,7 +576,7 @@ describe('the run that read an import (review X-6)', () => {
         ...values,
       })
       .returning()
-      .get() as RunRow
+      .get() as RetrainRun
 
   it('does not link an import queued behind a running retrain to that run', async () => {
     const active = runRow({ callsRevision: 0 })
