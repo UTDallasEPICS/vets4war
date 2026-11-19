@@ -1,5 +1,6 @@
 # What the image build must never see or does not need. Patterns without a slash match
-# at the top of the build context only, so data files carry **/ to match at any depth.
+# at the top of the build context only, so data files and data folders carry **/ to match
+# at any depth, as they do in .gitignore.
 
 # Version control, editor and CI files
 .git/
@@ -23,7 +24,7 @@ forecast/.venv/
 **/*.db-wal
 **/*.db-shm
 **/*-cli-run-*.lock
-data/
+**/data/
 **/*.xlsx
 **/*.xls
 **/*.csv
