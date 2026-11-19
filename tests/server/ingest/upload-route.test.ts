@@ -9,6 +9,7 @@ import type { AddressInfo } from 'node:net'
 import { readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { createApp, eventHandler, toNodeListener } from 'h3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
@@ -229,9 +230,10 @@ describe('POST /api/admin/uploads: a hostile workbook (review N-2)', () => {
 
 describe('readBodyWithin', () => {
   it('returns the body up to the limit and null past it', async () => {
-    const chunks = [Buffer.alloc(10, 1), Buffer.alloc(10, 2)]
-    expect((await readBodyWithin(chunks, 20))!.length).toBe(20)
-    expect(await readBodyWithin(chunks, 19)).toBeNull()
+    // a stream, as the route passes the request itself
+    const body = () => Readable.from([Buffer.alloc(10, 1), Buffer.alloc(10, 2)])
+    expect((await readBodyWithin(body(), 20))!.length).toBe(20)
+    expect(await readBodyWithin(body(), 19)).toBeNull()
   })
 
   it('stops reading as soon as the limit is passed', async () => {
