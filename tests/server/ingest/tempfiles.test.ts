@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   UPLOAD_FOLDER_PREFIX,
   makeUploadFolder,
-  removeLeftoverUploadFiles,
+  removeLeftoverUploadFolders,
 } from '../../../server/utils/ingest/tempfiles'
 
 let dir: string
@@ -29,7 +29,7 @@ describe('upload temp folders', () => {
       await mkdir(join(dir, UPLOAD_FOLDER_PREFIX + name))
     }
     await mkdir(join(dir, 'someone-else'))
-    const removed = await removeLeftoverUploadFiles(dir, (pid) => pid === LIVE)
+    const removed = await removeLeftoverUploadFolders(dir, (pid) => pid === LIVE)
     expect(removed).toBe(3)
     expect((await readdir(dir)).sort()).toEqual([
       'someone-else',

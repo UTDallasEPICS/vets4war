@@ -7,7 +7,10 @@ import { apiError } from '../http'
 import { useRetrainRunner } from '../retrain'
 import type { IngestDeps } from './service'
 
-export { removeLeftoverUploadFiles } from './tempfiles'
+import { removeLeftoverUploadFolders } from './tempfiles'
+
+// Start-up clean-up of upload temp folders (tempfiles.ts); the name the plugin imports.
+export const removeLeftoverUploadFiles = removeLeftoverUploadFolders
 
 const MB = 1024 * 1024
 

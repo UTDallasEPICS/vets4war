@@ -23,7 +23,7 @@ function isAlive(pid: number): boolean {
 
 // At start-up nothing in this process is reading yet: a folder of this pid (a reused pid
 // after a restart), of a pid that is gone, or without a pid (older versions) is left over.
-export async function removeLeftoverUploadFiles(
+export async function removeLeftoverUploadFolders(
   dir: string = tmpdir(),
   alive: (pid: number) => boolean = isAlive
 ): Promise<number> {
