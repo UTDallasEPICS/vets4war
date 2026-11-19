@@ -9,7 +9,8 @@
 import ExcelJS from 'exceljs'
 import { REQUIRED_CALL_COLUMNS } from '../../../shared/utils/constants'
 import type { UploadIssue } from '../../../shared/types/api'
-import { ArchiveError, inspectArchive } from './archive'
+import type { Readable } from 'node:stream'
+import { ArchiveError, inspectArchive, openPart, type ArchiveInfo } from './archive'
 import { MAX_LISTED, ROW_BATCH } from './limits'
 
 export type RequiredColumn = (typeof REQUIRED_CALL_COLUMNS)[number]
@@ -57,7 +58,6 @@ const CLOCK = /^(\d{1,2}):(\d{2}):(\d{2})$/
 const UNREADABLE = '\u0000unreadable'
 
 const READER_OPTIONS = {
-  entries: 'emit',
   sharedStrings: 'cache',
   styles: 'cache',
   hyperlinks: 'ignore',
@@ -178,33 +178,60 @@ function listRows(rows: number[], total: number): string {
 
 const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve))
 
-type WorksheetLike = AsyncIterable<ExcelJS.Row>
+type WorksheetRows = AsyncIterable<ExcelJS.Row>
 
-// Reads at most what the iterator has buffered and lets the reader close the part.
-async function skipSheet(sheet: WorksheetLike) {
-  for await (const _row of sheet) break
+// The steps of exceljs' streaming WorkbookReader, called one part at a time. Its own walk
+// over the zip is not used: on workbooks whose worksheets come before the workbook part
+// (openpyxl writes them that way) it parks sheets in temp files and, in this sandbox,
+// read the same file as zero calls in two of six runs without any error. Driving the
+// steps ourselves gives a fixed order (relationships, workbook, styles, strings, then
+// each sheet in workbook order), no temp files, and parts capped at their declared size.
+// exceljs is pinned (4.4.0); tests/parity/parser checks this path against Python.
+interface ReaderSteps {
+  _parseRels(stream: Readable): Promise<void>
+  _parseWorkbook(stream: Readable): Promise<void>
+  _parseStyles(stream: Readable): Promise<void>
+  _parseSharedStrings(stream: Readable): AsyncIterable<unknown>
+  _parseWorksheet(
+    stream: Readable,
+    id: string
+  ): Iterable<{ eventType: string; value: WorksheetRows }>
+}
+
+async function* worksheets(path: string, archive: ArchiveInfo) {
+  const reader = new ExcelJS.stream.xlsx.WorkbookReader(
+    path,
+    READER_OPTIONS
+  ) as unknown as ReaderSteps
+  const open = (part: string) => openPart(path, archive.parts.get(part)!)
+  await reader._parseRels(open(archive.workbookRels))
+  await reader._parseWorkbook(open(archive.workbook))
+  if (archive.styles) await reader._parseStyles(open(archive.styles))
+  if (archive.sharedStrings) {
+    for await (const _ of reader._parseSharedStrings(open(archive.sharedStrings))) {
+      // 'cache' keeps the strings on the reader; nothing is emitted per string.
+    }
+  }
+  let index = 0
+  for (const sheet of archive.sheets) {
+    if (!sheet.part) continue
+    index++
+    for (const event of reader._parseWorksheet(open(sheet.part), String(index))) {
+      if (event.eventType === 'worksheet') yield { name: sheet.name, rows: event.value }
+    }
+  }
 }
 
 export async function parseWorkbook(path: string, options: ParseOptions): Promise<ParseResult> {
   const result: ParseResult = { sheets: [], totalRows: 0, errors: [] }
-  let names: Map<string, string>
+  let archive: ArchiveInfo
   try {
-    const archive = await inspectArchive(path)
-    names = new Map(archive.sheets.flatMap((s) => (s.part ? [[s.part, s.name] as const] : [])))
+    archive = await inspectArchive(path)
   } catch (error) {
     if (!(error instanceof ArchiveError)) throw error
     result.errors.push({ code: error.code, message: error.message })
     return result
   }
-
-  const reader = new ExcelJS.stream.xlsx.WorkbookReader(path, READER_OPTIONS)
-  let part: string | null = null
-  // The reader is an EventEmitter at run time; its typings leave that out. With
-  // `entries: 'emit'` it names each worksheet part just before yielding the sheet.
-  const events = reader as unknown as import('node:events').EventEmitter
-  events.on('entry', (entry: { type: string; id?: string }) => {
-    if (entry.type === 'worksheet') part = `xl/worksheets/sheet${entry.id}.xml`
-  })
 
   const nearMisses: { sheet: string; missing: string[] }[] = []
   const badRows = new Map<
@@ -212,14 +239,11 @@ export async function parseWorkbook(path: string, options: ParseOptions): Promis
     { sheet: string; problem: string; rows: number[]; count: number }
   >()
   let stopped = false
+  let sheetsRead = 0
 
-  for await (const worksheet of reader as unknown as AsyncIterable<WorksheetLike>) {
-    // A worksheet part the workbook does not list is not a sheet anyone sees in Excel.
-    const name = part === null ? undefined : names.get(part)
-    if (name === undefined || stopped) {
-      await skipSheet(worksheet)
-      continue
-    }
+  for await (const { name, rows: worksheet } of worksheets(path, archive)) {
+    sheetsRead++
+    if (stopped) break
     let columns: Map<RequiredColumn, number> | null = null
     let rows = 0
     let batch: ParsedCall[] = []
@@ -286,6 +310,12 @@ export async function parseWorkbook(path: string, options: ParseOptions): Promis
       await yieldToEventLoop()
     }
     if (columns !== null) result.sheets.push({ name, rows })
+  }
+  // A sheet that was never read would be calls missing without a word: never let that
+  // pass as a short file.
+  const worksheetCount = archive.sheets.filter((sheet) => sheet.part).length
+  if (!stopped && sheetsRead !== worksheetCount) {
+    throw new Error(`read ${sheetsRead} of ${worksheetCount} worksheets`)
   }
 
   if (result.sheets.length === 0) {

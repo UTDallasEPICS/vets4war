@@ -2,10 +2,12 @@
 // archive's central directory by hand (no dependency) and refuses what would be
 // expensive or ambiguous to read: too many parts, too much once unpacked, too many
 // sheets, zip64, entries whose local header disagrees with the directory, and sheets
-// that share one worksheet. It also names every sheet, because the streaming reader
-// only knows a worksheet by its part name (xl/worksheets/sheet3.xml).
+// that share one worksheet. It also names every sheet and locates every part, so the
+// parser can stream each part straight from the file (openPart) in a fixed order.
+import { createReadStream } from 'node:fs'
 import { open, type FileHandle } from 'node:fs/promises'
-import { inflateRawSync } from 'node:zlib'
+import { Readable, Transform, pipeline } from 'node:stream'
+import { createInflateRaw, inflateRawSync } from 'node:zlib'
 import {
   MAX_ARCHIVE_ENTRIES,
   MAX_SHEETS,
@@ -31,10 +33,22 @@ export interface SheetPart {
   part: string | null
 }
 
+export interface PartLocation {
+  method: number
+  dataStart: number
+  compressedSize: number
+  size: number
+}
+
 export interface ArchiveInfo {
   entries: number
   unpackedBytes: number
   sheets: SheetPart[] // in the workbook's own order
+  parts: Map<string, PartLocation>
+  workbook: string
+  workbookRels: string
+  sharedStrings: string | null
+  styles: string | null
 }
 
 export const NOT_A_WORKBOOK =
@@ -54,8 +68,6 @@ const U32_MAX = 0xffffffff
 const FLAG_DATA_DESCRIPTOR = 0x08
 const STORED = 0
 const DEFLATED = 8
-// The streaming reader picks worksheets out of the archive by this name pattern only.
-const WORKSHEET_PART = /^xl\/worksheets\/sheet\d+\.xml$/
 const WORKBOOK = 'xl/workbook.xml'
 const WORKBOOK_RELS = 'xl/_rels/workbook.xml.rels'
 
@@ -122,8 +134,8 @@ function readDirectory(directory: Buffer, count: number): Entry[] {
   return entries
 }
 
-// The streaming reader trusts local headers, not the directory: they must agree, or the
-// limits checked here would not be the limits that apply.
+// The local header must agree with the directory, or the limits checked against the
+// directory would not be the limits that apply. Returns where the entry's data starts.
 async function checkLocalHeader(file: FileHandle, entry: Entry, directoryOffset: number) {
   const header = await readAt(file, entry.localOffset, LOCAL_SIZE)
   if (header.readUInt32LE(0) !== LOCAL_SIGNATURE) refuse()
@@ -131,6 +143,7 @@ async function checkLocalHeader(file: FileHandle, entry: Entry, directoryOffset:
   const extraLength = header.readUInt16LE(28)
   const name = (await readAt(file, entry.localOffset + LOCAL_SIZE, nameLength)).toString('utf8')
   if (name !== entry.name || header.readUInt16LE(8) !== entry.method) refuse()
+  if (entry.method !== STORED && entry.method !== DEFLATED) refuse()
   if (!(header.readUInt16LE(6) & FLAG_DATA_DESCRIPTOR)) {
     if (header.readUInt32LE(18) !== entry.compressedSize || header.readUInt32LE(22) !== entry.size)
       refuse()
@@ -140,21 +153,53 @@ async function checkLocalHeader(file: FileHandle, entry: Entry, directoryOffset:
   return dataStart
 }
 
-async function readPart(file: FileHandle, entry: Entry, directoryOffset: number): Promise<string> {
-  if (entry.size > MAX_WORKBOOK_PART_BYTES) refuse()
-  const dataStart = await checkLocalHeader(file, entry, directoryOffset)
-  const raw = await readAt(file, dataStart, entry.compressedSize)
-  let data: Buffer
-  if (entry.method === STORED) data = raw
-  else if (entry.method === DEFLATED) {
+async function readSmallPart(file: FileHandle, location: PartLocation): Promise<string> {
+  if (location.size > MAX_WORKBOOK_PART_BYTES) refuse()
+  const raw = await readAt(file, location.dataStart, location.compressedSize)
+  let data = raw
+  if (location.method === DEFLATED) {
     try {
       data = inflateRawSync(raw, { maxOutputLength: MAX_WORKBOOK_PART_BYTES })
     } catch {
       return refuse()
     }
-  } else return refuse()
-  if (data.length !== entry.size) refuse()
+  }
+  if (data.length !== location.size) refuse()
   return data.toString('utf8')
+}
+
+// One part as a stream of UTF-8 text, read straight from the file. It fails when the
+// part inflates to more (or less) than the directory declared, so the unpacked-size
+// limit holds whatever the compressed data says.
+export function openPart(path: string, location: PartLocation): Readable {
+  if (location.compressedSize === 0) {
+    if (location.size === 0) return Readable.from([])
+    return new Readable({
+      read() {
+        this.destroy(new ArchiveError('not_a_workbook', NOT_A_WORKBOOK))
+      },
+    })
+  }
+  const raw = createReadStream(path, {
+    start: location.dataStart,
+    end: location.dataStart + location.compressedSize - 1,
+  })
+  let seen = 0
+  const counted = new Transform({
+    transform(chunk: Buffer, _encoding, done) {
+      seen += chunk.length
+      done(seen > location.size ? new ArchiveError('not_a_workbook', NOT_A_WORKBOOK) : null, chunk)
+    },
+    flush(done) {
+      done(seen === location.size ? null : new ArchiveError('not_a_workbook', NOT_A_WORKBOOK))
+    },
+  })
+  const stages = location.method === DEFLATED ? [raw, createInflateRaw(), counted] : [raw, counted]
+  // pipeline destroys every stage on an error and hands it to the last one, so the
+  // consumer's for-await sees it.
+  pipeline(stages as [Readable, ...Transform[]], () => {})
+  counted.setEncoding('utf8')
+  return counted
 }
 
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }
@@ -191,18 +236,32 @@ function resolveTarget(target: string): string {
   return resolved.join('/')
 }
 
-function sheetsOf(workbookXml: string, relsXml: string, partNames: Set<string>): SheetPart[] {
-  const relationships = new Map<string, { type: string; target: string; external: boolean }>()
+interface Relationship {
+  type: string
+  part: string
+  external: boolean
+}
+
+function relationshipsOf(relsXml: string): Map<string, Relationship> {
+  const relationships = new Map<string, Relationship>()
   for (const match of relsXml.matchAll(/<(?:[\w.-]+:)?Relationship\b([^>]*)>/g)) {
     const attrs = attributes(match[1]!)
     const id = attrs.get('Id')
     if (!id) continue
     relationships.set(id, {
       type: attrs.get('Type') ?? '',
-      target: attrs.get('Target') ?? '',
+      part: resolveTarget(attrs.get('Target') ?? ''),
       external: attrs.get('TargetMode') === 'External',
     })
   }
+  return relationships
+}
+
+function sheetsOf(
+  workbookXml: string,
+  relationships: Map<string, Relationship>,
+  parts: Map<string, PartLocation>
+): SheetPart[] {
   const sheets: SheetPart[] = []
   for (const match of workbookXml.matchAll(/<(?:[\w.-]+:)?sheet\b([^>]*)>/g)) {
     const attrs = attributes(match[1]!)
@@ -214,17 +273,25 @@ function sheetsOf(workbookXml: string, relsXml: string, partNames: Set<string>):
       sheets.push({ name, part: null })
       continue
     }
-    const part = resolveTarget(relationship.target)
-    if (!partNames.has(part) || !WORKSHEET_PART.test(part)) {
-      refuse(
-        'The sheets of this workbook are stored in a way this reader does not recognise. ' +
-          'Open it in Excel, save it as .xlsx and try again.'
-      )
-    }
-    sheets.push({ name, part })
+    if (!parts.has(relationship.part)) refuse()
+    sheets.push({ name, part: relationship.part })
   }
   if (sheets.length === 0) refuse()
   return sheets
+}
+
+function partOfType(
+  relationships: Map<string, Relationship>,
+  type: string,
+  parts: Map<string, PartLocation>
+) {
+  for (const relationship of relationships.values()) {
+    if (!relationship.external && relationship.type.endsWith(type)) {
+      if (!parts.has(relationship.part)) refuse()
+      return relationship.part
+    }
+  }
+  return null
 }
 
 export async function inspectArchive(path: string): Promise<ArchiveInfo> {
@@ -268,21 +335,23 @@ export async function inspectArchive(path: string): Promise<ArchiveInfo> {
           'Split it into smaller files.'
       )
     }
-    const byName = new Map<string, Entry>()
+    const parts = new Map<string, PartLocation>()
     for (const entry of entries) {
-      if (byName.has(entry.name)) refuse()
-      byName.set(entry.name, entry)
+      if (parts.has(entry.name)) refuse()
+      const dataStart = await checkLocalHeader(file, entry, directoryOffset)
+      parts.set(entry.name, {
+        method: entry.method,
+        dataStart,
+        compressedSize: entry.compressedSize,
+        size: entry.size,
+      })
     }
-    for (const entry of entries) await checkLocalHeader(file, entry, directoryOffset)
 
-    const workbook = byName.get(WORKBOOK)
-    const rels = byName.get(WORKBOOK_RELS)
+    const workbook = parts.get(WORKBOOK)
+    const rels = parts.get(WORKBOOK_RELS)
     if (!workbook || !rels) refuse()
-    const sheets = sheetsOf(
-      await readPart(file, workbook, directoryOffset),
-      await readPart(file, rels, directoryOffset),
-      new Set(byName.keys())
-    )
+    const relationships = relationshipsOf(await readSmallPart(file, rels))
+    const sheets = sheetsOf(await readSmallPart(file, workbook), relationships, parts)
     if (sheets.length > MAX_SHEETS) {
       throw new ArchiveError(
         'too_many_sheets',
@@ -290,11 +359,20 @@ export async function inspectArchive(path: string): Promise<ArchiveInfo> {
           'Remove the sheets that do not hold call records, or split the file.'
       )
     }
-    const parts = sheets.flatMap((sheet) => (sheet.part ? [sheet.part] : []))
-    if (new Set(parts).size !== parts.length) {
+    const sheetParts = sheets.flatMap((sheet) => (sheet.part ? [sheet.part] : []))
+    if (new Set(sheetParts).size !== sheetParts.length) {
       refuse('Two or more sheets of this workbook share one worksheet. Export the file again.')
     }
-    return { entries: entries.length, unpackedBytes, sheets }
+    return {
+      entries: entries.length,
+      unpackedBytes,
+      sheets,
+      parts,
+      workbook: WORKBOOK,
+      workbookRels: WORKBOOK_RELS,
+      sharedStrings: partOfType(relationships, '/sharedStrings', parts),
+      styles: partOfType(relationships, '/styles', parts),
+    }
   } finally {
     await file.close()
   }
