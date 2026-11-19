@@ -51,14 +51,14 @@ const EFFICIENCY: Bounds = { min: 0, max: 1 }
 // measured is about 37 ms per day (see compute cost tests and the WP2 report).
 // target_pct stops at 0.999 because the TypeScript Erlang A service level saturates
 // at 1 - 2.2e-16, so a target closer to 1 could never be met.
-export const MAX_TARGET_PCT = 0.999
-export const MAX_TARGET_SEC = 300
-export const MIN_PATIENCE_SEC = 10
-export const MAX_PATIENCE_SEC = 3600
+export const ACCEPTED_TARGET_PCT_MAX = 0.999
+export const ACCEPTED_TARGET_SEC_MAX = 300
+export const ACCEPTED_PATIENCE_SEC_MIN = 10
+export const ACCEPTED_PATIENCE_SEC_MAX = 3600
 
-const TARGET_PCT: Bounds = { min: 0, max: MAX_TARGET_PCT, minOpen: true }
-const TARGET_SEC: Bounds = { min: 0, max: MAX_TARGET_SEC }
-const PATIENCE_SEC: Bounds = { min: MIN_PATIENCE_SEC, max: MAX_PATIENCE_SEC }
+const TARGET_PCT: Bounds = { min: 0, max: ACCEPTED_TARGET_PCT_MAX, minOpen: true }
+const TARGET_SEC: Bounds = { min: 0, max: ACCEPTED_TARGET_SEC_MAX }
+const PATIENCE_SEC: Bounds = { min: ACCEPTED_PATIENCE_SEC_MIN, max: ACCEPTED_PATIENCE_SEC_MAX }
 const PLANNED: Bounds = { min: 0, max: MAX_PLANNED }
 
 // A plain decimal number as a query string carries it: no hex, no 'Infinity', no blanks.

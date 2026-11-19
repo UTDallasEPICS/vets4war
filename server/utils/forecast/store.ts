@@ -18,7 +18,7 @@ import type { AppDb } from '../db'
 import { apiError } from '../http'
 
 export type ForecastStateRow = typeof forecastState.$inferSelect
-export type RunRow = typeof forecastRuns.$inferSelect
+type RunRow = typeof forecastRuns.$inferSelect
 export type DataStateRow = typeof dataState.$inferSelect
 // The model row without its 1.8 MB model text, which no route returns.
 export type ModelRow = Omit<typeof modelArtifacts.$inferSelect, 'modelText'>
