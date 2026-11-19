@@ -3,13 +3,7 @@
 // FastAPI declarations (api/main.py). Every field problem is collected and thrown as ONE
 // 422; then the two range refusals, in final-main's order.
 import { addDays, daysBetween, isIsoDate } from '#shared/utils/dates'
-import {
-  MAX_PATIENCE_SEC,
-  MAX_PLANNED,
-  MAX_RANGE_DAYS,
-  MAX_TARGET_SEC,
-  DEFAULT_HORIZON_DAYS,
-} from '#shared/utils/constants'
+import { MAX_PLANNED, MAX_RANGE_DAYS, DEFAULT_HORIZON_DAYS } from '#shared/utils/constants'
 import {
   DEFAULT_EFFICIENCY,
   DEFAULT_QUEUE_MODEL,
@@ -48,9 +42,23 @@ interface Bounds {
 }
 
 const EFFICIENCY: Bounds = { min: 0, max: 1 }
-const TARGET_PCT: Bounds = { min: 0, max: 1, minOpen: true, maxOpen: true }
-const TARGET_SEC: Bounds = { min: 0, max: MAX_TARGET_SEC }
-const PATIENCE_SEC: Bounds = { min: 0, max: MAX_PATIENCE_SEC, minOpen: true }
+// Tighter than final-main's (0 < target_pct < 1, target_sec <= 3600, 0 < patience_sec
+// <= 86400), because the Erlang A chain runs on the server's one thread. Outside these
+// bounds one request cost up to 31 s of CPU per day of range (patience 20 s, answer
+// within 3600 s): the uniformization behind the service level needs (target_sec /
+// patience_sec) x queue length steps, and exp() underflows to 0 once that passes ~745,
+// after which every hour runs to the 100,000-step cap. Inside them the worst case
+// measured is about 37 ms per day (see compute cost tests and the WP2 report).
+// target_pct stops at 0.999 because the TypeScript Erlang A service level saturates
+// at 1 - 2.2e-16, so a target closer to 1 could never be met.
+export const ACCEPTED_TARGET_PCT_MAX = 0.999
+export const ACCEPTED_TARGET_SEC_MAX = 300
+export const ACCEPTED_PATIENCE_SEC_MIN = 10
+export const ACCEPTED_PATIENCE_SEC_MAX = 3600
+
+const TARGET_PCT: Bounds = { min: 0, max: ACCEPTED_TARGET_PCT_MAX, minOpen: true }
+const TARGET_SEC: Bounds = { min: 0, max: ACCEPTED_TARGET_SEC_MAX }
+const PATIENCE_SEC: Bounds = { min: ACCEPTED_PATIENCE_SEC_MIN, max: ACCEPTED_PATIENCE_SEC_MAX }
 const PLANNED: Bounds = { min: 0, max: MAX_PLANNED }
 
 // A plain decimal number as a query string carries it: no hex, no 'Infinity', no blanks.

@@ -208,3 +208,17 @@ export function caught(fn: () => unknown): CaughtError {
   }
   throw new Error('expected an H3Error, nothing was thrown')
 }
+
+// The API error an async call rejects with.
+export async function rejected(fn: () => Promise<unknown>): Promise<CaughtError> {
+  let failure: unknown
+  try {
+    await fn()
+  } catch (error) {
+    failure = error
+  }
+  return caught(() => {
+    if (failure === undefined) return
+    throw failure
+  })
+}

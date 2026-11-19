@@ -441,3 +441,24 @@ describe('judgePlanned', () => {
     expect(error.message).toBe('2026-12-09 Day is not inside the forecast window')
   })
 })
+
+describe('a target no staffing level reaches', () => {
+  const table = cells({ equal: 600, weighted: 660, recent: 720 })
+
+  // Review finding W2-1: this ended in an unmapped RangeError (500). final-main: 400.
+  it('answers 400 unreachable_target with a plain message', () => {
+    const snapshot = { hours: stored(['2026-12-01'], () => 1e7), cells: table }
+    const error = caught(() => hourRows(snapshot, DEFAULTS, null))
+    expect(error.statusCode).toBe(400)
+    expect(error.data.code).toBe('unreachable_target')
+    expect(error.message).toBe(
+      'No staffing level up to 1000 agents answers 0.8 of calls within 30 s on 2026-12-01 ' +
+        'at 0:00; lower target_pct or raise target_sec.'
+    )
+  })
+
+  it('leaves any other fault of the chain a fault', () => {
+    const snapshot = { hours: stored(['2026-12-01'], () => -1), cells: table }
+    expect(() => hourRows(snapshot, DEFAULTS, null)).toThrow(RangeError)
+  })
+})

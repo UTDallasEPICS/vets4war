@@ -1,8 +1,10 @@
 // The five read routes (PLAN.md section 8.2) as functions of the database, so tests run
 // them against an in-memory SQLite without a server. Routes under server/api/ only read
 // the request and call these.
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import type {
   DataSource,
+  HourRow,
   ForecastParams,
   ForecastResponse,
   ModelResponse,
@@ -61,22 +63,42 @@ function params(
   }
 }
 
+const HOURS_PER_DAY = 24
+
+// The Erlang chain is synchronous CPU work on the server's one thread (up to tens of
+// milliseconds per day of range inside the parameter bounds). It runs one day at a
+// time and gives the event loop back between days, so a 366-day request never keeps
+// other requests (or the health check) waiting for longer than one day's work.
+async function hourRowsByDay(
+  snapshot: ForecastSnapshot,
+  input: ForecastInput,
+  patienceSec: number | null
+): Promise<HourRow[]> {
+  const rows: HourRow[] = []
+  for (let i = 0; i < snapshot.hours.length; i += HOURS_PER_DAY) {
+    if (i > 0) await yieldToEventLoop()
+    const day = { hours: snapshot.hours.slice(i, i + HOURS_PER_DAY), cells: snapshot.cells }
+    rows.push(...hourRows(day, input, patienceSec))
+  }
+  return rows
+}
+
 // Everything the three forecast answers share: snapshot, patience, hours, roll-up.
-function evaluate(db: AppDb, runtime: ForecastRuntime, input: ForecastInput) {
+async function evaluate(db: AppDb, runtime: ForecastRuntime, input: ForecastInput) {
   const snapshot: ForecastSnapshot = readForecastSnapshot(db, input)
   const patience = resolvePatience(input, snapshot.state)
-  const hours = hourRows(snapshot, input, patience.patienceSec)
+  const hours = await hourRowsByDay(snapshot, input, patience.patienceSec)
   const source: DataSource = describeSource(runtime.dataSourceKind, snapshot.state)
   return { snapshot, patience, hours, rolled: rollupShifts(hours), source }
 }
 
-export function getForecast(
+export async function getForecast(
   db: AppDb,
   runtime: ForecastRuntime,
   query: Record<string, unknown>
-): ForecastResponse {
+): Promise<ForecastResponse> {
   const input = parseForecastQuery(query, runtime.today)
-  const { snapshot, patience, hours, rolled, source } = evaluate(db, runtime, input)
+  const { snapshot, patience, hours, rolled, source } = await evaluate(db, runtime, input)
   return {
     params: params(input, patience),
     data_source: source,
@@ -93,13 +115,13 @@ export function getForecast(
   }
 }
 
-export function getStaffing(
+export async function getStaffing(
   db: AppDb,
   runtime: ForecastRuntime,
   query: Record<string, unknown>
-): StaffingResponse {
+): Promise<StaffingResponse> {
   const input = parseForecastQuery(query, runtime.today)
-  const { snapshot, patience, rolled, source } = evaluate(db, runtime, input)
+  const { snapshot, patience, rolled, source } = await evaluate(db, runtime, input)
   return {
     params: params(input, patience),
     data_source: source,
@@ -108,9 +130,13 @@ export function getStaffing(
   }
 }
 
-export function postPlanned(db: AppDb, runtime: ForecastRuntime, body: unknown): PlannedResponse {
+export async function postPlanned(
+  db: AppDb,
+  runtime: ForecastRuntime,
+  body: unknown
+): Promise<PlannedResponse> {
   const input = parsePlannedBody(body)
-  const { patience, hours, rolled, source } = evaluate(db, runtime, input)
+  const { patience, hours, rolled, source } = await evaluate(db, runtime, input)
   return {
     params: params(input, patience),
     data_source: source,

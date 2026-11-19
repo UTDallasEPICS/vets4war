@@ -2,7 +2,7 @@
 // db/staffing.py (staff_for_range, shift_memberships, rollup_shifts, planned_outcome,
 // resolve_patience), ported line for line onto the stored forecast. Pure: no database.
 // The per-hour Erlang chain is shared/utils/staffing.ts (pinned to the Python by P1).
-import { SECONDS_PER_HOUR } from '#shared/utils/erlang'
+import { MAX_AGENTS, SECONDS_PER_HOUR } from '#shared/utils/erlang'
 import { formatDuration, pyRound } from '#shared/utils/format'
 import { addDays, isoWeekday } from '#shared/utils/dates'
 import { TALK_TIME_CAVEAT } from '#shared/utils/constants'
@@ -14,6 +14,7 @@ import {
   plannedOutcome,
   staffForHour,
   verdict,
+  type HourStaffing,
 } from '#shared/utils/staffing'
 import type {
   ForecastDay,
@@ -34,6 +35,10 @@ import { cellIndex, type ForecastSnapshot, type ForecastStateRow } from './store
 const SATURDAY = 6
 
 const talkSeconds = (loadErlangs: number) => loadErlangs * SECONDS_PER_HOUR
+
+// shared/utils/erlang.ts requiredAgents: the search found no agent count that meets
+// the target (a target the Erlang chain cannot reach, or an absurd forecast).
+const UNREACHABLE_PREFIX = 'no staffing level up to'
 
 function sum(values: Iterable<number>): number {
   let total = 0
@@ -81,15 +86,30 @@ export function hourRows(
     const cell = cells[cellIndex(dow, stored.hour)]
     if (!cell) throw new RangeError(`no handle-time cell for ${stored.date} ${stored.hour}`)
     const calls = input.includeHolidays ? stored.predictedCalls : stored.predictedCallsNoHolidays
-    const s = staffForHour(
-      calls,
-      cell.ahtSec,
-      input.efficiency,
-      input.targetPct,
-      input.targetSec,
-      patienceSec,
-      capForHour(stored.hour)
-    )
+    let s: HourStaffing
+    try {
+      s = staffForHour(
+        calls,
+        cell.ahtSec,
+        input.efficiency,
+        input.targetPct,
+        input.targetSec,
+        patienceSec,
+        capForHour(stored.hour)
+      )
+    } catch (error) {
+      // final-main answered this one with 400 too; anything else is a real fault.
+      if (error instanceof RangeError && error.message.startsWith(UNREACHABLE_PREFIX)) {
+        throw apiError(
+          400,
+          'unreachable_target',
+          `No staffing level up to ${MAX_AGENTS} agents answers ${input.targetPct} of calls ` +
+            `within ${input.targetSec} s on ${stored.date} at ${stored.hour}:00; ` +
+            `lower target_pct or raise target_sec.`
+        )
+      }
+      throw error
+    }
     const talk = talkSeconds(s.load_erlangs)
     return {
       date: stored.date,
