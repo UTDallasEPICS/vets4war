@@ -49,15 +49,19 @@
 </script>
 
 <template>
-  <USlideover v-model:open="open" :title="runId ? `Run ${runId}` : 'Run'" class="max-w-2xl">
+  <USlideover
+    v-model:open="open"
+    :title="runId ? `Run ${runId}` : 'Run'"
+    :ui="{ content: 'max-w-2xl' }"
+  >
     <template #body>
       <UAlert v-if="problem" color="error" variant="subtle" :title="problem" />
-      <div v-else-if="run" class="space-y-6 text-sm" data-testid="run-detail">
+      <div v-else-if="run" class="min-w-0 space-y-6 text-sm break-words" data-testid="run-detail">
         <div class="flex items-center gap-3">
           <AdminRunsStatusBadge :status="run.status" />
           <span>{{ run.message }}</span>
         </div>
-        <dl class="grid grid-cols-2 gap-x-6 gap-y-2">
+        <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2">
           <dt class="text-gray-500 dark:text-gray-400">Created</dt>
           <dd>{{ when(run.created_at) }}</dd>
           <dt class="text-gray-500 dark:text-gray-400">Started</dt>
@@ -123,7 +127,7 @@
         <div>
           <h3 class="mb-2 font-semibold">Output (last part)</h3>
           <pre
-            class="max-h-96 overflow-auto rounded-md bg-gray-50 p-3 text-xs whitespace-pre-wrap dark:bg-gray-800"
+            class="max-h-96 overflow-auto rounded-md bg-gray-50 p-3 text-xs break-all whitespace-pre-wrap dark:bg-gray-800"
             data-testid="log-tail"
             >{{ run.log_tail || 'No output.' }}</pre>
         </div>

@@ -100,7 +100,10 @@
           class="bg-primary-50 dark:bg-primary-950 flex items-center gap-3 rounded-md p-3 text-sm"
           data-testid="active-run"
         >
-          <UIcon name="i-heroicons-arrow-path" class="size-5 animate-spin" />
+          <span
+            class="inline-block size-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
+            aria-hidden="true"
+          />
           <span>
             Run {{ active.id }} ({{ active.mode === 'full' ? 'retrain' : 'forecast refresh' }}) is
             running: {{ elapsed(active.started_at ?? active.created_at) }} so far.
