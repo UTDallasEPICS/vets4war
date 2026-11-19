@@ -15,7 +15,7 @@ import { addDays, isIsoDate } from '../../../shared/utils/dates'
 import type { DayPlan, ImportRequest, ImportResult, UploadReport } from '../../../shared/types/api'
 import type Database from 'better-sqlite3'
 import type { AppDb } from '../db'
-import type { RunRow } from '../retrain/runner'
+import type { RunRow } from '../forecast/store'
 import { apiError } from '../http'
 import { toUploadDetail } from '../mappers'
 import {

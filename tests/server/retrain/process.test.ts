@@ -352,3 +352,38 @@ describe('a run whose workers outlive the script and hold its pipes', () => {
     SLOW
   )
 })
+
+describe('while Python holds the write lock', () => {
+  it(
+    'a request waits for it instead of failing at once',
+    async () => {
+      // Another process holds BEGIN IMMEDIATE for a while, as db.retrain does while it
+      // claims its row, adds holidays or swaps in the forecast.
+      const holder = spawn(
+        process.execPath,
+        [
+          '-e',
+          `const db = new (require('better-sqlite3'))(process.argv[1]);
+           db.exec('BEGIN IMMEDIATE'); console.log('locked');
+           setTimeout(() => { db.exec('COMMIT'); process.exit(0) }, 1500)`,
+          config.dbPath,
+        ],
+        { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'inherit'] }
+      )
+      leftovers.push(holder.pid!)
+      await new Promise((resolve) => holder.stdout!.once('data', resolve))
+      process.env.FAKE_RETRAIN = 'succeed'
+      const runner = createRetrainRunner(db, config)
+      const started = Date.now()
+      const { run, queued } = runner.request({
+        trigger: 'manual',
+        requestedBy: 'admin@example.org',
+      })
+      expect(queued).toBe(false)
+      expect(Date.now() - started).toBeGreaterThan(500)
+      await runner.idle()
+      expect(getRun(db, run.id).status).toBe('succeeded')
+    },
+    SLOW
+  )
+})

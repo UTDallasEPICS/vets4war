@@ -22,7 +22,9 @@ import type { RunMode, RunTrigger } from '../../../shared/types/api'
 import type { AppDb } from '../db'
 import { apiError } from '../http'
 
-export type RunRow = typeof forecastRuns.$inferSelect
+// Not named RetrainRun: server/utils/forecast/store.ts exports that name, and Nitro's
+// auto-import scan of server/utils warns about two exports of one name.
+export type RetrainRun = typeof forecastRuns.$inferSelect
 
 export interface RetrainConfig {
   pythonPath: string
@@ -39,7 +41,7 @@ export interface RetrainRunner {
     mode?: RunMode
     requestedBy: string | null
     uploadId?: number | null
-  }): { run: RunRow; queued: boolean }
+  }): { run: RetrainRun; queued: boolean }
   tick(): { action: 'none' | 'full' | 'forecast-only'; reason: string; runId?: number }
   recover(): { interrupted: number[]; started: number | null }
   // Closes an active row whose process is gone (a shell's run killed with -9, say).
@@ -129,7 +131,7 @@ function optionValue(args: string[], name: string): string | undefined {
 }
 
 interface Current {
-  run: RunRow
+  run: RetrainRun
   child: ChildProcess
   output: Buffer[]
   outputBytes: number
@@ -155,6 +157,10 @@ export function createRetrainRunner(
   let watcher: ReturnType<typeof setInterval> | null = null
 
   type Tx = Parameters<Parameters<AppDb['transaction']>[0]>[0]
+  // A transaction that reads, then writes. IMMEDIATE takes the write lock first, so it
+  // waits out Python's write (busy timeout) instead of failing at once: a deferred one
+  // holding a read lock gets SQLITE_BUSY without waiting.
+  const write = <T>(fn: (tx: Tx) => T): T => db.transaction(fn, { behavior: 'immediate' })
   const activeRun = (tx: Tx) =>
     tx
       .select()
@@ -215,7 +221,7 @@ export function createRetrainRunner(
   // The processes of a run this server does not hold a handle on: its own
   // process (by pid and command line) and everything in the process group the
   // web app gave it, which is where the gate workers are.
-  function processesOf(row: RunRow, table: ProcessInfo[]): ProcessInfo[] {
+  function processesOf(row: RetrainRun, table: ProcessInfo[]): ProcessInfo[] {
     if (!row.pid) return []
     const tag = row.trigger === 'cli' ? 'cli' : row.id
     const leader = table.find((p) => p.pid === row.pid && isScript(p.args, tag))
@@ -246,7 +252,7 @@ export function createRetrainRunner(
     }
   }
 
-  function start(run: RunRow) {
+  function start(run: RetrainRun) {
     const args = [
       '-m',
       config.module,
@@ -353,14 +359,14 @@ export function createRetrainRunner(
 
   // Stores exit code and log tail; fills in the outcome only when Python did not.
   function record(
-    run: RunRow,
+    run: RetrainRun,
     exitCode: number | null,
     signal: NodeJS.Signals | null,
     tail: string,
     startError: NodeJS.ErrnoException | null, // set when the process never started
     timedOut: boolean
   ) {
-    const row = db.transaction((tx) => {
+    const row = write((tx) => {
       tx.update(forecastRuns)
         .set({ exitCode, logTail: tail })
         .where(eq(forecastRuns.id, run.id))
@@ -394,7 +400,7 @@ export function createRetrainRunner(
 
   // An active row this server holds no process for: a shell's run, or a row left
   // by a run that could not be stopped cleanly. It ends when its process is gone.
-  function closeIfGone(row: RunRow, table: ProcessInfo[]): boolean {
+  function closeIfGone(row: RetrainRun, table: ProcessInfo[]): boolean {
     if (current?.run.id === row.id) return false
     if (processesOf(row, table).some((p) => p.pid === row.pid)) return false
     const message =
@@ -412,7 +418,7 @@ export function createRetrainRunner(
 
   // Active rows of runs this server holds no process for, after closing those whose
   // process is gone.
-  function openForeignRuns(): RunRow[] {
+  function openForeignRuns(): RetrainRun[] {
     const foreign = db
       .select()
       .from(forecastRuns)
@@ -451,7 +457,7 @@ export function createRetrainRunner(
   }
 
   function rerunIfRequested() {
-    const next = db.transaction((tx) => {
+    const next = write((tx) => {
       if (!tx.select().from(dataState).get()?.rerunRequested) return null
       if (activeRun(tx) || !hasCalls(tx)) return null
       setRerun(tx, false)
@@ -465,14 +471,20 @@ export function createRetrainRunner(
     mode?: RunMode
     requestedBy: string | null
     uploadId?: number | null
-  }): { run: RunRow; queued: boolean } {
+  }): { run: RetrainRun; queued: boolean } {
     // A row inserted now would never start; the next start-up begins a run anyway
     // when the data is newer than the forecast.
     if (stopping) throw apiError(409, 'conflict', STOPPING)
     reconcile()
-    const outcome = db.transaction((tx) => {
+    const outcome = write((tx) => {
       if (!hasCalls(tx)) throw apiError(409, 'conflict', NO_CALLS)
-      const active = activeRun(tx)
+      // Python commits its outcome a moment before it exits: until this side has seen
+      // the exit (and stored the exit code and output), that run still counts.
+      const active =
+        activeRun(tx) ??
+        (current
+          ? tx.select().from(forecastRuns).where(eq(forecastRuns.id, current.run.id)).get()
+          : undefined)
       if (active) {
         setRerun(tx, true)
         return { run: active, queued: true }
@@ -492,8 +504,10 @@ export function createRetrainRunner(
     }
     if (stopping) return { action: 'none', reason: 'The server is stopping.' }
     reconcile()
-    const decision = db.transaction((tx) => {
-      if (activeRun(tx)) return { action: 'none' as const, reason: 'A run is in progress.' }
+    const decision = write((tx) => {
+      if (current || activeRun(tx)) {
+        return { action: 'none' as const, reason: 'A run is in progress.' }
+      }
       if (!hasCalls(tx)) return { action: 'none' as const, reason: 'There is no call data yet.' }
       const revision = revisionOf(tx)
       const state = tx.select().from(forecastState).get()
@@ -561,7 +575,7 @@ export function createRetrainRunner(
     const shell = stuck.filter((row) => row.trigger === 'cli')
     for (const row of shell) closeIfGone(row, table)
     const ids = stuck.filter((row) => row.trigger !== 'cli').map((row) => row.id)
-    const next = db.transaction((tx) => {
+    const next = write((tx) => {
       if (ids.length) {
         tx.update(forecastRuns)
           .set({ status: 'interrupted', finishedAt: now(), message: RESTARTED })
@@ -643,7 +657,7 @@ export function runsOverview(db: AppDb) {
   })
 }
 
-export function getRun(db: AppDb, id: number): RunRow {
+export function getRun(db: AppDb, id: number): RetrainRun {
   const row = db.select().from(forecastRuns).where(eq(forecastRuns.id, id)).get()
   if (!row) throw apiError(404, 'not_found', `There is no run ${id}.`)
   return row

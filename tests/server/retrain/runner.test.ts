@@ -22,7 +22,7 @@ import {
   type RetrainConfig,
   type ProcessInfo,
   type RetrainDeps,
-  type RunRow,
+  type RetrainRun,
 } from '../../../server/utils/retrain/runner'
 
 class FakeChild extends EventEmitter {
@@ -139,7 +139,7 @@ function setForecast(revision: number, generatedAt: Date) {
     .run()
 }
 
-function addRun(values: Partial<typeof schema.forecastRuns.$inferInsert>): RunRow {
+function addRun(values: Partial<typeof schema.forecastRuns.$inferInsert>): RetrainRun {
   return db
     .insert(schema.forecastRuns)
     .values({ trigger: 'manual', mode: 'full', status: 'succeeded', createdAt: NOW, ...values })
@@ -148,7 +148,7 @@ function addRun(values: Partial<typeof schema.forecastRuns.$inferInsert>): RunRo
 }
 
 // What db.retrain does to its row (section 7.2), done by hand.
-function pythonWrites(id: number, status: RunRow['status'], fields: Partial<RunRow> = {}) {
+function pythonWrites(id: number, status: RetrainRun['status'], fields: Partial<RetrainRun> = {}) {
   db.update(schema.forecastRuns)
     .set({ status, finishedAt: NOW, callsRevision: 1, message: `python says ${status}`, ...fields })
     .where(eq(schema.forecastRuns.id, id))
@@ -261,6 +261,27 @@ describe('request', () => {
     await r.idle()
     expect(spawned).toHaveLength(2)
     expect(runs()).toHaveLength(2)
+  })
+})
+
+describe('a run that has reported but not yet exited', () => {
+  it('still counts as active: a request queues behind it, its exit code and output are kept', () => {
+    seedCalls()
+    const r = runner()
+    const { run } = r.request({ trigger: 'manual', requestedBy: 'a@example.org' })
+    children[0]!.stdout.write('V4W_RESULT {}\n')
+    pythonWrites(run.id, 'succeeded') // committed; the process is still exiting
+    const again = r.request({ trigger: 'manual', requestedBy: 'b@example.org' })
+    expect(again).toEqual({
+      run: expect.objectContaining({ id: run.id, status: 'succeeded' }),
+      queued: true,
+    })
+    expect(r.tick()).toMatchObject({ action: 'none', reason: 'A run is in progress.' })
+    expect(spawned).toHaveLength(1)
+
+    children[0]!.exit(0)
+    expect(getRun(db, run.id)).toMatchObject({ exitCode: 0, logTail: 'V4W_RESULT {}\n' })
+    expect(spawned).toHaveLength(2) // the queued one
   })
 })
 
