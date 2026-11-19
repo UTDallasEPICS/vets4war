@@ -4,13 +4,14 @@
 import {
   defineEventHandler,
   getRequestHeader,
-  readMultipartFormData,
+  readRawBody,
   setResponseHeader,
   setResponseStatus,
 } from 'h3'
 import { db } from '../../../utils/db'
 import { apiError, validationError } from '../../../utils/http'
 import { useIngestDeps } from '../../../utils/ingest'
+import { filePart } from '../../../utils/ingest/multipart'
 import { receiveUpload } from '../../../utils/ingest/service'
 import { toUploadSummary } from '../../../utils/mappers'
 import { requireAdmin } from '../../../utils/session'
@@ -37,15 +38,15 @@ export default defineEventHandler(async (event) => {
     )
   }
 
-  const parts = (await readMultipartFormData(event)) ?? []
-  const file = parts.find((part) => part.name === 'file')
+  const body = (await readRawBody(event, false)) ?? Buffer.alloc(0)
+  const file = filePart(body, getRequestHeader(event, 'content-type') ?? '', 'file')
   if (!file) {
     throw validationError([{ path: 'file', message: 'Choose a .xlsx file to upload.' }])
   }
 
   try {
     const { upload, existing } = await receiveUpload(db, deps, {
-      filename: file.filename ?? 'upload.xlsx',
+      filename: file.filename || 'upload.xlsx',
       data: file.data,
       user: { id: user.id, email: user.email },
     })

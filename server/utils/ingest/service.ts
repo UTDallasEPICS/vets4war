@@ -278,7 +278,7 @@ export async function parseUpload(
     })
     const report: StoredReport = parse.errors.length
       ? unreadableReport(parse)
-      : buildReport(db, uploadId, { ...parse, batches }, deps.today())
+      : await buildReport(db, uploadId, { ...parse, batches }, deps.today())
     db.transaction((tx) => {
       if (!report.ok) tx.delete(uploadRows).where(eq(uploadRows.uploadId, uploadId)).run()
       tx.update(uploads)
@@ -360,6 +360,69 @@ function planAgainstStored(db: AppDb, fileDays: Map<string, DaySummary>): Stored
   return { days: planDays(fileDays, stored), storedDays }
 }
 
+// Reads that run while other requests are served go a chunk at a time, in (start_ts, id)
+// order, and give the event loop a turn between chunks: on the multi-year workbook a
+// single pass held it for most of a second. (better-sqlite3 cannot keep a statement open
+// across a yield: the connection is shared with every request.)
+const READ_CHUNK = 20_000
+const DAYS_PER_TURN = 200
+const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve))
+
+async function* rowsInChunks(
+  db: AppDb,
+  table: 'upload_rows' | 'calls',
+  where: string,
+  params: unknown[]
+): AsyncGenerator<(RawCall & { id: number })[]> {
+  const statement = sqliteOf(db).prepare(
+    `SELECT id, ${CALL_COLUMNS} FROM ${table} WHERE ${where} AND (start_ts, id) > (?, ?) ` +
+      `ORDER BY start_ts, id LIMIT ${READ_CHUNK}`
+  )
+  let after: [string, number] = ['', 0]
+  for (;;) {
+    const rows = statement.all(...params, ...after) as (RawCall & { id: number })[]
+    if (rows.length === 0) return
+    yield rows
+    const last = rows[rows.length - 1]!
+    after = [last.start_ts, last.id]
+    await nextTurn()
+  }
+}
+
+async function summarizeLines(lines: Map<string, string[]>): Promise<Map<string, DaySummary>> {
+  const summaries = new Map<string, DaySummary>()
+  let done = 0
+  for (const day of [...lines.keys()].sort()) {
+    const dayLines = lines.get(day)!
+    summaries.set(day, { rows: dayLines.length, fingerprint: fingerprint(dayLines) })
+    if (++done % DAYS_PER_TURN === 0) await nextTurn()
+  }
+  return summaries
+}
+
+async function planAgainstStoredInTurns(
+  db: AppDb,
+  fileDays: Map<string, DaySummary>
+): Promise<StoredPlan> {
+  const days = [...fileDays.keys()]
+  if (days.length === 0) return { days: [], storedDays: {} }
+  const lines = new Map<string, string[]>()
+  const range = [days[0]!, nextDay(days[days.length - 1]!)]
+  for await (const rows of rowsInChunks(db, 'calls', 'start_ts >= ? AND start_ts < ?', range)) {
+    for (const row of rows) {
+      const day = dayOf(row.start_ts)
+      if (!fileDays.has(day)) continue
+      const dayLines = lines.get(day)
+      if (dayLines) dayLines.push(callLine(toCall(row)))
+      else lines.set(day, [callLine(toCall(row))])
+    }
+  }
+  const stored = await summarizeLines(lines)
+  const storedDays: Record<string, string | null> = {}
+  for (const day of days) storedDays[day] = stored.get(day)?.fingerprint ?? null
+  return { days: planDays(fileDays, stored), storedDays }
+}
+
 function withPlan(report: StoredReport, plan: StoredPlan): StoredReport {
   const count = (status: DayPlan['status']) => plan.days.filter((d) => d.status === status).length
   return {
@@ -399,37 +462,38 @@ function sheetOf(batches: StagedBatch[], id: number): number {
   return -1
 }
 
-export function buildReport(
+export async function buildReport(
   db: AppDb,
   uploadId: number,
   parse: StagedParse,
   today: string
-): StoredReport {
+): Promise<StoredReport> {
   // One pass over the staged calls: lines per day (for the fingerprint), the hours with
   // calls (for cut-short days) and the sheet each line came from (for copied sheets).
   const lines = new Map<string, string[]>()
   const sheets = new Map<string, string[]>()
   const hours = new Map<string, Set<number>>()
   let total = 0
-  for (const row of stagedRows(db, uploadId)) {
-    total++
-    const day = dayOf(row.start_ts)
-    const line = callLine(toCall(row))
-    const sheet = parse.batches[sheetOf(parse.batches, row.id)]?.sheet ?? ''
-    if (!lines.has(day)) {
-      lines.set(day, [])
-      sheets.set(day, [])
-      hours.set(day, new Set())
+  for await (const rows of rowsInChunks(db, 'upload_rows', 'upload_id = ?', [uploadId])) {
+    for (const row of rows) {
+      total++
+      const day = dayOf(row.start_ts)
+      const line = callLine(toCall(row))
+      const sheet = parse.batches[sheetOf(parse.batches, row.id)]?.sheet ?? ''
+      if (!lines.has(day)) {
+        lines.set(day, [])
+        sheets.set(day, [])
+        hours.set(day, new Set())
+      }
+      lines.get(day)!.push(line)
+      sheets.get(day)!.push(sheet)
+      hours.get(day)!.add(Number(row.start_ts.slice(11, 13)))
     }
-    lines.get(day)!.push(line)
-    sheets.get(day)!.push(sheet)
-    hours.get(day)!.add(Number(row.start_ts.slice(11, 13)))
   }
-  const fileDays = new Map<string, DaySummary>()
+  const fileDays = await summarizeLines(lines)
   const copied: string[] = []
   const split: string[] = []
   for (const [day, dayLines] of lines) {
-    fileDays.set(day, { rows: dayLines.length, fingerprint: fingerprint(dayLines) })
     const daySheets = sheets.get(day)!
     if (new Set(daySheets).size < 2) continue
     // A day on two sheets is how the multi-year export ends a year; the same call on two
@@ -500,7 +564,7 @@ export function buildReport(
     file_errors: errors,
     warnings,
   }
-  return withPlan(base, planAgainstStored(db, fileDays))
+  return withPlan(base, await planAgainstStoredInTurns(db, fileDays))
 }
 
 // ---------------------------------------------------------------------------
