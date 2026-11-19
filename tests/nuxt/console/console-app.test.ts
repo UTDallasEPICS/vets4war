@@ -8,18 +8,30 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { computed } from 'vue'
 import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
-import type { ForecastResponse, HourRow, ForecastDay } from '#shared/types/api'
+import type {
+  ForecastResponse,
+  HourRow,
+  ForecastDay,
+  RunStatus,
+  StatusResponse,
+} from '#shared/types/api'
 import { capForHour, staffForHour } from '#shared/utils/staffing'
 import ConsoleApp from '../../../app/components/console/ConsoleApp.vue'
 import { computeHours, summarize } from '../../../app/utils/console/logic'
 import { isoDate, shortDate } from '../../../app/utils/console/format'
 
 const mocks = vi.hoisted(() => ({
+  // /api/forecast
   apiFetch: vi.fn(),
+  // /api/status
+  status: vi.fn(),
   role: 'admin' as 'admin' | 'viewer',
 }))
 
-mockNuxtImport('apiFetch', () => mocks.apiFetch)
+mockNuxtImport('apiFetch', () => {
+  return (url: string, options?: unknown) =>
+    url === '/api/status' ? mocks.status() : mocks.apiFetch(url, options)
+})
 mockNuxtImport('useSessionUser', () => {
   return async () => ({
     user: computed(() => ({ id: 'u1', email: 'a@example.org', name: 'a', role: mocks.role })),
@@ -148,6 +160,9 @@ function apiError(status: number, code: string, message: string) {
 describe('console', () => {
   beforeEach(() => {
     mocks.apiFetch.mockReset()
+    mocks.status.mockReset()
+    // no status route (the comparison's set-up): no note
+    mocks.status.mockRejectedValue(apiError(404, 'error', 'Page not found: /api/status'))
     mocks.role = 'admin'
     localStorage.clear()
   })
@@ -383,6 +398,133 @@ describe('console', () => {
     const at50 = computeHours(data.hours, { ...controls(EFF), targetPct: 0.5 })
     await until(() => expect(cellText()).toEqual(at50.map((h) => String(h.staff_to_schedule))))
     expect(wrapper.get('#controlError').attributes('hidden')).toBeDefined()
+  })
+
+  describe('status note', () => {
+    function status(runStatus: RunStatus | null, stale: boolean, forecast = true): StatusResponse {
+      return {
+        viewer: { email: 'a@example.org', name: 'a', role: mocks.role },
+        data_source: { kind: 'synthetic', label: 'Synthetic data' },
+        forecast: forecast
+          ? {
+              run_id: 3,
+              generated_at: '2026-11-19T08:40:00Z',
+              horizon_start: '2026-11-16',
+              horizon_end: '2029-01-24',
+              data_start: '2021-01-01',
+              data_end: '2026-11-15',
+              calls_count: 389234,
+              stale,
+            }
+          : null,
+        model: null,
+        run:
+          runStatus === null
+            ? null
+            : {
+                id: 4,
+                trigger: 'import',
+                mode: 'full',
+                status: runStatus,
+                requested_by: 'admin@example.org',
+                upload_id: 2,
+                created_at: '2026-11-19T09:00:00Z',
+                started_at: null,
+                finished_at: null,
+                trained: null,
+                gate_passed: null,
+                forecast_written: null,
+                model_id: null,
+                calls_count: null,
+                data_start: null,
+                data_end: null,
+                horizon_start: null,
+                horizon_end: null,
+                message: null,
+              },
+      }
+    }
+    const through = `The forecast below still uses calls through ${shortDate('2026-11-15')} 2026.`
+    async function mountWith(answer: StatusResponse) {
+      mocks.apiFetch.mockResolvedValue(fixture())
+      mocks.status.mockResolvedValue(answer)
+      const wrapper = await mountSuspended(ConsoleApp)
+      await until(() => expect(wrapper.findAll('td.h[data-k]')).toHaveLength(48))
+      await until(() => expect(mocks.status).toHaveBeenCalled())
+      await new Promise((r) => setTimeout(r, 50))
+      return wrapper
+    }
+
+    it('says nothing in the normal state', async () => {
+      for (const answer of [
+        status('succeeded', false),
+        status(null, false),
+        // a rejected run refreshed the forecast with the previous model: current
+        status('rejected', false),
+        status('failed', false),
+      ]) {
+        const wrapper = await mountWith(answer)
+        expect(wrapper.find('#statusNote').exists()).toBe(false)
+        wrapper.unmount()
+      }
+    })
+
+    it('says nothing when the status request fails', async () => {
+      const wrapper = await mountWith(status('running', true))
+      wrapper.unmount()
+      mocks.status.mockReset()
+      mocks.status.mockRejectedValue(apiError(500, 'error', 'boom'))
+      const again = await mountSuspended(ConsoleApp)
+      await until(() => expect(again.findAll('td.h[data-k]')).toHaveLength(48))
+      await until(() => expect(mocks.status).toHaveBeenCalled())
+      await new Promise((r) => setTimeout(r, 50))
+      expect(again.find('#statusNote').exists()).toBe(false)
+      expect(again.get('#error').attributes('hidden')).toBeDefined()
+    })
+
+    it('tells that new call data is being processed while a run is queued or running', async () => {
+      for (const runStatus of ['queued', 'running'] as const) {
+        const wrapper = await mountWith(status(runStatus, true))
+        await until(() => expect(wrapper.find('#statusNote').exists()).toBe(true))
+        expect(wrapper.get('#statusNote').text()).toBe(
+          `New call data is being processed. ${through}`
+        )
+        expect(wrapper.get('#statusNote').classes()).toEqual(['banner', 'note'])
+        expect(wrapper.find('#statusNote a').exists()).toBe(false)
+        wrapper.unmount()
+      }
+    })
+
+    it('tells that the forecast could not be updated, with the runs link for admins', async () => {
+      for (const runStatus of ['failed', 'interrupted'] as const) {
+        const wrapper = await mountWith(status(runStatus, true))
+        await until(() => expect(wrapper.find('#statusNote').exists()).toBe(true))
+        expect(wrapper.get('#statusNote').text()).toBe(
+          `New call data was loaded but the forecast could not be updated. ${through} See the forecast runs`
+        )
+        await until(() =>
+          expect(wrapper.get('#statusNote a').attributes('href')).toBe('/admin?tab=runs')
+        )
+        wrapper.unmount()
+      }
+      mocks.role = 'viewer'
+      const viewer = await mountWith(status('failed', true))
+      await until(() => expect(viewer.find('#statusNote').exists()).toBe(true))
+      expect(viewer.get('#statusNote').text()).toBe(
+        `New call data was loaded but the forecast could not be updated. ${through}`
+      )
+      expect(viewer.find('#statusNote a').exists()).toBe(false)
+    })
+
+    it('asks again when the tab becomes visible, and reloads the forecast when the run is done', async () => {
+      const wrapper = await mountWith(status('running', true))
+      await until(() => expect(wrapper.find('#statusNote').exists()).toBe(true))
+      const forecastCalls = mocks.apiFetch.mock.calls.length
+      mocks.status.mockResolvedValue(status('succeeded', false))
+      document.dispatchEvent(new Event('visibilitychange'))
+      await until(() => expect(wrapper.find('#statusNote').exists()).toBe(false))
+      await until(() => expect(mocks.apiFetch.mock.calls.length).toBe(forecastCalls + 1))
+    })
   })
 
   it('has Sign out always and Admin for admins', async () => {

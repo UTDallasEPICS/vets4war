@@ -1575,6 +1575,12 @@ export function createConsoleState() {
     if (e.persisted) init()
   }
 
+  // Load the forecast again for the same dates (after a run has produced a new one).
+  function reloadForecast() {
+    if (cache) cache.key = ''
+    debounced(refresh)
+  }
+
   // ---- read access for the exports ----
   const snapshot = () => ({ cache, computedHours, judged, hourIndex, scale })
 
@@ -1606,6 +1612,7 @@ export function createConsoleState() {
     feedback,
     slMarks,
     init,
+    reloadForecast,
     onPageShow,
     targetSec,
     controls,

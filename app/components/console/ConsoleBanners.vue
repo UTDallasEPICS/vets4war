@@ -15,4 +15,5 @@
   <div class="banner note" id="holidayNote" :hidden="ui.holidayNoteHidden">
     {{ ui.holidayNote }}
   </div>
+  <ConsoleStatusNote />
 </template>
