@@ -88,13 +88,11 @@ describe('theme toggle', () => {
   it('renders the same markup in light and dark, with both icons', async () => {
     const colorMode = useColorMode()
     colorMode.preference = 'light'
-    colorMode.value = 'light'
     const wrapper = await mountSuspended(DefaultLayout)
     const toggle = () => wrapper.get('[aria-label="Toggle Theme"]').html()
     const light = toggle()
 
     colorMode.preference = 'dark'
-    colorMode.value = 'dark'
     await nextTick()
     expect(useColorMode().value).toBe('dark')
     const dark = toggle()
@@ -103,6 +101,5 @@ describe('theme toggle', () => {
     expect(light).toContain('sun-20-solid')
     expect(light).toContain('moon-20-solid')
     colorMode.preference = 'light'
-    colorMode.value = 'light'
   })
 })
