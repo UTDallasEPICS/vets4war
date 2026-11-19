@@ -14,6 +14,7 @@ import {
   MAX_UNPACKED_BYTES,
   MAX_WORKBOOK_PART_BYTES,
 } from './limits'
+import { startTags, type Tag } from './tags'
 
 export type ArchiveErrorCode = 'not_a_workbook' | 'too_large_unpacked' | 'too_many_sheets'
 
@@ -215,12 +216,10 @@ function decodeXml(text: string): string {
   })
 }
 
-function attributes(tag: string): Map<string, string> {
-  const found = new Map<string, string>()
-  for (const match of tag.matchAll(/([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
-    found.set(match[1]!, decodeXml(match[2] ?? match[3] ?? ''))
-  }
-  return found
+// Attribute values of one start tag, entities decoded. tags.ts scans without
+// backtracking, so a crafted workbook part costs time linear in its size (review N-2).
+function attributes(tag: Tag): Map<string, string> {
+  return new Map(tag.attributes.map((a) => [a.name, decodeXml(a.value)]))
 }
 
 function relationshipId(attrs: Map<string, string>): string | undefined {
@@ -247,8 +246,8 @@ interface Relationship {
 
 function relationshipsOf(relsXml: string): Map<string, Relationship> {
   const relationships = new Map<string, Relationship>()
-  for (const match of relsXml.matchAll(/<(?:[\w.-]+:)?Relationship\b([^>]*)>/g)) {
-    const attrs = attributes(match[1]!)
+  for (const tag of startTags(relsXml, 'Relationship')) {
+    const attrs = attributes(tag)
     const id = attrs.get('Id')
     if (!id) continue
     relationships.set(id, {
@@ -266,8 +265,8 @@ function sheetsOf(
   parts: Map<string, PartLocation>
 ): SheetPart[] {
   const sheets: SheetPart[] = []
-  for (const match of workbookXml.matchAll(/<(?:[\w.-]+:)?sheet\b([^>]*)>/g)) {
-    const attrs = attributes(match[1]!)
+  for (const tag of startTags(workbookXml, 'sheet')) {
+    const attrs = attributes(tag)
     const name = attrs.get('name')
     const id = relationshipId(attrs)
     const relationship = id === undefined ? undefined : relationships.get(id)
@@ -284,8 +283,8 @@ function sheetsOf(
 }
 
 function usesDate1904(workbookXml: string): boolean {
-  const match = /<(?:[\w.-]+:)?workbookPr\b([^>]*)>/.exec(workbookXml)
-  const value = match ? attributes(match[1]!).get('date1904') : undefined
+  const [workbookPr] = startTags(workbookXml, 'workbookPr')
+  const value = workbookPr ? attributes(workbookPr).get('date1904') : undefined
   return value === '1' || value === 'true'
 }
 
