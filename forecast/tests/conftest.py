@@ -50,15 +50,24 @@ CALL_COLUMNS = ("start_ts", "in_queue_sec", "agent_sec", "abandon_sec", "routing
 # A day-shaped arrival rate: quiet nights, busy afternoons (calls per hour).
 HOURLY_RATE = (3, 2, 2, 1, 1, 2, 4, 6, 8, 10, 11, 12, 12, 12, 11, 11, 10, 10, 9, 9, 8, 7, 5, 4)
 WEEKEND_FACTOR = 0.8
+# Official holidays are clearly quieter, as on the real line: a pattern the
+# model learns from the holiday features and the seasonal naive baseline
+# cannot, so the accuracy check has something to find.
+HOLIDAY_FACTOR = 0.4
 
 
 def synthetic_calls(first_day: str, days: int, seed: int = 7) -> pd.DataFrame:
     """SYNTHETIC calls, every day from first_day, in the `calls` column layout:
     Poisson arrivals per hour, about 15% abandoned, handle time around 600 s."""
+    from db.add_holidays import official_holidays
+
     rng = np.random.default_rng(seed)
+    dates = pd.date_range(first_day, periods=days, freq="D")
+    holidays = set(pd.concat([official_holidays(year) for year in range(dates.min().year, dates.max().year + 1)])
+                   ["holiday_date"])
     rows = []
-    for day in pd.date_range(first_day, periods=days, freq="D"):
-        factor = WEEKEND_FACTOR if day.dayofweek >= 5 else 1.0
+    for day in dates:
+        factor = (WEEKEND_FACTOR if day.dayofweek >= 5 else 1.0) * (HOLIDAY_FACTOR if day in holidays else 1.0)
         for hour, rate in enumerate(HOURLY_RATE):
             for _ in range(rng.poisson(rate * factor)):
                 start = day + pd.Timedelta(hours=hour, seconds=int(rng.integers(0, 3600)))

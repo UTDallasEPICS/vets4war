@@ -28,6 +28,7 @@ image's SQLite is 3.40.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import time
 from collections.abc import Iterable
@@ -81,10 +82,30 @@ def now_seconds() -> int:
     return int(time.time())
 
 
+def _json_ready(value):
+    """NaN and infinity become null: JSON has no such numbers and the web app
+    parses these columns with JSON.parse (a gate over few origins has metrics
+    with no data, for one)."""
+    if isinstance(value, dict):
+        return {key: _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, (float, np.floating)) and not math.isfinite(value):
+        return None
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def to_json(value) -> str:
+    """JSON text for a JSON column (strict: no NaN)."""
+    return json.dumps(_json_ready(value), allow_nan=False)
+
+
 def _sql_value(value):
     """A Python value as the schema stores it: JSON text, 0/1, or as is."""
     if isinstance(value, (dict, list, tuple)):
-        return json.dumps(value)
+        return to_json(value)
     if isinstance(value, (bool, np.bool_)):
         return int(value)
     if isinstance(value, np.integer):
