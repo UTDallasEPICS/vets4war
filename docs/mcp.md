@@ -43,29 +43,6 @@ field for a remote server also varies slightly by tool. Add only the servers you
 snippets come from the template and were not tried again for this repository: if one does
 not work, the tool's own documentation wins.
 
-### Claude Code: `.mcp.json` (project root) or `~/.claude.json` (user)
-
-```json
-{
-  "mcpServers": {
-    "nuxt": { "type": "http", "url": "https://nuxt.com/mcp" },
-    "nuxt-ui": { "type": "http", "url": "https://ui.nuxt.com/mcp" },
-    "better-auth": {
-      "type": "http",
-      "url": "https://mcp.chonkie.ai/better-auth/better-auth-builder/mcp"
-    }
-  }
-}
-```
-
-Or with the command line:
-
-```bash
-claude mcp add --transport http nuxt https://nuxt.com/mcp
-claude mcp add --transport http nuxt-ui https://ui.nuxt.com/mcp
-claude mcp add --transport http better-auth https://mcp.chonkie.ai/better-auth/better-auth-builder/mcp
-```
-
 ### Cursor: `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global)
 
 ```json
@@ -105,7 +82,7 @@ claude mcp add --transport http better-auth https://mcp.chonkie.ai/better-auth/b
 }
 ```
 
-Another assistant (Windsurf, Zed, Continue, Claude Desktop and others) almost certainly
+Another assistant (Windsurf, Zed, Continue and others) almost certainly
 supports MCP too. Check its documentation for the config path; the server URLs are the same.
 
 ## Notes

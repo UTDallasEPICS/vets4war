@@ -43,7 +43,6 @@ data/
 *.parquet
 # Local agent tooling
 .agents/
-.claude/
 skills-lock.json
 .vercel
 
