@@ -132,6 +132,15 @@ function setInput(el: Element, value: string, event = 'input') {
   ;(el as HTMLInputElement).value = value
   el.dispatchEvent(new Event(event, { bubbles: true }))
 }
+// Once an answer is in, nothing on the page may still say it is loading.
+function expectNothingLoading(wrapper: {
+  text: () => string
+  find: (s: string) => { exists: () => boolean; attributes: (n: string) => string | undefined }
+}) {
+  expect(wrapper.text()).not.toContain('Loading the forecast')
+  expect(wrapper.text()).not.toContain('Checking data source')
+  expect(wrapper.find('#sourceBadge').attributes('hidden')).toBeDefined()
+}
 function apiError(status: number, code: string, message: string) {
   return Object.assign(new Error(message), { status, code, data: { code } })
 }
@@ -281,6 +290,9 @@ describe('console', () => {
     await until(() => expect(admin.find('#noForecast a[href="/admin"]').exists()).toBe(true))
     expect(admin.find('#gridScroll').exists()).toBe(false)
     expect(admin.get('#error').attributes('hidden')).toBeDefined()
+    expect(admin.get('#pageSub').text()).toBe('No forecast yet')
+    expect(admin.find('#legend').exists()).toBe(false)
+    expectNothingLoading(admin)
     admin.unmount()
 
     mocks.role = 'viewer'
@@ -299,6 +311,8 @@ describe('console', () => {
       'The forecast did not load (boom). Change a date to retry.'
     )
     expect(wrapper.findAll('td.h')).toHaveLength(0)
+    expect(wrapper.get('#pageSub').text()).toBe('The forecast did not load')
+    expectNothingLoading(wrapper)
   })
 
   it('shows the server sentence for dates outside the forecast', async () => {
@@ -308,6 +322,22 @@ describe('console', () => {
     const wrapper = await mountSuspended(ConsoleApp)
     await until(() => expect(wrapper.get('#error').attributes('hidden')).toBeUndefined())
     expect(wrapper.get('#error').text()).toBe('The forecast covers 2026-11-16 to 2029-01-24.')
+    expect(wrapper.get('#pageSub').text()).toBe('No forecast for these dates')
+    expectNothingLoading(wrapper)
+  })
+
+  it('a failed reload keeps the known data source and says the dates did not load', async () => {
+    mocks.apiFetch.mockResolvedValueOnce(fixture())
+    mocks.apiFetch.mockRejectedValueOnce(
+      apiError(400, 'outside_horizon', 'The forecast covers 2026-11-16 to 2029-01-24.')
+    )
+    const wrapper = await mountSuspended(ConsoleApp)
+    await until(() => expect(wrapper.findAll('td.h[data-k]')).toHaveLength(48))
+    setInput(wrapper.get('#end').element, '2031-01-31', 'change')
+    await until(() => expect(wrapper.get('#error').attributes('hidden')).toBeUndefined())
+    expect(wrapper.get('#pageSub').text()).toBe('No forecast for these dates')
+    expect(wrapper.get('#sourceBadge').attributes('hidden')).toBeUndefined()
+    expect(wrapper.get('#sourceBadge').text()).toContain('Synthetic data')
   })
 
   it('has Sign out always and Admin for admins', async () => {

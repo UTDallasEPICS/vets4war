@@ -366,6 +366,7 @@ export function createConsoleState() {
     pageSub: 'Loading the forecast',
     badgeCls: 'badge src-unlabeled',
     badgeText: 'Checking data source',
+    badgeHidden: false,
     errorHidden: true,
     errorText: '',
     noForecast: false,
@@ -500,6 +501,8 @@ export function createConsoleState() {
 
   // ---- fetch ----
   let inflight = 0
+  // whether a load has ever told the page its data source
+  let sourceShown = false
   async function refresh() {
     const k = rangeKey()
     if (cache && cache.key === k) {
@@ -567,6 +570,19 @@ export function createConsoleState() {
             ? String(failure.message)
             : `The forecast did not load (${failure.message}). Change a date to retry.`
       }
+      // The answer is in: the header stops saying it is loading. A data source shown by an
+      // earlier load stays (it does not depend on the dates); before any load there is
+      // none to show.
+      ui.pageSub =
+        failure.code === 'no_forecast'
+          ? 'No forecast yet'
+          : failure.code === 'outside_horizon'
+            ? 'No forecast for these dates'
+            : 'The forecast did not load'
+      if (!sourceShown) {
+        ui.badgeHidden = true
+        ui.badgeText = ''
+      }
       grid.value = { ...grid.value, rows: [] }
       dayChart.value = { ...dayChart.value, bars: [] }
     } finally {
@@ -578,6 +594,8 @@ export function createConsoleState() {
   }
   function renderSourceBadge(src: DataSource | null | undefined) {
     if (!src) return
+    sourceShown = true
+    ui.badgeHidden = false
     ui.badgeCls = `badge src-${src.kind}`
     ui.badgeText =
       src.kind === 'unlabeled'

@@ -20,7 +20,7 @@
       <h2>People to schedule, hour by hour</h2>
       <p>Click an hour or a day to open it. Drag to total hours.</p>
     </div>
-    <div class="legend" id="legend">
+    <div v-if="!ui.noForecast" class="legend" id="legend">
       <span data-legend="under" title="Under the shift cap, one shade per person"
         ><span class="sw under"></span>Under cap (<b id="legendRange">{{ ui.legendRange }}</b
         >)</span
