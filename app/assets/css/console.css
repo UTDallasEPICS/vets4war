@@ -1,0 +1,544 @@
+/* The staffing console's stylesheet: the <style> block of final-main's web/index.html,
+   scoped to the console root (<div class="v4w"> in app/layouts/console.vue). Every
+   declaration is unchanged; only selectors moved:
+     :root -> .v4w      :root[data-theme="dark"] -> .v4w[data-theme="dark"]
+     html, body -> .v4w      body.<state> and .is-loading -> .v4w.<state>
+     any other selector S -> :where(.v4w) S   (scoped, same specificity as before)
+   Unlayered on purpose, so it wins over Tailwind's layers. The block at the end puts
+   back the element defaults the old page relied on and Tailwind's preflight removes. */
+
+/* Not part of the old stylesheet. Instrument Sans comes from the Google Fonts stylesheet
+   the console layout loads (with its width axis). @nuxt/fonts would otherwise resolve
+   the family itself, without the width axis, and rewrite --font with its fallback names;
+   it leaves alone a family that already has an @font-face in the same file. This face
+   covers one code point no text uses, so it never renders. */
+@font-face { font-family: "Instrument Sans"; src: local("Instrument Sans"); unicode-range: U+10FFFF; }
+
+/* One system: a white sheet, black type, one pale grey step for tiles, one
+   blue. Colour carries meaning and nothing else:
+     black = the roster you set      blue = what the grid recommends
+     amber = at the shift cap        red  = over the cap
+   Glass is kept for what floats over the sheet (the settings dock while you
+   scroll, the detail sheet, the "hours changed" toast). */
+.v4w {
+  color-scheme: light;
+  --bg: #ffffff; --surface: #f4f4f4; --surface-2: #e9e9e9;
+  --line: #e6e6e6; --line-2: #cfcfcf;
+  --fg: #111111; --muted: #6b6b6b;
+  --ink: #111111; --ink-fg: #ffffff;                 /* inverted field: the roster card, the brand mark */
+  --accent: #1a4be0; --accent-strong: #1238b0; --on-accent: #ffffff; --accent-soft: #e6ecfd;
+  --good: #17713f; --good-soft: #e3f2e9;
+  --warn: #9a5b00; --warn-soft: #fbefd9; --warn-line: #d9901a;
+  --bad: #c5301c; --bad-soft: #fbe6e2;
+  --glass: rgba(255,255,255,0.76); --glass-edge: rgba(17,17,17,0.08);
+  --glass-blur: blur(22px) saturate(170%);
+  --shadow-float: 0 1px 2px rgba(0,0,0,0.05), 0 16px 40px -18px rgba(0,0,0,0.25);
+  --sticky: var(--bg);                               /* solid: grid headers must hide rows scrolling under them */
+  --heat-lo: #f4f4f4; --heat-hi: #1a4be0; --heat-max: 38%; --deep-ink: var(--fg);
+  --thumb: #ffffff; --rng-fill: var(--fg); --rng-rail: var(--line-2);
+  --font: "Instrument Sans", -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, sans-serif;
+  --r-xl: 18px; --r-lg: 12px; --r-md: 9px; --r-sm: 7px;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px;
+  --ease: cubic-bezier(0.2, 0.9, 0.3, 1); --t: 180ms; --t-bar: 320ms;
+  --sheet: 400px;
+}
+.v4w[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111111; --surface: #1c1c1c; --surface-2: #282828;
+  --line: #2a2a2a; --line-2: #404040;
+  --fg: #ffffff; --muted: #9a9a9a;
+  --ink: #ffffff; --ink-fg: #111111;
+  --accent: #7d9dff; --accent-strong: #a3baff; --on-accent: #0b1535; --accent-soft: rgba(125,157,255,0.18);
+  --good: #4ade80; --good-soft: rgba(74,222,128,0.14);
+  --warn: #fbbf24; --warn-soft: rgba(251,191,36,0.14); --warn-line: #fbbf24;
+  --bad: #ff7a66; --bad-soft: rgba(255,122,102,0.16);
+  --glass: rgba(24,24,24,0.76); --glass-edge: rgba(255,255,255,0.1);
+  --shadow-float: 0 1px 2px rgba(0,0,0,0.4), 0 16px 40px -18px rgba(0,0,0,0.8);
+  --heat-lo: #1c1c1c; --heat-hi: #7d9dff; --heat-max: 52%; --deep-ink: #ffffff;
+  --thumb: #ffffff;
+}
+
+:where(.v4w) * { box-sizing: border-box; }
+.v4w { background: var(--bg); }
+.v4w { margin: 0; min-height: 100vh; font: 400 14px/1.45 var(--font); font-variant-numeric: tabular-nums; color: var(--fg); background: var(--bg); -webkit-font-smoothing: antialiased; }
+:where(.v4w) [hidden] { display: none !important; }
+:where(.v4w) :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:where(.v4w) button, :where(.v4w) input { font: inherit; color: inherit; }
+:where(.v4w) h1, :where(.v4w) h2, :where(.v4w) h3, :where(.v4w) p, :where(.v4w) dl, :where(.v4w) dd { margin: 0; }
+/* Large numerals: slightly condensed and tight, the page's one type gesture. */
+:where(.v4w) .num { font-weight: 500; font-stretch: 88%; letter-spacing: -0.035em; line-height: 1; }
+
+:where(.v4w) .glass { background: var(--glass); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); border: 1px solid var(--glass-edge); box-shadow: var(--shadow-float); }
+:where(.v4w) .card { background: var(--surface); border-radius: var(--r-xl); padding: var(--s5); min-width: 0; }
+
+:where(.v4w) .page { max-width: 1680px; margin: 0 auto; padding: var(--s5) max(16px, 2vw) var(--s7); display: flex; flex-direction: column; gap: var(--s4); transition: padding-right var(--t) var(--ease); container-type: inline-size; }
+.v4w.sheet-open .page { padding-right: calc(var(--sheet) + 2 * max(16px, 2vw)); }
+
+/* ---- top bar: who, what period, where the data came from, exports ---- */
+:where(.v4w) .topbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s3); }
+:where(.v4w) .brand { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
+:where(.v4w) .brand .mark { flex: none; width: 40px; height: 40px; display: grid; place-items: center; border-radius: 11px; background: var(--ink); color: var(--ink-fg); }
+:where(.v4w) .brand h1 { font-size: 22px; font-weight: 600; font-stretch: 92%; letter-spacing: -0.028em; line-height: 1.15; white-space: nowrap; }
+:where(.v4w) .brand .sub { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+:where(.v4w) .badge { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 var(--s3); border-radius: 999px; font-size: 12px; font-weight: 500; background: var(--good-soft); color: var(--good); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+:where(.v4w) .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+:where(.v4w) .badge.src-synthetic, :where(.v4w) .badge.src-unlabeled { background: var(--warn-soft); color: var(--warn); }
+:where(.v4w) .spacer { flex: 1; }
+:where(.v4w) .actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+:where(.v4w) .pill { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 36px; padding: 0 var(--s4); border-radius: 999px; border: 0; background: var(--surface); cursor: pointer; font-size: 13px; font-weight: 500; white-space: nowrap;
+  transition: background-color 140ms ease, transform 120ms var(--ease); }
+:where(.v4w) .pill:hover { background: var(--surface-2); }
+:where(.v4w) .pill:active { transform: scale(0.97); }
+:where(.v4w) .pill.primary { background: var(--accent); color: var(--on-accent); }
+:where(.v4w) .pill.primary:hover { background: var(--accent-strong); }
+
+/* view switch: a range of dates, or one day laid out hour by hour */
+.v4w:not(.one-day) .day-only { display: none !important; }
+.v4w.one-day .range-only { display: none !important; }
+:where(.v4w) .seg { display: inline-flex; padding: 3px; border-radius: 999px; background: var(--surface); }
+:where(.v4w) .seg button { height: 30px; padding: 0 14px; border: 0; border-radius: 999px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; transition: background-color 160ms ease, color 160ms ease; }
+:where(.v4w) .seg button:hover { color: var(--fg); }
+:where(.v4w) .seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+:where(.v4w) .stepbtn { width: 30px; height: 32px; flex: none; display: grid; place-items: center; border: 1px solid var(--line-2); border-radius: var(--r-md); background: var(--bg); cursor: pointer; }
+:where(.v4w) .stepbtn:hover { border-color: var(--fg); }
+:where(.v4w) .stepbtn:active { transform: scale(0.94); }
+
+/* ---- settings dock: floats over the grid while you scroll ---- */
+:where(.v4w) .dock { position: sticky; top: var(--s3); z-index: 15; display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s3) var(--s5); padding: var(--s3) var(--s5); border-radius: var(--r-xl); }
+:where(.v4w) .ctl { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+:where(.v4w) .ctl .name { font-size: 12px; font-weight: 500; color: var(--muted); white-space: nowrap; }
+:where(.v4w) .ctl-row { display: flex; align-items: center; gap: var(--s2); min-height: 32px; }
+:where(.v4w) .val { font-size: 13px; font-weight: 500; white-space: nowrap; }
+:where(.v4w) #hoursVal { min-width: 7.4em; }
+:where(.v4w) .field-in { height: 32px; padding: 0 var(--s2); border-radius: var(--r-md); border: 1px solid var(--line-2); background: var(--bg); font-size: 13px; font-weight: 500; }
+:where(.v4w) .field-in:hover { border-color: var(--fg); }
+:where(.v4w) input[type=date].field-in { width: 134px; }
+:where(.v4w) input[type=number].field-in { width: 54px; text-align: right; }
+:where(.v4w) input[type=number]#effNum { width: 66px; }
+:where(.v4w) .muted { color: var(--muted); font-size: 12px; }
+
+:where(.v4w) .range { position: relative; width: 120px; height: 24px; display: flex; align-items: center; }
+:where(.v4w) .range input { -webkit-appearance: none; appearance: none; width: 100%; height: 24px; margin: 0; background: transparent; cursor: pointer; }
+:where(.v4w) .range input::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--rng-fill) 0 var(--fill, 0%), var(--rng-rail) var(--fill, 0%)); }
+:where(.v4w) .range input::-moz-range-track { height: 4px; border-radius: 2px; background: var(--rng-rail); }
+:where(.v4w) .range input::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--rng-fill); }
+:where(.v4w) .range input::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; margin-top: -8px; border-radius: 50%; background: var(--thumb); border: 0; box-shadow: 0 1px 4px rgba(0,0,0,0.35), 0 0 0 0.5px rgba(0,0,0,0.16); transition: transform 120ms var(--ease); }
+:where(.v4w) .range input:active::-webkit-slider-thumb { transform: scale(1.14); }
+:where(.v4w) .range input::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; background: var(--thumb); border: 0; box-shadow: 0 1px 4px rgba(0,0,0,0.35); }
+/* 0 to 20% efficiency is not actionable: hatched on the track */
+:where(.v4w) .range.caution::after { content: ""; position: absolute; left: 0; width: 20%; top: 50%; height: 4px; transform: translateY(-50%); border-radius: 2px 0 0 2px; pointer-events: none;
+  background: repeating-linear-gradient(135deg, transparent 0 2px, var(--bg) 2px 3px); opacity: 0.6; }
+/* service-level marks: the band the line works in today, and 90% */
+:where(.v4w) .range .band { position: absolute; top: 50%; height: 12px; transform: translateY(-50%); border-radius: 6px; background: var(--warn-line); opacity: 0.32; pointer-events: none; }
+:where(.v4w) .range .tick { position: absolute; top: 3px; bottom: 3px; width: 2px; border-radius: 1px; background: var(--fg); opacity: 0.5; pointer-events: none; }
+/* hours: two thumbs on one track */
+:where(.v4w) .range.dual input { position: absolute; inset: 0; pointer-events: none; }
+:where(.v4w) .range.dual input::-webkit-slider-runnable-track { background: transparent; }
+:where(.v4w) .range.dual input::-moz-range-track { background: transparent; }
+:where(.v4w) .range.dual input::-moz-range-progress { background: transparent; }
+:where(.v4w) .range.dual input::-webkit-slider-thumb { pointer-events: auto; }
+:where(.v4w) .range.dual input::-moz-range-thumb { pointer-events: auto; }
+:where(.v4w) .range.dual .rail { position: absolute; left: 0; right: 0; top: 50%; height: 4px; transform: translateY(-50%); border-radius: 2px;
+  background: linear-gradient(to right, var(--rng-rail) 0 var(--a), var(--rng-fill) var(--a) var(--b), var(--rng-rail) var(--b)); }
+:where(.v4w) .switch { display: inline-flex; align-items: center; gap: var(--s2); cursor: pointer; font-size: 13px; font-weight: 500; white-space: nowrap; }
+:where(.v4w) .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+:where(.v4w) .switch .knob { width: 38px; height: 22px; border-radius: 999px; background: var(--line-2); position: relative; transition: background var(--t); flex: none; }
+:where(.v4w) .switch .knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3); transition: transform var(--t) var(--ease); }
+:where(.v4w) .switch input:checked + .knob { background: var(--fg); }
+.v4w[data-theme="dark"] .switch input:checked + .knob { background: var(--accent); }
+:where(.v4w) .switch input:checked + .knob::after { transform: translateX(16px); }
+:where(.v4w) .switch input:focus-visible + .knob { outline: 2px solid var(--accent); outline-offset: 2px; }
+:where(.v4w) .changed { position: fixed; left: 50%; bottom: calc(var(--s5) + env(safe-area-inset-bottom, 0px)); z-index: 40; transform: translateX(-50%); padding: var(--s2) var(--s4); border-radius: 999px; font-size: 13px; font-weight: 500; white-space: nowrap;
+  transition: opacity 300ms var(--ease), transform 300ms var(--ease); }
+:where(.v4w) .changed.quiet { opacity: 0; transform: translate(-50%, 8px); pointer-events: none; }
+
+:where(.v4w) .banner { padding: var(--s3) var(--s4); border-radius: var(--r-lg); font-size: 13px; font-weight: 500; }
+:where(.v4w) .banner.error { background: var(--bad-soft); color: var(--bad); }
+:where(.v4w) .banner.note { background: var(--warn-soft); color: var(--warn); }
+
+/* ---- outlook: the roster you set, beside what the grid recommends ---- */
+:where(.v4w) .outlook { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1.2fr) minmax(0, 1fr); gap: var(--s4); }
+:where(.v4w) .outlook > .card { display: flex; flex-direction: column; gap: var(--s3); padding: 20px var(--s5); }
+:where(.v4w) .card-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s3); min-height: 36px; }
+:where(.v4w) .card-head h2 { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; flex: 1; white-space: nowrap; }
+:where(.v4w) .card-head p { flex-basis: 100%; font-size: 13px; color: var(--muted); }
+:where(.v4w) .card-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+:where(.v4w) .lead-slot { display: flex; flex-direction: column; gap: var(--s2); }
+:where(.v4w) .lead-top { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: var(--s3) var(--s5); }
+:where(.v4w) .lead-n { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 var(--s3); }
+:where(.v4w) .lead-n .n { font-size: 52px; }
+:where(.v4w) .lead-n .u { font-size: 14px; color: var(--muted); }
+:where(.v4w) .figs { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s5); }
+:where(.v4w) .fig dt { font-size: 12px; color: var(--muted); }
+:where(.v4w) .fig dd { font-size: 22px; line-height: 1.2; }
+:where(.v4w) .lead-d { font-size: 12px; color: var(--muted); }
+:where(.v4w) .key { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+:where(.v4w) .key i { width: 10px; height: 10px; border-radius: 3px; background: var(--fg); }
+:where(.v4w) .key.rec i { background: var(--accent); }
+:where(.v4w) .key.miss i { background: var(--bad); }
+
+:where(.v4w) .card.ink { background: var(--ink); color: var(--ink-fg);
+  --muted: color-mix(in srgb, var(--ink-fg) 62%, transparent); --thumb: var(--ink-fg);
+  --rng-fill: var(--ink-fg); --rng-rail: color-mix(in srgb, var(--ink-fg) 26%, transparent); }
+:where(.v4w) .card.ink :focus-visible { outline-color: var(--ink-fg); }
+/* Glow: a soft light sweeps onto the roster card once on load and lights a dot lattice
+   around it, then rests behind the number. It pulses once whenever the roster's
+   hang-ups change, so a slider move is felt as well as read. */
+:where(.v4w) .card.ink { position: relative; overflow: hidden; isolation: isolate; --gx: 16%; --gy: 40%; --glow-c: #4a78ff; }
+.v4w[data-theme="dark"] .card.ink { --glow-c: #9db4ff; }
+:where(.v4w) .card.ink > * { position: relative; z-index: 1; }
+:where(.v4w) .card.ink::before { content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none; opacity: 0.55;
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--ink-fg) 60%, transparent) 1.1px, transparent 1.6px); background-size: 22px 22px;
+  -webkit-mask-image: radial-gradient(300px 240px at var(--gx) var(--gy), #000 0%, transparent 72%); mask-image: radial-gradient(300px 240px at var(--gx) var(--gy), #000 0%, transparent 72%); }
+:where(.v4w) .card.ink::after { content: ""; position: absolute; z-index: 0; left: var(--gx); top: var(--gy); width: 380px; height: 380px; translate: -50% -50%; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(circle, color-mix(in srgb, var(--glow-c) 62%, transparent) 0%, transparent 66%); filter: blur(26px); opacity: 0.6; }
+:where(.v4w) .card.ink.pulse::after { animation: glow-pulse 720ms ease-out; }
+/* the roster card is the page's lead: its number is set large, figures under it */
+:where(.v4w) .card.ink .lead-top { flex-direction: column; align-items: flex-start; gap: var(--s3); }
+:where(.v4w) .card.ink .lead-n .n { font-size: clamp(64px, 6.2cqw, 100px); }
+:where(.v4w) .card.ink .lead-n .u { font-size: 16px; }
+:where(.v4w) .card.ink .fig dd { font-size: 28px; }
+:where(.v4w) .card.ink .figs { gap: var(--s2) var(--s6); }
+:where(.v4w) .card.ink .pill { background: color-mix(in srgb, var(--ink-fg) 14%, transparent); color: var(--ink-fg); }
+:where(.v4w) .card.ink .pill:hover { background: color-mix(in srgb, var(--ink-fg) 24%, transparent); }
+:where(.v4w) .card.ink .pill.primary { background: var(--accent); color: var(--on-accent); }
+:where(.v4w) .card.ink .pill.primary:hover { background: var(--accent-strong); }
+:where(.v4w) .shifts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s3) var(--s5); padding-top: var(--s4); border-top: 1px solid color-mix(in srgb, var(--ink-fg) 18%, transparent); margin-top: auto; }
+:where(.v4w) .shift label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; font-size: 13px; font-weight: 500; }
+:where(.v4w) .shift label small { font-size: 12px; font-weight: 400; color: var(--muted); white-space: nowrap; }
+:where(.v4w) .shift-row { display: flex; align-items: center; gap: var(--s3); margin-top: 2px; }
+:where(.v4w) .shift-row .roster-val { font-size: 34px; line-height: 1.15; min-width: 1.2ch; }
+:where(.v4w) .shift-row .range { flex: 1; width: auto; min-width: 60px; }
+
+/* hang-ups by shift: your roster (black) against the recommendation (blue), one scale */
+:where(.v4w) .split { display: flex; flex-direction: column; gap: var(--s2); margin-top: auto; padding-top: var(--s3); border-top: 1px solid var(--line-2); }
+:where(.v4w) .split-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s4); }
+:where(.v4w) .split-head h3 { font-size: 13px; font-weight: 600; flex: 1; white-space: nowrap; }
+:where(.v4w) .srow { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: var(--s3); }
+:where(.v4w) .srow .sname { font-size: 13px; font-weight: 500; }
+:where(.v4w) .sbars { display: flex; flex-direction: column; gap: 3px; }
+:where(.v4w) .sbar { display: flex; align-items: center; gap: var(--s2); height: 14px; }
+:where(.v4w) .sbar i { display: block; height: 100%; min-width: 2px; border-radius: 3px; background: var(--fg); transition: width var(--t-bar) var(--ease); }
+:where(.v4w) .sbar.rec i { background: var(--accent); }
+:where(.v4w) .sbar b { font-size: 12px; font-weight: 500; line-height: 1; }
+:where(.v4w) .sbar.rec b { color: var(--accent); }
+
+/* ---- window totals ---- */
+:where(.v4w) .summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s4); }
+:where(.v4w) .stat { background: var(--surface); border-radius: var(--r-xl); padding: var(--s4) var(--s5); min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+:where(.v4w) .stat .k { font-size: 13px; font-weight: 500; }
+:where(.v4w) .stat .v { font-size: 32px; font-weight: 500; font-stretch: 88%; letter-spacing: -0.035em; line-height: 1.15; margin-top: var(--s1); white-space: nowrap; }
+:where(.v4w) .stat .d { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.v4w.is-loading .grid-scroll, .v4w.is-loading .summary, .v4w.is-loading .lead-slot, .v4w.is-loading .daybars, .v4w.is-loading .focus-scroll, .v4w.is-loading .split { opacity: 0.5; transition: opacity var(--t) 120ms; }
+
+/* ---- hang-ups day by day: a pair of bars per day, click one to open that day ---- */
+:where(.v4w) .daychart { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s4) var(--s5); }
+:where(.v4w) .daybars { display: flex; align-items: stretch; gap: 3px; height: 100px; }
+:where(.v4w) .db { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 1px 3px; border: 0; border-radius: var(--r-sm); background: transparent; cursor: pointer; }
+:where(.v4w) .db:hover, :where(.v4w) .db.picked { background: var(--surface-2); }
+:where(.v4w) .db .dv { font-size: 11px; font-weight: 500; line-height: 1; white-space: nowrap; opacity: 0; transition: opacity 140ms ease; }
+:where(.v4w) .db.top .dv, :where(.v4w) .db:hover .dv, :where(.v4w) .db:focus-visible .dv, :where(.v4w) .db.picked .dv { opacity: 1; }
+:where(.v4w) .db .track { flex: 1; width: 100%; display: flex; align-items: flex-end; justify-content: center; gap: 2px; }
+:where(.v4w) .db .track i { display: block; width: min(40%, 14px); min-height: 2px; border-radius: 3px 3px 0 0; background: var(--fg); transition: height var(--t-bar) var(--ease); }
+:where(.v4w) .db .track i.b-rec { background: var(--accent); }
+:where(.v4w) .db .dl { font-size: 11px; line-height: 1.15; color: var(--muted); text-align: center; white-space: nowrap; }
+:where(.v4w) .db .dl b { display: block; font-weight: 500; }
+:where(.v4w) .db.weekend .dl { color: var(--fg); }
+:where(.v4w) .db.holiday .dl b::after { content: ""; display: inline-block; width: 5px; height: 5px; margin-left: 3px; border-radius: 50%; background: var(--accent); vertical-align: 2px; }
+:where(.v4w) .db.today .dl b { text-decoration: underline; text-underline-offset: 2px; }
+:where(.v4w) .daybars.dense .dv, :where(.v4w) .daybars.dense .dl b { display: none; }
+:where(.v4w) .daybars.packed .dl { display: none; }
+
+/* ---- one day, hour by hour: call load, the recommendation, then your roster ---- */
+:where(.v4w) .dayfocus { display: flex; flex-direction: column; gap: var(--s3); }
+:where(.v4w) .focus-scroll { overflow-x: auto; }
+:where(.v4w) table.focus { width: 100%; min-width: 900px; table-layout: fixed; border-collapse: separate; border-spacing: 2px; }
+:where(.v4w) .focus col.f-label { width: 184px; }
+:where(.v4w) .focus th { text-align: left; font-weight: 400; font-size: 12px; color: var(--muted); padding: 0 var(--s2) 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+:where(.v4w) .focus td { height: 30px; padding: 0; text-align: center; font-size: 12px; border-radius: 5px; cursor: pointer; }
+:where(.v4w) .focus .edge { border-left: 8px solid transparent; background-clip: padding-box; }
+:where(.v4w) .focus .f-groups th { height: 26px; font-size: 13px; font-weight: 600; color: var(--fg); }
+:where(.v4w) .focus .f-groups th small { margin-left: var(--s2); font-size: 12px; font-weight: 400; color: var(--muted); }
+:where(.v4w) .focus .f-chart th { vertical-align: bottom; padding-bottom: 4px; }
+:where(.v4w) .focus .f-chart td { height: 108px; vertical-align: bottom; border-radius: 0; }
+:where(.v4w) .focus .f-chart .fv { display: block; margin-bottom: 3px; font-size: 10px; line-height: 1; color: var(--muted); }
+:where(.v4w) .focus .f-chart i { display: block; margin: 0 auto; width: calc(100% - 6px); max-width: 36px; min-height: 2px; border-radius: 3px 3px 0 0; background: var(--fg); }
+:where(.v4w) .focus .f-chart td:hover i { background: var(--accent); }
+:where(.v4w) .focus .f-hours td { height: 22px; font-size: 11px; color: var(--muted); border-radius: 0; box-shadow: inset 0 1px 0 var(--line-2); }
+:where(.v4w) .focus .f-section th { padding: 14px 0 4px; font-size: 13px; font-weight: 600; color: var(--fg); }
+:where(.v4w) .focus .f-section th span::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 3px; background: var(--line-2); }
+:where(.v4w) .focus .f-section.rec th span::before { background: var(--accent); }
+:where(.v4w) .focus .f-section.own th span::before { background: var(--fg); }
+:where(.v4w) .focus tbody td { background-color: var(--bg); }
+:where(.v4w) .focus tbody td:hover { box-shadow: inset 0 0 0 1.5px var(--fg); }
+:where(.v4w) .focus td.staff { font-size: 14px; font-weight: 600; }
+:where(.v4w) .focus td.staff.cap-under { background-color: color-mix(in oklab, var(--heat-hi) var(--heat-max), var(--heat-lo)); }
+:where(.v4w) .focus td.staff.cap-at { background-color: var(--warn-soft); color: var(--warn); box-shadow: inset 0 0 0 2px var(--warn-line); }
+:where(.v4w) .focus td.staff.cap-over { background-color: var(--bad); color: #fff; }
+:where(.v4w) .focus td.staff.own { background-color: var(--fg); color: var(--bg); }
+:where(.v4w) .focus td.miss { background-color: var(--bad-soft); color: var(--bad); font-weight: 600; }
+
+/* ---- phone layouts: lists instead of 24-column tables ---- */
+:where(.v4w) .mobile-only { display: none !important; }
+:where(.v4w) .dock-toggle { display: none; }
+:where(.v4w) .name-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
+:where(.v4w) .chip-s { display: inline-grid; place-items: center; min-width: 30px; height: 30px; padding: 0 6px; border-radius: 8px; font-style: normal; font-size: 14px; font-weight: 600;
+  background: color-mix(in oklab, var(--heat-hi) var(--heat-max), var(--heat-lo)); color: var(--fg); }
+:where(.v4w) .chip-s.cap-at { background: var(--warn-soft); color: var(--warn); box-shadow: inset 0 0 0 2px var(--warn-line); }
+:where(.v4w) .chip-s.cap-over { background: var(--bad); color: #fff; }
+:where(.v4w) .chip-s.cap-undef { background: var(--surface-2); color: var(--muted); }
+:where(.v4w) .chip-s.own { box-shadow: inset 0 0 0 2px var(--fg); }
+:where(.v4w) .chip-s.ownroster { background: var(--fg); color: var(--bg); }
+:where(.v4w) .daylist, :where(.v4w) .hlist { display: flex; flex-direction: column; }
+:where(.v4w) .dhead, :where(.v4w) .hhead { display: grid; align-items: end; gap: var(--s3); padding: 0 var(--s1) 6px; font-size: 11px; color: var(--muted); }
+:where(.v4w) .dhead, :where(.v4w) .drow { grid-template-columns: minmax(0, 1fr) auto 104px; }
+:where(.v4w) .dhead > :last-child, :where(.v4w) .dlost { text-align: right; }
+:where(.v4w) .dchips { display: flex; gap: 4px; }
+:where(.v4w) .dhead .dchips i { width: 30px; font-style: normal; text-align: center; }
+:where(.v4w) .drow { display: grid; align-items: center; gap: var(--s3); min-height: 56px; padding: 6px var(--s1); border: 0; border-top: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
+:where(.v4w) .drow:active { background: var(--surface); }
+:where(.v4w) .drow .dd { font-size: 15px; min-width: 0; }
+:where(.v4w) .drow .dd b { font-weight: 600; }
+:where(.v4w) .drow.weekend .dd b { font-weight: 700; }
+:where(.v4w) .drow small { display: block; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+:where(.v4w) .drow.holiday .dd small { color: var(--accent); }
+:where(.v4w) .dlost b { font-size: 20px; font-weight: 500; font-stretch: 88%; letter-spacing: -0.03em; }
+:where(.v4w) .hhead, :where(.v4w) .hrow { grid-template-columns: 26px minmax(0, 1fr) 74px 74px; }
+:where(.v4w) .htour { margin: var(--s4) 0 6px; font-size: 14px; font-weight: 600; }
+:where(.v4w) .htour small { margin-left: var(--s2); font-size: 12px; font-weight: 400; color: var(--muted); }
+:where(.v4w) .hrow { display: grid; align-items: center; gap: var(--s3); min-height: 46px; padding: 4px var(--s1); border: 0; border-top: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
+:where(.v4w) .hrow:active { background: var(--surface); }
+:where(.v4w) .hrow .hh { font-size: 13px; color: var(--muted); }
+:where(.v4w) .hcalls { display: flex; align-items: center; gap: 6px; min-width: 0; }
+:where(.v4w) .hcalls i { display: block; height: 12px; min-width: 2px; border-radius: 3px; background: var(--fg); }
+:where(.v4w) .hcalls b { font-size: 12px; font-weight: 500; }
+:where(.v4w) .hpair { display: flex; align-items: center; gap: 6px; }
+:where(.v4w) .hpair small { font-size: 13px; }
+:where(.v4w) .hpair.miss small { color: var(--bad); font-weight: 600; }
+
+/* ---- grid: sits straight on the sheet, no box around it ---- */
+:where(.v4w) .board { padding-top: var(--s4); }
+:where(.v4w) .board-head h2 { font-size: 20px; font-weight: 600; font-stretch: 92%; letter-spacing: -0.025em; }
+:where(.v4w) .board-head p { font-size: 13px; color: var(--muted); margin-top: 2px; max-width: 118ch; }
+:where(.v4w) .legend { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s5); align-items: center; padding: var(--s3) 0; font-size: 12px; color: var(--muted); }
+:where(.v4w) .legend .sw { display: inline-block; width: 16px; height: 16px; border-radius: 5px; vertical-align: -3px; margin-right: 6px; }
+:where(.v4w) .legend .sw.under { width: 44px; background: linear-gradient(to right, var(--heat-lo), color-mix(in oklab, var(--heat-hi) var(--heat-max), var(--heat-lo))); }
+:where(.v4w) .legend .sw.at { background: var(--warn-soft); box-shadow: inset 0 0 0 2px var(--warn-line); }
+:where(.v4w) .legend .sw.over { background: var(--bad); position: relative; }
+:where(.v4w) .legend .sw.over::after { content: ""; position: absolute; top: 0; right: 0; border-style: solid; border-width: 0 6px 6px 0; border-color: transparent var(--bg) transparent transparent; border-top-right-radius: 5px; }
+:where(.v4w) .legend .sw.hol { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); vertical-align: 0; }
+:where(.v4w) .legend .sw.own { background: var(--surface); box-shadow: inset 0 0 0 1.5px var(--fg); }
+:where(.v4w) .legend b { color: var(--fg); font-weight: 600; }
+
+:where(.v4w) .grid-scroll { container-type: inline-size; overflow: auto; max-height: max(420px, calc(100vh - 128px)); user-select: none; -webkit-user-select: none; border-top: 1px solid var(--line); }
+:where(.v4w) table.grid { border-collapse: separate; border-spacing: 3px; width: 100%; table-layout: fixed; }
+:where(.v4w) .grid col.c-date { width: 140px; }
+:where(.v4w) .grid col.c-roster { width: 86px; }
+:where(.v4w) .grid col.c-gap { width: 10px; }
+:where(.v4w) .grid thead th { position: sticky; z-index: 3; background: var(--sticky); font-weight: 400; font-size: 11px; color: var(--muted); padding: 0; }
+:where(.v4w) .grid thead tr:first-child th { top: 0; height: 38px; }
+:where(.v4w) .grid thead tr.profile th { top: 41px; height: 44px; vertical-align: bottom; }
+:where(.v4w) .grid thead tr:last-child th { top: 88px; height: 24px; }
+/* calls-per-hour strip: one bar per hour, sitting on the column it describes */
+:where(.v4w) .grid th.pf-label { text-align: left; padding: 0 var(--s2) 3px; font-size: 11px; line-height: 1.25; color: var(--muted); }
+:where(.v4w) .grid th.pf .pv { display: block; font-size: 10px; font-weight: 400; line-height: 1; margin-bottom: 3px; color: var(--muted); }
+:where(.v4w) .grid th.pf i { display: block; margin: 0 auto; width: calc(100% - 8px); max-width: 30px; min-height: 2px; border-radius: 3px 3px 0 0; background: var(--line-2); transition: height var(--t-bar) var(--ease); }
+:where(.v4w) .grid th.pf .pv { visibility: hidden; }
+:where(.v4w) .grid th.pf.peak .pv, :where(.v4w) .grid th.pf:hover .pv { visibility: visible; color: var(--fg); font-weight: 600; }
+:where(.v4w) .grid th.pf.peak i { background: var(--fg); }
+:where(.v4w) .grid th.group { text-align: left; padding: 0 var(--s1); font-size: 13px; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+:where(.v4w) .grid th.group small { font-weight: 400; color: var(--muted); margin-left: var(--s2); font-size: 12px; }
+:where(.v4w) .grid th.hh { text-align: center; }
+:where(.v4w) .grid th.hh.major { color: var(--fg); font-weight: 600; }
+:where(.v4w) .grid th.hh.peak { color: var(--fg); font-weight: 600; }
+:where(.v4w) .grid th.roster { text-align: center; color: var(--fg); font-weight: 600; }
+:where(.v4w) .grid th.date, :where(.v4w) .grid td.date { position: sticky; left: 0; z-index: 2; background: var(--sticky); text-align: left; padding: 0; }
+:where(.v4w) .grid thead th.date { z-index: 4; }
+:where(.v4w) .date-btn { display: block; width: 100%; height: 40px; padding: 0 var(--s2); line-height: 1.25; border: 0; border-radius: var(--r-sm); background: transparent; text-align: left; cursor: pointer; position: relative; }
+:where(.v4w) .date-btn:hover, :where(.v4w) .grid tbody tr:hover .date-btn { background: var(--surface); }
+:where(.v4w) .date-btn .d { font-size: 13px; font-weight: 600; white-space: nowrap; }
+:where(.v4w) .date-btn .d span { font-weight: 400; color: var(--muted); margin-left: var(--s1); }
+:where(.v4w) .date-btn .meta { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+:where(.v4w) .grid tr.weekend td.date .date-btn .d { font-weight: 700; }
+:where(.v4w) .grid tr.today .date-btn .meta { color: var(--fg); font-weight: 500; }
+:where(.v4w) .grid tr.holiday .date-btn::after { content: ""; position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+:where(.v4w) .grid tr.picked td.date .date-btn { background: var(--surface); box-shadow: inset 3px 0 0 var(--fg); }
+
+/* hour cell: three cap states, each its own thing.
+   under = blue intensity in one step per person; at = amber ring + amber
+   numeral; over = red fill, white numeral, corner wedge, plus the service
+   level you would get if you could only staff the cap. */
+:where(.v4w) .grid td.h { --lvl: 0; position: relative; height: 40px; padding: 0; text-align: center; border-radius: var(--r-sm); font-size: 14px; font-weight: 500; color: var(--fg); cursor: pointer; overflow: hidden;
+  background: color-mix(in oklab, var(--heat-hi) calc(var(--lvl) * var(--heat-max)), var(--heat-lo)); transition: background var(--t) var(--ease), transform 120ms var(--ease); }
+:where(.v4w) .grid td.h .n { display: block; line-height: 40px; }
+:where(.v4w) .grid td.h.deep { color: var(--deep-ink); }
+:where(.v4w) .grid td.h.cap-under { box-shadow: none; }
+:where(.v4w) .grid td.h.cap-at { box-shadow: inset 0 0 0 2px var(--warn-line); color: var(--warn); background: var(--warn-soft); font-weight: 600; }
+:where(.v4w) .grid td.h.cap-over { background: var(--bad); color: #fff; font-weight: 600; }
+.v4w[data-theme="dark"] .grid td.h.cap-over { background: #c5301c; }
+:where(.v4w) .grid td.h.cap-over .n { line-height: 1; padding-top: 7px; }
+:where(.v4w) .grid td.h.cap-over .cl { display: block; font-size: 9px; font-weight: 500; line-height: 1; margin-top: 4px; opacity: 0.92; }
+:where(.v4w) .grid td.h.cap-over::after { content: ""; position: absolute; top: 0; right: 0; border-style: solid; border-width: 0 8px 8px 0; border-color: transparent var(--bg) transparent transparent; }
+:where(.v4w) .grid td.h.cap-undef { color: var(--muted); }
+:where(.v4w) .grid td.h.implausible .n { text-decoration: underline dotted; text-underline-offset: 3px; }
+:where(.v4w) .grid td.h:hover { transform: scale(1.08); z-index: 1; box-shadow: 0 4px 12px -2px rgba(0,0,0,0.3); }
+:where(.v4w) .grid td.h.active, :where(.v4w) .grid td.h.sel { outline: 2px solid var(--fg); outline-offset: 1px; }
+
+/* roster: the tour's peak (recommendation) and your planned number, one cell */
+:where(.v4w) .grid td.roster { padding: 2px 6px; border-radius: var(--r-sm); background: transparent; box-shadow: inset 0 0 0 1px var(--line); text-align: center; vertical-align: middle; }
+:where(.v4w) .grid td.roster input { width: 100%; height: 22px; padding: 0; border: 0; border-radius: 5px; background: transparent; font-size: 15px; font-weight: 600; text-align: center; -moz-appearance: textfield; }
+:where(.v4w) .grid td.roster input::-webkit-inner-spin-button, :where(.v4w) .grid td.roster input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+:where(.v4w) .grid td.roster input:hover, :where(.v4w) .grid td.roster input:focus { background: var(--surface); outline: none; }
+:where(.v4w) .grid td.roster input::placeholder { color: var(--fg); opacity: 1; }
+:where(.v4w) .grid td.roster.cap-at input::placeholder { color: var(--warn); }
+:where(.v4w) .grid td.roster.cap-over input::placeholder { color: var(--bad); }
+:where(.v4w) .grid td.roster.own { box-shadow: inset 0 0 0 1.5px var(--fg); }
+:where(.v4w) .verdict { display: block; font-size: 10px; line-height: 1.2; font-weight: 400; color: var(--muted); white-space: nowrap; }
+:where(.v4w) .v-on-target { color: var(--good); } :where(.v4w) .v-understaffed { color: var(--bad); } :where(.v4w) .v-overstaffed { color: var(--warn); } :where(.v4w) .v-exceeds-capacity { color: var(--bad); font-weight: 700; }
+:where(.v4w) .verdict .lost { display: block; font-weight: 600; color: var(--bad); }
+/* a roster cell that follows the recommendation shows just its number; the rest is in its tooltip */
+:where(.v4w) .grid td.roster:not(.own) .verdict { display: none; }
+
+:where(.v4w) .notes { padding: var(--s3) 0 0; border-top: 1px solid var(--line); }
+:where(.v4w) .notes summary { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; list-style: none; border-radius: var(--r-sm); }
+:where(.v4w) .notes summary::-webkit-details-marker { display: none; }
+:where(.v4w) .notes summary::before { content: ""; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform var(--t) var(--ease); }
+:where(.v4w) .notes[open] summary::before { transform: rotate(45deg); }
+:where(.v4w) .notes summary:hover { color: var(--fg); }
+:where(.v4w) .notes p { margin-top: var(--s3); font-size: 13px; color: var(--muted); max-width: 100ch; }
+:where(.v4w) .notes p b { color: var(--fg); font-weight: 600; }
+
+/* ---- detail sheet: opens when you click a day, an hour or drag a selection ---- */
+:where(.v4w) .sheet { position: fixed; top: var(--s3); right: max(16px, 2vw); bottom: var(--s3); width: var(--sheet); z-index: 30; border-radius: var(--r-xl); display: flex; flex-direction: column;
+  transform: translateX(calc(100% + 40px)); transition: transform 280ms var(--ease); }
+.v4w.sheet-open .sheet { transform: none; }
+:where(.v4w) .sheet-head { display: flex; align-items: center; gap: var(--s2); padding: var(--s4) var(--s4) var(--s2) var(--s5); }
+:where(.v4w) .sheet-head h2 { font-size: 19px; font-weight: 600; font-stretch: 92%; letter-spacing: -0.025em; flex: 1; min-width: 0; }
+:where(.v4w) .iconbtn { width: 32px; height: 32px; flex: none; display: grid; place-items: center; border-radius: 50%; border: 0; background: var(--surface); cursor: pointer; color: var(--muted); }
+:where(.v4w) .iconbtn:hover { background: var(--surface-2); color: var(--fg); }
+:where(.v4w) .iconbtn:active { transform: scale(0.94); }
+:where(.v4w) .sheet-body { padding: var(--s2) var(--s5) var(--s5); overflow: auto; flex: 1; position: relative; }
+:where(.v4w) .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--s3); }
+:where(.v4w) .chip { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
+:where(.v4w) .chip.over { background: var(--bad); color: #fff; } :where(.v4w) .chip.at { background: var(--warn-soft); color: var(--warn); } :where(.v4w) .chip.hol { background: var(--accent-soft); color: var(--accent); }
+:where(.v4w) .hero-n { display: flex; align-items: baseline; gap: var(--s2); margin: var(--s1) 0 var(--s4); }
+:where(.v4w) .hero-n .n { font-size: 68px; font-weight: 500; font-stretch: 88%; letter-spacing: -0.035em; line-height: 1; }
+:where(.v4w) .hero-n .u { font-size: 14px; color: var(--muted); }
+:where(.v4w) .hero-n.cap-over .n { color: var(--bad); } :where(.v4w) .hero-n.cap-at .n { color: var(--warn); }
+:where(.v4w) .rows { margin: 0; padding: 0; list-style: none; border-radius: var(--r-lg); background: var(--surface); }
+:where(.v4w) .rows li { padding: var(--s3) var(--s4); border-top: 1px solid var(--bg); }
+:where(.v4w) .rows li:first-child { border-top: 0; }
+:where(.v4w) .rows .line { display: flex; justify-content: space-between; gap: var(--s3); }
+:where(.v4w) .rows .k { color: var(--muted); }
+:where(.v4w) .rows .v { font-weight: 600; white-space: nowrap; }
+:where(.v4w) .rows .f { font-size: 12px; color: var(--muted); margin-top: 2px; }
+:where(.v4w) .rows li.out .v { color: var(--bad); }
+:where(.v4w) .reason { margin: var(--s3) 0 0; padding: var(--s3) var(--s4); border-radius: var(--r-md); background: var(--warn-soft); color: var(--warn); font-size: 12px; }
+:where(.v4w) .hint { color: var(--muted); font-size: 13px; margin: 0 0 var(--s3); }
+:where(.v4w) .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); margin-bottom: var(--s4); }
+:where(.v4w) .tile { padding: var(--s3) var(--s4); border-radius: var(--r-lg); background: var(--surface); }
+:where(.v4w) .tile .k { font-size: 12px; color: var(--muted); }
+:where(.v4w) .tile .v { font-size: 26px; font-weight: 500; font-stretch: 88%; letter-spacing: -0.035em; }
+/* calls for each hour of the day, coloured like the grid */
+:where(.v4w) .chart-head { margin: 0 0 var(--s2); font-size: 13px; font-weight: 600; }
+:where(.v4w) .hourchart { margin-bottom: var(--s4); }
+:where(.v4w) .hourbars { display: flex; align-items: flex-end; gap: 2px; height: 72px; }
+:where(.v4w) .hb { flex: 1 1 0; min-height: 2px; border-radius: 2px 2px 0 0; background: color-mix(in oklab, var(--heat-hi) var(--heat-max), var(--heat-lo)); }
+:where(.v4w) .hb.cap-at { background: var(--warn-line); } :where(.v4w) .hb.cap-over { background: var(--bad); } :where(.v4w) .hb.cap-undef { background: var(--line-2); }
+:where(.v4w) .hb.on { outline: 2px solid var(--fg); outline-offset: 1px; }
+:where(.v4w) .houraxis { position: relative; height: 16px; margin: 4px calc(100% / 48) 0; font-size: 10px; color: var(--muted); }
+:where(.v4w) .houraxis span { position: absolute; transform: translateX(-50%); }
+:where(.v4w) .tours { width: 100%; border-collapse: collapse; margin-bottom: var(--s3); }
+:where(.v4w) .tours th { font-size: 12px; font-weight: 400; color: var(--muted); text-align: right; padding: 0 0 var(--s2); }
+:where(.v4w) .tours th:first-child, :where(.v4w) .tours td:first-child { text-align: left; }
+:where(.v4w) .tours td { padding: var(--s2) 0; border-top: 1px solid var(--line); text-align: right; font-weight: 600; }
+:where(.v4w) .tours td:first-child { font-weight: 500; color: var(--muted); }
+:where(.v4w) .tours td small { display: block; font-size: 11px; font-weight: 400; color: var(--muted); }
+:where(.v4w) .tradeoff-head { margin: var(--s5) 0 var(--s2); font-size: 14px; font-weight: 600; }
+:where(.v4w) .tradeoff-head small { display: block; font-weight: 400; font-size: 12px; color: var(--muted); }
+:where(.v4w) .tradeoff td small { font-size: 10px; font-weight: 500; }
+:where(.v4w) .tradeoff tr.rec td { background: var(--accent-soft); }
+:where(.v4w) .tradeoff tr.rec td:first-child { box-shadow: inset 3px 0 0 var(--accent); padding-left: var(--s2); color: var(--accent); }
+:where(.v4w) .tradeoff tr.plan td { box-shadow: inset 0 1px 0 var(--fg), inset 0 -1px 0 var(--fg); }
+:where(.v4w) .sheet-foot { margin-top: var(--s4); display: flex; gap: var(--s2); }
+
+/* Compact grid: when the panel is narrow (small laptop, or the detail sheet is open) the
+   columns tighten so all 24 hours still fit without sideways scrolling. */
+@container (max-width: 1400px) {
+  :where(.v4w) .grid col.c-date { width: 128px; }
+  :where(.v4w) .grid col.c-roster { width: 78px; }
+  :where(.v4w) .grid td.h { font-size: 13px; }
+  :where(.v4w) .grid td.h .cl-cap { display: none; }
+  :where(.v4w) .grid th.pf .pv { font-size: 9px; letter-spacing: -0.02em; }
+  :where(.v4w) .grid td.roster { padding: 2px 3px; }
+}
+/* The page narrows when the detail sheet opens, so this follows the page, not the window. */
+@container (max-width: 1340px) {
+  :where(.v4w) .outlook { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+  :where(.v4w) .summary { grid-column: 1 / -1; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@container (max-width: 820px) {
+  :where(.v4w) .outlook { grid-template-columns: minmax(0, 1fr); }
+  :where(.v4w) .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 1180px) {
+  .v4w.sheet-open .page { padding-right: max(16px, 2vw); }
+  :where(.v4w) .sheet { left: max(16px, 2vw); width: auto; top: auto; max-height: 72vh; transform: translateY(calc(100% + 40px)); }
+  .v4w.sheet-open .sheet { transform: none; }
+}
+@media (max-width: 720px) {
+  .v4w { font-size: 15px; }
+  :where(.v4w) .mobile-only { display: flex !important; }
+  :where(.v4w) .desktop-only { display: none !important; }
+  :where(.v4w) .page { padding: var(--s3) var(--s3) calc(var(--s7) + env(safe-area-inset-bottom, 0px)); gap: var(--s3); }
+  /* top bar: brand, then the view switch full width, then one swipeable row of actions */
+  :where(.v4w) .topbar { gap: var(--s2); }
+  :where(.v4w) .brand h1 { font-size: 19px; }
+  :where(.v4w) .brand .sub { white-space: normal; }
+  :where(.v4w) .spacer { display: none; }
+  :where(.v4w) .badge { max-width: 100%; }
+  :where(.v4w) .seg { width: 100%; }
+  :where(.v4w) .seg button { flex: 1; height: 40px; }
+  :where(.v4w) .actions { width: calc(100% + 2 * var(--s3)); margin: 0 calc(-1 * var(--s3)); padding: 0 var(--s3); flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  :where(.v4w) .actions::-webkit-scrollbar { display: none; }
+  :where(.v4w) .pill { height: 42px; flex: none; }
+  /* settings: the date bar stays in reach; the rest opens on demand */
+  :where(.v4w) .dock { top: var(--s2); gap: var(--s3); padding: var(--s3); }
+  :where(.v4w) .dock .ctl { width: 100%; }
+  :where(.v4w) .dock:not(.open) .ctl:not(.ctl-dates) { display: none; }
+  :where(.v4w) .dock-toggle { display: inline-flex; height: 40px; padding: 0 var(--s4); }
+  :where(.v4w) .dock .range { flex: 1; width: auto; height: 44px; }
+  :where(.v4w) .dock .range input { height: 44px; }
+  :where(.v4w) .field-in { height: 44px; font-size: 16px; }            /* 16px: iOS zooms the page on smaller inputs */
+  :where(.v4w) input[type=date].field-in { flex: 1; width: auto; min-width: 0; }
+  :where(.v4w) input[type=number].field-in, :where(.v4w) input[type=number]#effNum { width: 72px; }
+  :where(.v4w) .stepbtn { width: 44px; height: 44px; }
+  :where(.v4w) .card { padding: var(--s4); }
+  :where(.v4w) .card.ink .lead-n .n { font-size: 76px; }
+  :where(.v4w) .shifts { grid-template-columns: 1fr; gap: var(--s2); }
+  :where(.v4w) .shift-row .range, :where(.v4w) .shift-row .range input { height: 44px; }
+  :where(.v4w) .stat { padding: var(--s3) var(--s4); }
+  :where(.v4w) .stat .v { font-size: 26px; }
+  :where(.v4w) .grid-scroll { max-height: 80vh; }
+  :where(.v4w) .grid col.c-date { width: 96px; }
+  :where(.v4w) .date-btn .meta { display: none; }
+  :where(.v4w) .sheet { left: var(--s2); right: var(--s2); bottom: var(--s2); max-height: 82vh; padding-bottom: env(safe-area-inset-bottom, 0px); }
+  :where(.v4w) .iconbtn { width: 40px; height: 40px; }
+  :where(.v4w) .notes summary { min-height: 44px; }
+}
+/* hover lift only where there is a real pointer: on touch it sticks after a tap */
+@media (hover: none) { :where(.v4w) .grid td.h:hover { transform: none; box-shadow: none; } }
+/* One load sequence: the outlook, the totals, the day chart and the grid rise in, in
+   reading order. Rows fade (no movement, their date cells are sticky) when new dates
+   load. After that, motion only answers you: bars slide to their new length as you
+   move a slider. */
+@property --gx { syntax: "<percentage>"; inherits: true; initial-value: 16%; }
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+@keyframes glow-sweep { from { --gx: -30%; } }
+@keyframes glow-pulse { 0% { opacity: 1; scale: 0.9; } 100% { opacity: 0.6; scale: 1; } }
+@keyframes fade { from { opacity: 0; } }
+:where(.v4w) .reveal { opacity: 0; }
+.v4w.ready .reveal { opacity: 1; animation: rise 560ms var(--ease) both; animation-delay: calc(var(--i, 0) * 70ms); }
+.v4w.ready .card.ink.reveal { animation: rise 560ms var(--ease) both, glow-sweep 1600ms cubic-bezier(0.2, 0.7, 0.2, 1) 120ms both; }
+:where(.v4w) #rows.fresh tr { animation: fade 320ms ease-out both; animation-delay: calc(min(var(--r, 0), 16) * 18ms + 200ms); }
+@media (prefers-reduced-motion: reduce) { :where(.v4w) *, :where(.v4w) *::before, :where(.v4w) *::after { transition: none !important; animation: none !important; } }
