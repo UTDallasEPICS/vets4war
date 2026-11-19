@@ -7,8 +7,15 @@
 // At most one runs at a time. The row is the source of truth: Python claims it and
 // writes the outcome; this side only fills in what Python could not (it never started,
 // it died, it was stopped).
+//
+// Processes: the script runs in its own process group with its gate workers. A run ends
+// when the script EXITS (not when its pipes close: a leftover worker could hold them);
+// whatever is left in the group is then killed. A stop (timeout, shutdown) signals the
+// whole group, SIGTERM then SIGKILL. At start-up every web-app run of the script on our
+// database is a leftover of an earlier server process and is killed with its workers.
+// A run started from a shell (trigger 'cli') is watched until its process ends.
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { calls, dataState, forecastRuns, forecastState } from '../../db/schema'
 import type { RunMode, RunTrigger } from '../../../shared/types/api'
@@ -35,23 +42,39 @@ export interface RetrainRunner {
   }): { run: RunRow; queued: boolean }
   tick(): { action: 'none' | 'full' | 'forecast-only'; reason: string; runId?: number }
   recover(): { interrupted: number[]; started: number | null }
+  // Closes an active row whose process is gone (a shell's run killed with -9, say).
+  reconcile(): void
   shutdown(): Promise<void>
   idle(): Promise<void> // resolves when no child is running (tests)
+}
+
+// One entry of the process table.
+export interface ProcessInfo {
+  pid: number
+  pgid: number
+  args: string[]
 }
 
 export interface RetrainDeps {
   spawn?: typeof nodeSpawn
   now?: () => Date
-  isAlive?: (pid: number) => boolean
+  // Signals a process, or with a negative pid a whole process group.
   kill?: (pid: number, signal: NodeJS.Signals) => void
-  // The command line of a process (/proc/<pid>/cmdline), or null when unknown.
-  commandLine?: (pid: number) => string | null
+  // Every process on the machine (Linux /proc); empty where that cannot be read.
+  processes?: () => ProcessInfo[]
 }
 
 // What the admin page keeps of a run's output.
 export const LOG_TAIL_BYTES = 16 * 1024
-// Time a stopped child gets between SIGTERM and SIGKILL.
+// Time a run stopped for its timeout gets between SIGTERM and SIGKILL.
 export const KILL_GRACE_MS = 10_000
+// The same on shutdown: the server must go away promptly.
+export const SHUTDOWN_GRACE_MS = 2_000
+// After the process exited, how long its output may still drain before the run is
+// closed anyway (anything still holding the pipes is killed first).
+export const DRAIN_MS = 1_000
+// How often a run this server did not start (a shell's) is checked for its end.
+export const WATCH_MS = 2_000
 // A forecast older than this is refreshed by the schedule (it runs daily).
 export const STALE_FORECAST_MS = 20 * 3600 * 1000
 
@@ -63,22 +86,46 @@ const QUEUED_LABEL = 'queued'
 const NO_CALLS = 'There is no call data yet. Load a call-records file first.'
 const RESTARTED = 'The server restarted during this run.'
 const STOPPED = 'The server stopped during this run.'
+const UNCHANGED = 'The forecast in use did not change.'
+const STOPPING = 'The server is stopping. Ask again once it is back.'
 
-function defaultIsAlive(pid: number): boolean {
+function defaultKill(pid: number, signal: NodeJS.Signals) {
   try {
-    process.kill(pid, 0)
-    return true
+    process.kill(pid, signal)
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
+    // Already gone: nothing to stop.
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
   }
 }
 
-function defaultCommandLine(pid: number): string | null {
+function defaultProcesses(): ProcessInfo[] {
+  let names: string[]
   try {
-    return readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ')
+    names = readdirSync('/proc')
   } catch {
-    return null
+    return []
   }
+  const found: ProcessInfo[] = []
+  for (const name of names) {
+    if (!/^\d+$/.test(name)) continue
+    try {
+      const stat = readFileSync(`/proc/${name}/stat`, 'utf8')
+      // "pid (command) state ppid pgrp ...": the command may hold spaces and parentheses.
+      const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+      if (fields[0] === 'Z') continue // ended, waiting to be reaped
+      const args = readFileSync(`/proc/${name}/cmdline`, 'utf8').split('\0')
+      if (args.at(-1) === '') args.pop()
+      found.push({ pid: Number(name), pgid: Number(fields[2]), args })
+    } catch {
+      // ended while we looked
+    }
+  }
+  return found
+}
+
+function optionValue(args: string[], name: string): string | undefined {
+  const i = args.indexOf(name)
+  return i >= 0 ? args[i + 1] : undefined
 }
 
 interface Current {
@@ -88,6 +135,7 @@ interface Current {
   outputBytes: number
   spawnError: NodeJS.ErrnoException | null
   timedOut: boolean
+  exit: { code: number | null; signal: NodeJS.Signals | null } | null
   timers: ReturnType<typeof setTimeout>[]
 }
 
@@ -98,13 +146,13 @@ export function createRetrainRunner(
 ): RetrainRunner {
   const spawn = deps.spawn ?? nodeSpawn
   const now = deps.now ?? (() => new Date())
-  const isAlive = deps.isAlive ?? defaultIsAlive
-  const kill = deps.kill ?? ((pid: number, signal: NodeJS.Signals) => process.kill(pid, signal))
-  const commandLine = deps.commandLine ?? defaultCommandLine
+  const kill = deps.kill ?? defaultKill
+  const processes = deps.processes ?? defaultProcesses
 
   let current: Current | null = null
   let stopping = false
   let waiters: (() => void)[] = []
+  let watcher: ReturnType<typeof setInterval> | null = null
 
   type Tx = Parameters<Parameters<AppDb['transaction']>[0]>[0]
   const activeRun = (tx: Tx) =>
@@ -118,12 +166,13 @@ export function createRetrainRunner(
   const revisionOf = (tx: Tx) => tx.select().from(dataState).get()?.callsRevision ?? 0
   const decidedFor = (tx: Tx, revision: number) =>
     tx
-      .select({ id: forecastRuns.id })
+      .select()
       .from(forecastRuns)
       .where(
         and(eq(forecastRuns.callsRevision, revision), inArray(forecastRuns.status, [...DECIDED]))
       )
-      .get() !== undefined
+      .orderBy(desc(forecastRuns.id))
+      .get()
   const setRerun = (tx: Tx, value: boolean) =>
     tx
       .insert(dataState)
@@ -152,11 +201,49 @@ export function createRetrainRunner(
       .returning()
       .get()
 
+  // The retrain script working on our database. With a run id: only that run's
+  // process (a run of the web app); with null: any web-app run; 'cli': a shell's run.
+  function isScript(args: string[], runId: number | null | 'cli'): boolean {
+    const m = args.indexOf('-m')
+    if (m < 0 || args[m + 1] !== config.module) return false
+    if (optionValue(args, '--db') !== config.dbPath) return false
+    const id = optionValue(args, '--run-id')
+    if (runId === 'cli') return id === undefined
+    return id !== undefined && (runId === null || id === String(runId))
+  }
+
+  // The processes of a run this server does not hold a handle on: its own
+  // process (by pid and command line) and everything in the process group the
+  // web app gave it, which is where the gate workers are.
+  function processesOf(row: RunRow, table: ProcessInfo[]): ProcessInfo[] {
+    if (!row.pid) return []
+    const tag = row.trigger === 'cli' ? 'cli' : row.id
+    const leader = table.find((p) => p.pid === row.pid && isScript(p.args, tag))
+    return table.filter(
+      (p) =>
+        p === leader ||
+        (row.trigger !== 'cli' &&
+          p.pgid === row.pid &&
+          (isScript(p.args, row.id) || p.args.some((a) => a.includes('multiprocessing'))))
+    )
+  }
+
   function settleWaiters() {
     if (current) return
     const resolved = waiters
     waiters = []
     for (const resolve of resolved) resolve()
+  }
+
+  // The whole process group: the script and its gate workers.
+  function signalRun(state: Current, signal: NodeJS.Signals) {
+    const pid = state.child.pid
+    if (!pid) return
+    try {
+      kill(-pid, signal)
+    } catch (error) {
+      console.error(`[retrain] could not signal run ${state.run.id}: ${(error as Error).name}`)
+    }
   }
 
   function start(run: RunRow) {
@@ -176,6 +263,8 @@ export function createRetrainRunner(
         cwd: config.forecastDir,
         env: { ...process.env, PYTHONUNBUFFERED: '1' },
         stdio: ['ignore', 'pipe', 'pipe'],
+        // Its own process group, so a stop reaches the gate workers too.
+        detached: true,
       })
     } catch (error) {
       // Node reports most spawn failures through 'error'; a synchronous throw (a bad
@@ -190,6 +279,7 @@ export function createRetrainRunner(
       outputBytes: 0,
       spawnError: null,
       timedOut: false,
+      exit: null,
       timers: [],
     }
     current = state
@@ -214,42 +304,50 @@ export function createRetrainRunner(
     child.stderr?.on('data', keep)
     child.on('error', (error) => {
       state.spawnError = error as NodeJS.ErrnoException
+      // A process that never started sends no 'exit'.
+      if (!child.pid) setImmediate(() => finish(state))
     })
-    child.on('close', (code, signal) => finish(state, code, signal))
+    // The run ends when the script exits, not when its pipes close: anything it left
+    // holding them (a gate worker) must not keep the run open.
+    child.on('exit', (code, signal) => {
+      state.exit = { code, signal }
+      signalRun(state, 'SIGKILL')
+      state.timers.push(setTimeout(() => finish(state), DRAIN_MS))
+    })
+    child.on('close', () => {
+      if (state.exit) finish(state)
+    })
     state.timers.push(
       setTimeout(() => {
         state.timedOut = true
-        stop(state)
+        stop(state, KILL_GRACE_MS)
       }, config.timeoutMs)
     )
   }
 
-  function stop(state: Current) {
-    state.child.kill('SIGTERM')
-    state.timers.push(setTimeout(() => state.child.kill('SIGKILL'), KILL_GRACE_MS))
+  function stop(state: Current, graceMs: number) {
+    signalRun(state, 'SIGTERM')
+    state.timers.push(setTimeout(() => signalRun(state, 'SIGKILL'), graceMs))
   }
 
-  function finish(state: Current, code: number | null, signal: NodeJS.Signals | null) {
+  function finish(state: Current) {
     if (current !== state) return
     for (const timer of state.timers) clearTimeout(timer)
+    state.child.stdout?.destroy()
+    state.child.stderr?.destroy()
     const tail = Buffer.concat(state.output).subarray(-LOG_TAIL_BYTES).toString('utf8')
     // A child that never started has no exit code of its own (Node reports -errno).
     const startError = state.spawnError && !state.child.pid ? state.spawnError : null
+    const code = startError ? null : (state.exit?.code ?? null)
     try {
-      record(state.run, startError ? null : code, signal, tail, startError, state.timedOut)
+      record(state.run, code, state.exit?.signal ?? null, tail, startError, state.timedOut)
     } catch (error) {
       console.error(
         `[retrain] run ${state.run.id}: the outcome could not be stored: ${(error as Error).name}`
       )
     }
     current = null
-    if (!stopping) {
-      try {
-        rerunIfRequested()
-      } catch (error) {
-        console.error(`[retrain] the queued run could not be started: ${(error as Error).name}`)
-      }
-    }
+    startQueued()
     settleWaiters()
   }
 
@@ -276,10 +374,11 @@ export function createRetrainRunner(
         message = STOPPED
       } else if (timedOut) {
         const minutes = Math.round((config.timeoutMs / 60_000) * 100) / 100
-        message = `Stopped after ${minutes} minutes (V4W_RETRAIN_TIMEOUT_MIN).`
+        message = `Stopped after ${minutes} minutes (V4W_RETRAIN_TIMEOUT_MIN). ${UNCHANGED}`
+      } else if (signal) {
+        message = `The retrain script was stopped by ${signal} before it reported a result. ${UNCHANGED}`
       } else {
-        const how = signal ? `signal ${signal}` : `exit code ${exitCode}`
-        message = `The retrain script stopped without reporting a result (${how}).`
+        message = `The retrain script stopped without reporting a result (exit code ${exitCode}).`
       }
       return tx
         .update(forecastRuns)
@@ -293,11 +392,69 @@ export function createRetrainRunner(
     )
   }
 
+  // An active row this server holds no process for: a shell's run, or a row left
+  // by a run that could not be stopped cleanly. It ends when its process is gone.
+  function closeIfGone(row: RunRow, table: ProcessInfo[]): boolean {
+    if (current?.run.id === row.id) return false
+    if (processesOf(row, table).some((p) => p.pid === row.pid)) return false
+    const message =
+      row.trigger === 'cli'
+        ? `The run started from a shell (process ${row.pid ?? 'unknown'}) ended without reporting a result. ${UNCHANGED}`
+        : `The retrain script is gone without reporting a result. ${UNCHANGED}`
+    const closed = db
+      .update(forecastRuns)
+      .set({ status: 'failed', finishedAt: now(), message })
+      .where(and(eq(forecastRuns.id, row.id), inArray(forecastRuns.status, [...ACTIVE])))
+      .run()
+    if (closed.changes) console.log(`[retrain] run ${row.id} closed: its process is gone`)
+    return true
+  }
+
+  // Active rows of runs this server holds no process for, after closing those whose
+  // process is gone.
+  function openForeignRuns(): RunRow[] {
+    const foreign = db
+      .select()
+      .from(forecastRuns)
+      .where(inArray(forecastRuns.status, [...ACTIVE]))
+      .all()
+      .filter((row) => row.id !== current?.run.id)
+    if (!foreign.length) return []
+    const table = processes()
+    return foreign.filter((row) => !closeIfGone(row, table))
+  }
+
+  function startQueued() {
+    if (current || stopping) return
+    try {
+      rerunIfRequested()
+    } catch (error) {
+      console.error(`[retrain] the queued run could not be started: ${(error as Error).name}`)
+    }
+  }
+
+  function reconcile() {
+    if (openForeignRuns().length) watch()
+    else startQueued()
+  }
+
+  // Checks on runs of a shell until they end, then starts what was queued behind them.
+  function watch() {
+    if (watcher || stopping) return
+    watcher = setInterval(() => {
+      if (openForeignRuns().length) return
+      clearInterval(watcher!)
+      watcher = null
+      startQueued()
+    }, WATCH_MS)
+    watcher.unref?.()
+  }
+
   function rerunIfRequested() {
     const next = db.transaction((tx) => {
       if (!tx.select().from(dataState).get()?.rerunRequested) return null
-      setRerun(tx, false)
       if (activeRun(tx) || !hasCalls(tx)) return null
+      setRerun(tx, false)
       return insertRun(tx, { trigger: 'import', mode: 'full', requestedBy: QUEUED_LABEL })
     })
     if (next) start(next)
@@ -309,6 +466,10 @@ export function createRetrainRunner(
     requestedBy: string | null
     uploadId?: number | null
   }): { run: RunRow; queued: boolean } {
+    // A row inserted now would never start; the next start-up begins a run anyway
+    // when the data is newer than the forecast.
+    if (stopping) throw apiError(409, 'conflict', STOPPING)
+    reconcile()
     const outcome = db.transaction((tx) => {
       if (!hasCalls(tx)) throw apiError(409, 'conflict', NO_CALLS)
       const active = activeRun(tx)
@@ -321,7 +482,7 @@ export function createRetrainRunner(
         queued: false,
       }
     })
-    if (!outcome.queued && !stopping) start(outcome.run)
+    if (!outcome.queued) start(outcome.run)
     return outcome
   }
 
@@ -330,13 +491,15 @@ export function createRetrainRunner(
       return { action: 'none', reason: 'The schedule is off (V4W_RETRAIN_SCHEDULE).' }
     }
     if (stopping) return { action: 'none', reason: 'The server is stopping.' }
+    reconcile()
     const decision = db.transaction((tx) => {
       if (activeRun(tx)) return { action: 'none' as const, reason: 'A run is in progress.' }
       if (!hasCalls(tx)) return { action: 'none' as const, reason: 'There is no call data yet.' }
       const revision = revisionOf(tx)
       const state = tx.select().from(forecastState).get()
       if (!state || state.callsRevision !== revision) {
-        if (!decidedFor(tx, revision)) {
+        const decided = decidedFor(tx, revision)
+        if (!decided) {
           const run = insertRun(tx, { trigger: 'schedule', mode: 'full', requestedBy: 'schedule' })
           return {
             action: 'full' as const,
@@ -344,12 +507,14 @@ export function createRetrainRunner(
             run,
           }
         }
-      }
-      if (!state) {
+        // A refresh would stamp the new data revision on a forecast whose model never
+        // saw that data and hide that the retrain on it did not succeed (the console
+        // would stop saying the forecast is behind). An admin fixes the cause and
+        // retrains, or refreshes by hand on purpose.
+        const behind = state ? 'is newer than the forecast' : 'has no forecast yet'
         return {
           action: 'none' as const,
-          reason:
-            'A retrain on the current call data already ended without a forecast; an admin decides what next.',
+          reason: `The call data (revision ${revision}) ${behind}, and run ${decided.id} on it ended ${decided.status}; an admin decides what next.`,
         }
       }
       if (now().getTime() - state.generatedAt.getTime() > STALE_FORECAST_MS) {
@@ -380,23 +545,22 @@ export function createRetrainRunner(
       .where(inArray(forecastRuns.status, [...ACTIVE]))
       .orderBy(forecastRuns.id)
       .all()
-    // A retrain the previous server process left running would race the new one for
-    // the forecast tables: stop it, but only if that pid is still our script.
-    const orphans = stuck.flatMap((row) =>
-      row.pid && isAlive(row.pid) && (commandLine(row.pid) ?? '').includes(config.module)
-        ? [row.pid]
-        : []
-    )
-    for (const pid of orphans) kill(pid, 'SIGTERM')
-    if (orphans.length) {
-      const late = setTimeout(() => {
-        for (const pid of orphans) {
-          if (isAlive(pid) && (commandLine(pid) ?? '').includes(config.module)) kill(pid, 'SIGKILL')
-        }
-      }, KILL_GRACE_MS)
-      late.unref?.()
+    // This server has started nothing yet, so every web-app run of the script on our
+    // database (it passes --run-id) is left over from an earlier server process, and
+    // would race the new run for the forecast tables: kill it, workers included.
+    // A run started from a shell is the admin's and is left alone.
+    const table = processes()
+    const leftovers = new Set(table.filter((p) => isScript(p.args, null)).map((p) => p.pid))
+    for (const row of stuck) {
+      if (row.trigger !== 'cli') for (const p of processesOf(row, table)) leftovers.add(p.pid)
     }
-    const ids = stuck.map((row) => row.id)
+    for (const pid of leftovers) kill(pid, 'SIGKILL')
+    if (leftovers.size) {
+      console.log(`[retrain] stopped ${leftovers.size} process(es) left by the previous server`)
+    }
+    const shell = stuck.filter((row) => row.trigger === 'cli')
+    for (const row of shell) closeIfGone(row, table)
+    const ids = stuck.filter((row) => row.trigger !== 'cli').map((row) => row.id)
     const next = db.transaction((tx) => {
       if (ids.length) {
         tx.update(forecastRuns)
@@ -404,6 +568,7 @@ export function createRetrainRunner(
           .where(and(inArray(forecastRuns.id, ids), inArray(forecastRuns.status, [...ACTIVE])))
           .run()
       }
+      if (activeRun(tx)) return null // a shell's run is still going: watched below
       if (tx.select().from(dataState).get()?.rerunRequested) setRerun(tx, false)
       if (!hasCalls(tx)) return null
       const revision = revisionOf(tx)
@@ -412,17 +577,26 @@ export function createRetrainRunner(
       return insertRun(tx, { trigger: 'startup', mode: 'full', requestedBy: 'startup' })
     })
     if (next) start(next)
+    else if (shell.length) reconcile()
     return { interrupted: ids, started: next?.id ?? null }
   }
 
   async function shutdown(): Promise<void> {
     stopping = true
+    if (watcher) clearInterval(watcher)
+    watcher = null
     const state = current
     if (!state) return
     const done = idle()
-    state.child.kill('SIGTERM')
-    state.timers.push(setTimeout(() => state.child.kill('SIGKILL'), KILL_GRACE_MS))
-    await done
+    stop(state, SHUTDOWN_GRACE_MS)
+    // SIGKILL ends any process; this bound only guards against a child that never
+    // reports its exit, so the server still goes away with the run recorded.
+    const bound = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, SHUTDOWN_GRACE_MS + 2 * DRAIN_MS)
+      timer.unref?.()
+    })
+    await Promise.race([done, bound])
+    if (current === state) finish(state)
   }
 
   function idle(): Promise<void> {
@@ -430,7 +604,7 @@ export function createRetrainRunner(
     return new Promise((resolve) => waiters.push(resolve))
   }
 
-  return { request, tick, recover, shutdown, idle }
+  return { request, tick, recover, reconcile, shutdown, idle }
 }
 
 // The latest runs and what the data looks like, for GET /api/admin/runs.
