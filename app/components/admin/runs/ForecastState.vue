@@ -30,8 +30,13 @@
     failed: 'failed',
     interrupted: 'was interrupted',
   }
-  const outcome = (run: RunSummary) =>
-    `The last retrain (run ${run.id}) ${OUTCOME[run.status] ?? run.status}${run.message ? `: ${run.message}` : '.'}`
+  const outcome = (run: RunSummary) => {
+    const what =
+      run.status === 'rejected' && run.forecast_written === false
+        ? 'did not beat the simple baseline, and there was no previous model to keep'
+        : (OUTCOME[run.status] ?? run.status)
+    return `The last retrain (run ${run.id}) ${what}${run.message ? `: ${run.message}` : '.'}`
+  }
 
   interface Note {
     tone: 'info' | 'warning'
