@@ -8,5 +8,5 @@ import { requireAdmin } from '../../../utils/session'
 
 export default defineEventHandler((event) => {
   requireAdmin(event)
-  return { upload: uploadDetail(getUpload(db, routeId(event, 'upload'))) }
+  return { upload: uploadDetail(db, getUpload(db, routeId(event, 'upload'))) }
 })

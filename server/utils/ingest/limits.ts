@@ -27,3 +27,13 @@ export const MAX_LISTED = 10
 
 // Ready uploads that nobody imported are discarded after this long.
 export const STAGED_DAYS = 7
+
+// No call of this line is older than this. A file with earlier days was not read the
+// way it was written (a date read as a serial number gives 1905; a date system mix-up
+// gives four years off), so it is refused instead of imported onto wrong days.
+export const EARLIEST_CALL_DAY = '2010-01-01'
+
+// The retrain refuses when any day with no calls lies inside the last 350 days of call
+// data (forecast/db/retrain.py _check_gate_data: 26 gate origins x 7 + 28-day horizon +
+// 140 recent days). The upload report warns before an import would leave such a day.
+export const RECENT_GAP_DAYS = 350

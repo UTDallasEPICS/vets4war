@@ -12,6 +12,7 @@ export default defineEventHandler(async (event) => {
   const id = routeId(event, 'upload')
   const parsed = importRequestSchema.safeParse(await readBody(event).catch(() => null))
   if (!parsed.success) throw validationError(issuesFromZod(parsed.error))
-  const { upload, run } = importUpload(db, useIngestDeps(), id, parsed.data, user)
-  return { upload: uploadDetail(upload), run: run ? toRunSummary(run) : null }
+  const { upload, run, queued } = importUpload(db, useIngestDeps(), id, parsed.data, user)
+  // `queued`: the run returned is the one already in progress; a re-run follows it.
+  return { upload: uploadDetail(db, upload), run: run ? toRunSummary(run) : null, queued }
 })
