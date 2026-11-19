@@ -59,7 +59,7 @@ function load(sqlite: Database.Database) {
   })()
 }
 
-function answer(db: AppDb, golden: Golden): { status: number; body: unknown } {
+async function answer(db: AppDb, golden: Golden): Promise<{ status: number; body: unknown }> {
   const runtime = { dataSourceKind: fixture.data_source_kind, today: fixture.today }
   const query = Object.fromEntries(
     Object.entries(golden.request.params ?? {}).map(([k, v]) => [k, String(v)])
@@ -67,10 +67,10 @@ function answer(db: AppDb, golden: Golden): { status: number; body: unknown } {
   try {
     const body =
       golden.request.path === '/api/forecast'
-        ? getForecast(db, runtime, query)
+        ? await getForecast(db, runtime, query)
         : golden.request.path === '/api/staffing'
-          ? getStaffing(db, runtime, query)
-          : postPlanned(db, runtime, golden.request.json)
+          ? await getStaffing(db, runtime, query)
+          : await postPlanned(db, runtime, golden.request.json)
     // What the wire carries: JSON.
     return { status: 200, body: JSON.parse(JSON.stringify(body)) }
   } catch (error) {
@@ -101,15 +101,15 @@ describe('frozen legacy answers (SYNTHETIC, state B)', () => {
     ])
   })
 
-  it.each(fixture.goldens.map((g) => [g.name, g] as const))('%s', (_name, golden) => {
-    const actual = answer(db, golden)
+  it.each(fixture.goldens.map((g) => [g.name, g] as const))('%s', async (_name, golden) => {
+    const actual = await answer(db, golden)
     const { differences } = compareAnswer(golden, actual, { requestPath: golden.request.path })
     expect(differences.map(formatDifference)).toEqual([])
   })
 
-  it('notices a changed number, key or status', () => {
+  it('notices a changed number, key or status', async () => {
     const golden = fixture.goldens[0]!
-    const actual = answer(db, golden) as { status: number; body: Record<string, unknown> }
+    const actual = (await answer(db, golden)) as { status: number; body: Record<string, unknown> }
     const hours = actual.body.hours as Record<string, unknown>[]
     const changed = structuredClone(actual)
     const first = (changed.body.hours as Record<string, number>[])[0]!

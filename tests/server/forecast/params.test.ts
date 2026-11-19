@@ -58,8 +58,46 @@ describe('parseForecastQuery', () => {
     expect(parseForecastQuery({ ...RANGE, efficiency: '0' }, TODAY).efficiency).toBe(0)
     expect(parseForecastQuery({ ...RANGE, efficiency: '1' }, TODAY).efficiency).toBe(1)
     expect(parseForecastQuery({ ...RANGE, target_sec: '0' }, TODAY).targetSec).toBe(0)
-    expect(parseForecastQuery({ ...RANGE, target_sec: '3600' }, TODAY).targetSec).toBe(3600)
-    expect(parseForecastQuery({ ...RANGE, patience_sec: '86400' }, TODAY).patienceSec).toBe(86400)
+    expect(parseForecastQuery({ ...RANGE, target_sec: '300' }, TODAY).targetSec).toBe(300)
+    expect(parseForecastQuery({ ...RANGE, target_sec: '20.5' }, TODAY).targetSec).toBe(20.5)
+    expect(parseForecastQuery({ ...RANGE, target_pct: '0.999' }, TODAY).targetPct).toBe(0.999)
+    expect(parseForecastQuery({ ...RANGE, target_pct: '0.01' }, TODAY).targetPct).toBe(0.01)
+    expect(parseForecastQuery({ ...RANGE, patience_sec: '10' }, TODAY).patienceSec).toBe(10)
+    expect(parseForecastQuery({ ...RANGE, patience_sec: '3600' }, TODAY).patienceSec).toBe(3600)
+  })
+
+  // Review finding W2-2: outside these bounds one request could cost up to 31 s of CPU
+  // per day of range on the server's only thread; W2-1: a target_pct within 2e-16 of 1
+  // and a denormal patience ended in a 500.
+  it.each([
+    ['target_pct', '0.9991', 'must be a number greater than 0 and at most 0.999'],
+    ['target_pct', '0.9999999999999999', 'must be a number greater than 0 and at most 0.999'],
+    ['target_sec', '300.5', 'must be a number from 0 to 300'],
+    ['target_sec', '3600', 'must be a number from 0 to 300'],
+    ['patience_sec', '9.99', 'must be a number from 10 to 3600'],
+    ['patience_sec', '1', 'must be a number from 10 to 3600'],
+    ['patience_sec', '0.000001', 'must be a number from 10 to 3600'],
+    ['patience_sec', '1e-320', 'must be a number from 10 to 3600'],
+    ['patience_sec', '3600.5', 'must be a number from 10 to 3600'],
+    ['patience_sec', '86400', 'must be a number from 10 to 3600'],
+  ])('refuses the costly or unreachable %s=%s', (field, value, message) => {
+    const error = caught(() => parseForecastQuery({ ...RANGE, [field]: value }, TODAY))
+    expect(error.statusCode).toBe(422)
+    expect(error.data.issues).toEqual([{ path: field, message }])
+    expect(error.message).toBe(`${field}: ${message}`)
+  })
+
+  it('applies the same bounds to the /api/planned body', () => {
+    const paths = issuePaths(() =>
+      parsePlannedBody({
+        ...RANGE,
+        target_pct: 0.9995,
+        target_sec: 301,
+        patience_sec: 5,
+        planned: [],
+      })
+    )
+    expect(paths).toEqual(['target_pct', 'target_sec', 'patience_sec'])
   })
 
   it.each([
@@ -68,10 +106,10 @@ describe('parseForecastQuery', () => {
     ['target_pct', '0'],
     ['target_pct', '1'],
     ['target_sec', '-1'],
-    ['target_sec', '3601'],
+    ['target_sec', '301'],
     ['patience_sec', '0'],
     ['patience_sec', '-5'],
-    ['patience_sec', '86401'],
+    ['patience_sec', '3601'],
     ['queue_model', 'erlang_b'],
     ['recency', 'latest'],
     ['include_holidays', 'maybe'],

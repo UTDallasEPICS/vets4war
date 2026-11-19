@@ -9,7 +9,7 @@ import {
   postPlanned,
 } from '../../../server/utils/forecast/service'
 import { createTestDb } from '../../helpers/db'
-import { AHT, METADATA, PATIENCE, QUICK, REAL_SHARE, RUNTIME, caught, seedForecast } from './helpers'
+import { AHT, METADATA, PATIENCE, QUICK, REAL_SHARE, RUNTIME, caught, rejected, seedForecast } from './helpers'
 
 // The key sets final-main's tests/test_api.py pinned.
 const HOUR_KEYS = [
@@ -85,14 +85,14 @@ function seeded() {
 }
 
 describe('forecast service without a forecast', () => {
-  it('answers 503 no_forecast on the three forecast routes', () => {
+  it('answers 503 no_forecast on the three forecast routes', async () => {
     const { db } = createTestDb()
     for (const call of [
       () => getForecast(db, RUNTIME, THREE_DAYS),
       () => getStaffing(db, RUNTIME, THREE_DAYS),
       () => postPlanned(db, RUNTIME, { ...THREE_DAYS, planned: [] }),
     ]) {
-      const error = caught(call)
+      const error = await rejected(call)
       expect(error.statusCode).toBe(503)
       expect(error.data.code).toBe('no_forecast')
       expect(error.message).toBe(
@@ -101,15 +101,15 @@ describe('forecast service without a forecast', () => {
     }
   })
 
-  it('still validates before it looks for a forecast', () => {
+  it('still validates before it looks for a forecast', async () => {
     const { db } = createTestDb()
-    expect(caught(() => getForecast(db, RUNTIME, { efficiency: '2' })).statusCode).toBe(422)
+    expect((await rejected(() => getForecast(db, RUNTIME, { efficiency: '2' }))).statusCode).toBe(422)
     expect(
-      caught(() => getForecast(db, RUNTIME, { start: '2026-12-03', end: '2026-12-01' })).statusCode
+      (await rejected(() => getForecast(db, RUNTIME, { start: '2026-12-03', end: '2026-12-01' }))).statusCode
     ).toBe(400)
   })
 
-  it('answers /api/model with 404 not_found', () => {
+  it('answers /api/model with 404 not_found', async () => {
     const { db } = createTestDb()
     const error = caught(() => getModel(db, RUNTIME))
     expect(error.statusCode).toBe(404)
@@ -117,7 +117,7 @@ describe('forecast service without a forecast', () => {
     expect(error.message).toBe('No model yet. An admin needs to load call data and run a retrain.')
   })
 
-  it('reports status with nothing served', () => {
+  it('reports status with nothing served', async () => {
     const { db } = createTestDb()
     expect(getStatus(db, RUNTIME, VIEWER)).toEqual({
       viewer: VIEWER,
@@ -130,39 +130,50 @@ describe('forecast service without a forecast', () => {
 })
 
 describe('forecast service on a stored forecast', () => {
-  it('refuses dates outside the horizon with the horizon in data', () => {
+  // Review finding W2-2: the Erlang chain runs on the server's one thread; a long range
+  // must give the event loop back between days instead of holding it to the end.
+  it('lets other work run while a long range is computed', async () => {
     const db = seeded()
-    const error = caught(() => getForecast(db, RUNTIME, { start: '2026-12-30', end: '2027-01-02' }))
+    const order: string[] = []
+    setImmediate(() => order.push('other work'))
+    await getForecast(db, RUNTIME, { start: '2026-11-01', end: '2026-12-31' })
+    order.push('forecast done')
+    expect(order).toEqual(['other work', 'forecast done'])
+  })
+
+  it('refuses dates outside the horizon with the horizon in data', async () => {
+    const db = seeded()
+    const error = await rejected(() => getForecast(db, RUNTIME, { start: '2026-12-30', end: '2027-01-02' }))
     expect(error.statusCode).toBe(400)
     expect(error.data).toEqual({
       code: 'outside_horizon',
       horizon: { start: '2026-11-01', end: '2026-12-31' },
     })
     expect(error.message).toBe('The forecast covers 2026-11-01 to 2026-12-31.')
-    expect(caught(() => getStaffing(db, RUNTIME, { start: '2026-10-31', end: '2026-11-01' })).data.code).toBe(
+    expect((await rejected(() => getStaffing(db, RUNTIME, { start: '2026-10-31', end: '2026-11-01' }))).data.code).toBe(
       'outside_horizon'
     )
   })
 
-  it('answers 500 when a stored day is not whole', () => {
+  it('answers 500 when a stored day is not whole', async () => {
     const db = seeded()
     db.delete(schema.forecastHours)
       .where(eq(schema.forecastHours.date, '2026-12-02'))
       .run()
-    const error = caught(() => getForecast(db, RUNTIME, THREE_DAYS))
+    const error = await rejected(() => getForecast(db, RUNTIME, THREE_DAYS))
     expect(error.statusCode).toBe(500)
     expect(error.data.code).toBe('internal')
     expect(error.message).toBe('The stored forecast is incomplete; run a retrain.')
   })
 
-  it('answers 500 when cells are missing', () => {
+  it('answers 500 when cells are missing', async () => {
     const { db } = createTestDb()
     seedForecast(db, { skipCells: true })
-    expect(caught(() => getForecast(db, RUNTIME, THREE_DAYS)).statusCode).toBe(500)
+    expect((await rejected(() => getForecast(db, RUNTIME, THREE_DAYS))).statusCode).toBe(500)
   })
 
-  it('gives 72 hours and 3 days with exactly the documented keys', () => {
-    const body = getForecast(seeded(), RUNTIME, { ...THREE_DAYS, efficiency: '0.65' })
+  it('gives 72 hours and 3 days with exactly the documented keys', async () => {
+    const body = await getForecast(seeded(), RUNTIME, { ...THREE_DAYS, efficiency: '0.65' })
     expect(Object.keys(body)).toEqual([
       'params',
       'data_source',
@@ -196,8 +207,8 @@ describe('forecast service on a stored forecast', () => {
     })
   })
 
-  it('keeps the hand-traceable chain of every hour', () => {
-    const body = getForecast(seeded(), RUNTIME, { ...THREE_DAYS, efficiency: '0.65' })
+  it('keeps the hand-traceable chain of every hour', async () => {
+    const body = await getForecast(seeded(), RUNTIME, { ...THREE_DAYS, efficiency: '0.65' })
     for (const h of body.hours) {
       expect(h.aht_sec).toBe(AHT.weighted)
       expect(h.predicted_real_calls).toBeCloseTo(h.predicted_calls * REAL_SHARE, 12)
@@ -212,9 +223,9 @@ describe('forecast service on a stored forecast', () => {
     expect(window.recency_effect_pct).toBeCloseTo((AHT.weighted / AHT.equal - 1) * 100, 9)
   })
 
-  it('echoes the parameters it used, with the estimated patience by default', () => {
+  it('echoes the parameters it used, with the estimated patience by default', async () => {
     const db = seeded()
-    expect(getForecast(db, RUNTIME, THREE_DAYS).params).toEqual({
+    expect((await getForecast(db, RUNTIME, THREE_DAYS)).params).toEqual({
       ...THREE_DAYS,
       efficiency: 0.65625,
       target_pct: 0.8,
@@ -229,59 +240,59 @@ describe('forecast service on a stored forecast', () => {
       recency: 'weighted',
       include_holidays: true,
     })
-    const override = getForecast(db, RUNTIME, { ...THREE_DAYS, patience_sec: '60' }).params
+    const override = (await getForecast(db, RUNTIME, { ...THREE_DAYS, patience_sec: '60' })).params
     expect([override.patience_sec, override.patience_source]).toEqual([60, { kind: 'override' }])
-    const c = getForecast(db, RUNTIME, { ...THREE_DAYS, queue_model: 'erlang_c', patience_sec: '60' })
+    const c = await getForecast(db, RUNTIME, { ...THREE_DAYS, queue_model: 'erlang_c', patience_sec: '60' })
     expect([c.params.patience_sec, c.params.patience_source]).toEqual([null, null])
     expect(c.hours.every((h) => h.abandon_share === null)).toBe(true)
     expect(c.window.expected_abandoned_one_fewer).toBeNull()
   })
 
-  it('reads the no-holidays column when include_holidays=false', () => {
+  it('reads the no-holidays column when include_holidays=false', async () => {
     const db = seeded()
-    const withH = getForecast(db, RUNTIME, THREE_DAYS)
-    const without = getForecast(db, RUNTIME, { ...THREE_DAYS, include_holidays: 'false' })
+    const withH = await getForecast(db, RUNTIME, THREE_DAYS)
+    const without = await getForecast(db, RUNTIME, { ...THREE_DAYS, include_holidays: 'false' })
     expect(withH.hours[12]!.predicted_calls).toBe(12)
     expect(without.hours[12]!.predicted_calls).toBe(10)
     expect(without.params.include_holidays).toBe(false)
   })
 
-  it('reads a different cell table for each recency', () => {
+  it('reads a different cell table for each recency', async () => {
     const db = seeded()
     for (const recency of ['equal', 'weighted', 'recent'] as const) {
-      const body = getForecast(db, RUNTIME, { ...THREE_DAYS, recency })
+      const body = await getForecast(db, RUNTIME, { ...THREE_DAYS, recency })
       expect(body.hours[0]!.aht_sec).toBe(AHT[recency])
       expect(body.window.recency).toBe(recency)
     }
-    expect(getForecast(db, RUNTIME, { ...THREE_DAYS, recency: 'equal' }).window.recency_effect_pct).toBe(0)
+    expect((await getForecast(db, RUNTIME, { ...THREE_DAYS, recency: 'equal' })).window.recency_effect_pct).toBe(0)
   })
 
-  it('names the holiday of a date and reports a calendar that ends too early', () => {
+  it('names the holiday of a date and reports a calendar that ends too early', async () => {
     const db = seeded()
-    const body = getForecast(db, RUNTIME, { start: '2026-12-24', end: '2026-12-26' })
+    const body = await getForecast(db, RUNTIME, { start: '2026-12-24', end: '2026-12-26' })
     expect(body.days.map((d) => d.holiday)).toEqual([null, 'Christmas Day', null])
     const { db: short } = createTestDb()
     seedForecast(short, { holidays: [['2026-11-26', 'Thanksgiving']] })
-    const coverage = getForecast(short, RUNTIME, THREE_DAYS).holiday_coverage
+    const coverage = (await getForecast(short, RUNTIME, THREE_DAYS)).holiday_coverage
     expect(coverage.covered).toBe(false)
     expect(coverage.message).toContain('Holiday calendar ends 2026-11-26.')
   })
 
-  it('serves the same days on /api/staffing', () => {
+  it('serves the same days on /api/staffing', async () => {
     const db = seeded()
-    const forecast = getForecast(db, RUNTIME, THREE_DAYS)
-    const staffing = getStaffing(db, RUNTIME, THREE_DAYS)
+    const forecast = await getForecast(db, RUNTIME, THREE_DAYS)
+    const staffing = await getStaffing(db, RUNTIME, THREE_DAYS)
     expect(Object.keys(staffing)).toEqual(['params', 'data_source', 'holiday_coverage', 'days'])
     expect(staffing.days).toEqual(
       forecast.days.map((d) => ({ date: d.date, predicted_calls: d.predicted_calls, shifts: d.shifts }))
     )
   })
 
-  it('judges a roster on /api/planned', () => {
+  it('judges a roster on /api/planned', async () => {
     const db = seeded()
-    const forecast = getForecast(db, RUNTIME, THREE_DAYS)
+    const forecast = await getForecast(db, RUNTIME, THREE_DAYS)
     const rec = forecast.days[0]!.shifts.Day!.staff_needed as number
-    const body = postPlanned(db, RUNTIME, {
+    const body = await postPlanned(db, RUNTIME, {
       ...THREE_DAYS,
       planned: [
         { date: '2026-12-01', shift: 'Day', planned: rec },
@@ -297,13 +308,12 @@ describe('forecast service on a stored forecast', () => {
     expect(body.shifts[1]!.verdict).toBe('exceeds capacity')
   })
 
-  it('checks efficiency 0 after the forecast and before the items', () => {
+  it('checks efficiency 0 after the forecast and before the items', async () => {
     const { db } = createTestDb()
     expect(
-      caught(() => postPlanned(db, RUNTIME, { ...THREE_DAYS, efficiency: 0, planned: [] })).statusCode
+      (await rejected(() => postPlanned(db, RUNTIME, { ...THREE_DAYS, efficiency: 0, planned: [] }))).statusCode
     ).toBe(503)
-    const error = caught(() =>
-      postPlanned(seeded(), RUNTIME, {
+    const error = await rejected(() => postPlanned(seeded(), RUNTIME, {
         ...THREE_DAYS,
         efficiency: 0,
         planned: [{ date: '2026-12-09', shift: 'Day', planned: 4 }],
@@ -312,7 +322,7 @@ describe('forecast service on a stored forecast', () => {
     expect(error.data.code).toBe('efficiency_zero')
   })
 
-  it('serves the model metadata with the data badge', () => {
+  it('serves the model metadata with the data badge', async () => {
     const body = getModel(seeded(), RUNTIME)
     expect(body).toEqual({
       ...METADATA,
@@ -325,7 +335,7 @@ describe('forecast service on a stored forecast', () => {
     })
   })
 
-  it('reports status, and stale once the calls changed', () => {
+  it('reports status, and stale once the calls changed', async () => {
     const db = seeded()
     const status = getStatus(db, { ...RUNTIME, dataSourceKind: 'unlabeled' }, VIEWER)
     expect(status.data_source).toEqual({
@@ -359,7 +369,7 @@ describe('forecast service on a stored forecast', () => {
     expect(getStatus(db, RUNTIME, VIEWER).forecast?.stale).toBe(true) // no row = revision 0
   })
 
-  it('prefers the active run over a newer finished one', () => {
+  it('prefers the active run over a newer finished one', async () => {
     const db = seeded()
     const now = new Date('2026-11-19T10:00:00Z')
     const queued = db
