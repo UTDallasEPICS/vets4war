@@ -45,3 +45,14 @@ data/
 .claude/
 skills-lock.json
 .vercel
+
+# SQLite files and their journals (the database is never committed)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+# Python environment and local outputs of the forecast tree
+forecast/.venv/
+forecast/forecasts/
+# Written by @nuxt/test-utils on every run (PLAN.md removes the committed copy)
+.nuxtrc

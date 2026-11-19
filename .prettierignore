@@ -18,3 +18,8 @@ public/
 # Environment files
 .env
 .env.*
+
+forecast/
+docs/archive/
+pnpm-lock.yaml
+drizzle/

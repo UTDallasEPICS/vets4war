@@ -1,25 +1,39 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
+
+// The four routes that keep final-main's response shapes. In development they can be
+// proxied to the legacy API (V4W_DEV_API_PROXY) so the console is compared on equal data.
+const LEGACY_SHAPED_ROUTES = ['/api/forecast', '/api/staffing', '/api/planned', '/api/model']
+const devApiProxy = process.env.V4W_DEV_API_PROXY
+
 export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
   devtools: { enabled: true },
   modules: ['@nuxt/ui', '@nuxt/image', '@nuxt/eslint'],
-  css: ['./assets/css/main.css'],
+  css: ['~/assets/css/main.css'],
+  app: { head: { title: 'Vets4Warriors staffing', htmlAttrs: { lang: 'en' } } },
+  // Light unless the person chose dark, as on the old console; same storage key, so the
+  // old choice carries over.
+  colorMode: { preference: 'light', fallback: 'light', storageKey: 'v4w-theme' },
   // Prettier owns formatting; ESLint handles logic only (no stylistic rules).
-  eslint: {
-    config: {
-      stylistic: false,
-    },
+  eslint: { config: { stylistic: false } },
+  // Type errors in the terminal during `nuxt dev` only; CI runs `pnpm typecheck`.
+  typescript: { typeCheck: process.env.NODE_ENV !== 'production' },
+  nitro: {
+    experimental: { tasks: true },
+    // Build-time setting, server local time (UTC in the image). The task itself checks
+    // V4W_RETRAIN_SCHEDULE at run time.
+    scheduledTasks: { [process.env.V4W_RETRAIN_CRON || '30 8 * * *']: ['retrain:tick'] },
   },
-  // Surface TypeScript errors in the terminal during `nuxt dev`. Not during
-  // `nuxt build`: the in-build vue-tsc runs in a clean environment where it
-  // can't resolve auto-imports/module types and fails the Docker deploy. CI
-  // runs `pnpm typecheck` (nuxi typecheck) as the real gate.
-  typescript: {
-    typeCheck: process.env.NODE_ENV !== 'production',
+  $development: {
+    nitro: {
+      routeRules: devApiProxy
+        ? Object.fromEntries(
+            LEGACY_SHAPED_ROUTES.map((path) => [path, { proxy: devApiProxy + path }])
+          )
+        : {},
+    },
   },
   vite: {
-    optimizeDeps: {
-      include: ['better-auth/client/plugins', 'better-auth/vue', 'zod'],
-    },
+    optimizeDeps: { include: ['better-auth/client/plugins', 'better-auth/vue', 'zod'] },
   },
 })
