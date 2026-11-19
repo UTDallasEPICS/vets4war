@@ -15,17 +15,6 @@ No ML here. Connection comes from $V4W_DATABASE_URL.
 
 from __future__ import annotations
 
-import sys
-
-from dotenv import load_dotenv
-
-load_dotenv()
-
-try:
-    import psycopg  # noqa: F401  (callers pass an open connection)
-except ImportError:
-    sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
-
 PATIENCE_SQL = """
     SELECT
         SUM(CASE WHEN abandoned THEN abandon_sec ELSE in_queue_sec END)::float AS total_wait_sec,

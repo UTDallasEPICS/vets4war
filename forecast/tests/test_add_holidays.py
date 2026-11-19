@@ -7,7 +7,7 @@ import os
 import pandas as pd
 import pytest
 
-from db.add_holidays import future_multipliers, official_holidays, rule_mismatches
+from db.add_holidays import official_holidays, rule_mismatches
 
 DATES_2026 = {
     "New Year's Day": "2026-01-01", "MLK Day": "2026-01-19", "Presidents Day": "2026-02-16",
@@ -38,21 +38,6 @@ def test_a_table_row_on_a_different_date_than_the_rule_is_reported():
 
     assert rule_mismatches(table) == []
     assert rule_mismatches(moved) == ["Labor Day 2026: table 2026-09-08, rule 2026-09-07"]
-
-
-def test_future_multipliers_are_the_mean_of_the_years_already_measured():
-    table = pd.DataFrame({
-        "holiday_date": pd.to_datetime(["2024-12-25", "2025-12-25", "2026-12-25", "2025-07-04", "2026-07-04"]),
-        "holiday_name": ["Christmas", "Christmas", "Christmas", "Independence Day", "Independence Day"],
-        "volume_multiplier": [0.80, 0.90, 0.10, 1.00, 1.10],
-        "evening_multiplier": [0.70, 0.80, 0.10, 0.90, 1.00],
-    })
-
-    means = future_multipliers(table, last_data_day=pd.Timestamp("2026-11-03")).set_index("holiday_name")
-
-    assert means.loc["Christmas", "volume_multiplier"] == pytest.approx(0.85)       # 2026-12-25 not reached: left out
-    assert means.loc["Christmas", "evening_multiplier"] == pytest.approx(0.75)
-    assert means.loc["Independence Day", "volume_multiplier"] == pytest.approx(1.05)
 
 
 def test_the_rules_reproduce_every_row_of_the_real_table():

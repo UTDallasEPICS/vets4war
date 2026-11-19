@@ -41,10 +41,6 @@ from pathlib import Path
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
-
-load_dotenv()
-
 from db.atomic import atomic_write  # noqa: E402
 from db.backtest import DAYS_PER_WEEK, HORIZON_DAYS, run_origins, score, weekly_origins  # noqa: E402
 from db.calibration import CalibrationFactors, fit_calibration  # noqa: E402

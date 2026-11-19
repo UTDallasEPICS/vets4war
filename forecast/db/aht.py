@@ -19,18 +19,8 @@ Connection comes from $V4W_DATABASE_URL (same pattern as db/load_calls.py).
 
 from __future__ import annotations
 
-import sys
-
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
-
-load_dotenv()
-
-try:
-    import psycopg
-except ImportError:
-    sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
 
 DEFAULT_HALFLIFE_DAYS = 365
 

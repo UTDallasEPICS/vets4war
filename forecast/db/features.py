@@ -22,18 +22,8 @@ Connection comes from $V4W_DATABASE_URL.
 
 from __future__ import annotations
 
-import sys
-
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
-
-load_dotenv()
-
-try:
-    import psycopg
-except ImportError:
-    sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
 
 from db.holiday_calendar import (  # noqa: E402
     ADJACENT,

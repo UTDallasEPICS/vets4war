@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sys
 import warnings
 from dataclasses import replace
 from datetime import date
@@ -43,14 +42,6 @@ from datetime import date
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
-
-load_dotenv()
-
-try:
-    import psycopg  # noqa: F401  (callers pass an open connection)
-except ImportError:
-    sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
 
 from db.aht import DEFAULT_RECENCY, RECENCY_HALFLIFE_DAYS, estimate_aht  # noqa: E402
 from db.calibration import IDENTITY_FACTORS, CalibrationFactors, apply_calibration  # noqa: E402

@@ -42,8 +42,6 @@ import zipfile
 from pathlib import Path
 
 import pandas as pd
-import psycopg
-from dotenv import load_dotenv
 
 from db.client_files import read_call_records
 from db.features import SERVICE_LEVEL_SEC
@@ -55,7 +53,7 @@ EXPECTED_COLUMNS = ("date", "shift", "predicted_calls", "aht_sec", "sl_at_roster
 POINTS_PER_UNIT = 100
 DATE_FORMAT = "%Y-%m-%d"
 # What can go wrong reading one workbook or forecasting its dates.
-WORKBOOK_ERRORS = (ValueError, OSError, zipfile.BadZipFile, psycopg.Error)
+WORKBOOK_ERRORS = (ValueError, OSError, zipfile.BadZipFile)
 
 
 def _actual(calls: pd.DataFrame) -> dict:
@@ -149,7 +147,6 @@ def main() -> int:
     for path in args.actuals:
         if not path.exists():
             sys.exit(f"file not found: {path}")
-    load_dotenv()
     dsn = os.environ.get("V4W_DATABASE_URL")
     if not dsn:
         sys.exit("no connection string. set V4W_DATABASE_URL")

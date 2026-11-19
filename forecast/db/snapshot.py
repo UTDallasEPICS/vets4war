@@ -28,8 +28,6 @@ import sys
 from datetime import datetime, timezone
 
 import pandas as pd
-import psycopg
-from dotenv import load_dotenv
 
 from db.staffing import (
     DEFAULT_EFFICIENCY,
@@ -44,7 +42,6 @@ from db.staffing import (
 )
 from db.train import METADATA_PATH, REPO_ROOT
 
-load_dotenv()
 
 FORECAST_DIR = REPO_ROOT / "forecasts"
 # What the partner staffed Oct 14-20 2026 (validation file, Staff By Shift).

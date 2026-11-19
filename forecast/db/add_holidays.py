@@ -1,43 +1,25 @@
-"""Add one year of official holidays to the shared `holidays` table.
+"""The 11 official holidays of a year, derived by calendar rule.
 
-    python -m db.add_holidays 2027            # dry run: prints the rows
-    python -m db.add_holidays 2027 --commit   # inserts them
+    official_holidays(year) -> holiday_date, holiday_name in date order
+    rule_mismatches(table)  -> rows of a holidays table the rules disagree with
 
-The table lists 11 official holidays per year on their calendar date (not
-the observed weekday). official_holidays() derives them by rule, and before
-anything is written the rules are checked against every row already in the
-table: if one row disagrees, nothing is inserted.
-
-Multipliers. The table keeps a measured volume and evening multiplier per
-holiday; for dates not reached yet it carries the mean of that holiday's
-measured years (2026-12-25 held the mean of Christmas 2021 to 2025 when
-this was written). New rows follow the same convention, with "measured" =
-dated on or before the last day of call data. The volume model does not
-read these columns (it learns holiday effects from the calls).
-
-Safety: dry run by default; refuses a year that already has rows; only
-INSERT, the schema is never altered. The four client holiday-type days
-(db.holiday_calendar) are derived in code and are NOT stored here.
+The `holidays` table lists the 11 official holidays per year on their
+calendar date (not the observed weekday). db.retrain checks every row
+already in the table against these rules before each run (one row that
+disagrees stops the run, nothing is guessed) and then adds the rule-derived
+rows of the years the forecast needs. The four client holiday-type days
+(db.holiday_calendar) are derived in code and are NOT stored in the table.
 """
 
 from __future__ import annotations
 
-import argparse
-import os
-import sys
-
 import pandas as pd
-from dotenv import load_dotenv
 
 from db.holiday_calendar import thanksgiving
-
-load_dotenv()
 
 MONDAY = 0                      # pandas dayofweek
 DAYS_PER_WEEK = 7
 LAST = -1
-MULTIPLIER_COLUMNS = ("volume_multiplier", "evening_multiplier")
-MULTIPLIER_DECIMALS = 3
 FIXED_DATES = {"New Year's Day": (1, 1), "Juneteenth": (6, 19), "Independence Day": (7, 4),
                "Veterans Day": (11, 11), "Christmas": (12, 25)}
 # name -> (month, which Monday); LAST = the last Monday of the month
@@ -75,61 +57,3 @@ def rule_mismatches(table: pd.DataFrame) -> list[str]:
                 expected = by_rule[name].date() if name in by_rule.index else "no rule"
                 problems.append(f"{name} {year}: table {date.date()}, rule {expected}")
     return problems
-
-
-def future_multipliers(table: pd.DataFrame, last_data_day: pd.Timestamp) -> pd.DataFrame:
-    """Per holiday name, the mean multipliers over the rows already measured
-    (dated on or before `last_data_day`)."""
-    measured = table[pd.to_datetime(table["holiday_date"]) <= pd.Timestamp(last_data_day)]
-    return measured.groupby("holiday_name", as_index=False)[list(MULTIPLIER_COLUMNS)].mean()
-
-
-def new_rows(table: pd.DataFrame, year: int, last_data_day: pd.Timestamp) -> pd.DataFrame:
-    """The rows to insert for `year`. Raises if the year is already there or
-    the rules do not reproduce the existing table."""
-    if (pd.to_datetime(table["holiday_date"]).dt.year == year).any():
-        raise ValueError(f"the holidays table already has rows for {year}")
-    problems = rule_mismatches(table)
-    if problems:
-        raise ValueError(f"the calendar rules do not reproduce the table: {problems[:5]}")
-    rows = official_holidays(year).merge(future_multipliers(table, last_data_day), on="holiday_name", how="left")
-    if rows[list(MULTIPLIER_COLUMNS)].isna().any().any():
-        raise ValueError("a holiday has no measured year to take its multipliers from")
-    # The table stores three decimals.
-    return rows.assign(**{column: rows[column].round(MULTIPLIER_DECIMALS) for column in MULTIPLIER_COLUMNS})
-
-
-def main(argv: list[str] | None = None) -> int:
-    import psycopg
-
-    from db.features import load_holidays
-
-    parser = argparse.ArgumentParser(description="Add one year of official holidays to the holidays table.")
-    parser.add_argument("year", type=int)
-    parser.add_argument("--commit", action="store_true", help="insert the rows (default: dry run)")
-    args = parser.parse_args(argv)
-    dsn = os.environ.get("V4W_DATABASE_URL")
-    if not dsn:
-        sys.exit("no connection string. set V4W_DATABASE_URL")
-
-    with psycopg.connect(dsn) as conn:
-        table = load_holidays(conn)
-        with conn.cursor() as cur:
-            cur.execute("SELECT max(start_ts)::date FROM calls")
-            last_data_day = pd.Timestamp(cur.fetchone()[0])
-            rows = new_rows(table, args.year, last_data_day)
-            print(rows.assign(holiday_date=rows["holiday_date"].dt.strftime("%Y-%m-%d")).round(3).to_string(index=False))
-            if args.commit:
-                cur.executemany(
-                    "INSERT INTO holidays (holiday_date, holiday_name, volume_multiplier, evening_multiplier) "
-                    "VALUES (%s, %s, %s, %s)",
-                    [(r.holiday_date.date(), r.holiday_name, float(r.volume_multiplier), float(r.evening_multiplier))
-                     for r in rows.itertuples(index=False)],
-                )
-    print(f"{'inserted' if args.commit else 'dry run: would insert'} {len(rows)} rows for {args.year} "
-          f"(multipliers = mean of years measured up to {last_data_day.date()})")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

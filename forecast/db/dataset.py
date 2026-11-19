@@ -129,8 +129,6 @@ def _database_source(hourly: pd.DataFrame) -> dict:
 def load_dataset(dsn: str, supplement: list[Path] | tuple[Path, ...] = ()) -> Dataset:
     """Database rows (read-only) merged with each supplemental workbook in
     the order given. A later file never overrides an earlier source."""
-    import psycopg  # local import: pure functions above need no driver
-
     with psycopg.connect(dsn) as conn:
         hourly = load_hourly(conn)[list(HOURLY_COLUMNS)]
         holidays = load_holidays(conn)
@@ -180,9 +178,6 @@ def main(argv: list[str] | None = None) -> int:
     import os
     import sys
 
-    from dotenv import load_dotenv
-
-    load_dotenv()
     parser = argparse.ArgumentParser(description="Build the training dataset and report what it holds.")
     parser.add_argument("--supplement", nargs="*", type=Path, default=[],
                         help="client call-record workbooks for days the database lacks")

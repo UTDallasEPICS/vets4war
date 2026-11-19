@@ -25,7 +25,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import openpyxl
 import pandas as pd
 
 from db.features import SERVICE_LEVEL_SEC
@@ -36,6 +35,9 @@ HOURLY_COLUMNS = ("hour_start", "offered", "answered", "abandoned", "answered_30
 
 def call_sheets(path: Path) -> list[str]:
     """Names of the sheets whose first row has every call-record column."""
+    # Imported here: the retrain script reads no workbook and runs without openpyxl.
+    import openpyxl
+
     book = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
         names = []
