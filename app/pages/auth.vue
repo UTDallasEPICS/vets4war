@@ -2,6 +2,10 @@
   import { z } from 'zod'
   import { authClient } from '../utils/auth-client'
 
+  // Sign-up is off: an address nobody added gets no mail and no error, so the page
+  // never says whether an address has access.
+  const CODE_HINT = 'If that address has access, a code is on its way.'
+
   const toast = useToast()
   const isEmailSent = ref(false)
 
@@ -34,7 +38,6 @@
         toast.add({ title: 'Error', description: error.message, color: 'error' })
       } else {
         isEmailSent.value = true
-        toast.add({ title: 'Success', description: 'OTP sent to your email', color: 'success' })
       }
     } else {
       const { error } = await authClient.signIn.emailOtp({
@@ -55,26 +58,31 @@
   <div class="flex h-full w-full items-center justify-center py-12">
     <UCard class="w-full max-w-md">
       <template #header>
-        <div class="flex items-center justify-center text-xl font-bold">Login</div>
+        <h1 class="flex items-center justify-center text-xl font-bold">Sign in</h1>
       </template>
 
       <UForm :schema="schema" :state="state" @submit="handleSubmit" class="space-y-5">
         <UFormField name="email" v-if="!isEmailSent">
-          <UInput v-model="state.email" class="w-full" placeholder="Email" />
+          <UInput v-model="state.email" class="w-full" placeholder="Email" type="email" />
         </UFormField>
 
-        <UFormField name="otp" v-if="isEmailSent">
-          <UPinInput
-            otp
-            v-model="state.otp"
-            :length="6"
-            size="xl"
-            class="flex w-full items-center justify-center"
-          />
-        </UFormField>
+        <template v-if="isEmailSent">
+          <p class="text-center text-sm text-gray-600 dark:text-gray-300" data-testid="code-hint">
+            {{ CODE_HINT }}
+          </p>
+          <UFormField name="otp">
+            <UPinInput
+              otp
+              v-model="state.otp"
+              :length="6"
+              size="xl"
+              class="flex w-full items-center justify-center"
+            />
+          </UFormField>
+        </template>
 
         <UButton loading-auto type="submit" class="w-full justify-center">
-          {{ isEmailSent ? 'Login' : 'Send OTP' }}
+          {{ isEmailSent ? 'Sign in' : 'Send code' }}
         </UButton>
       </UForm>
     </UCard>
