@@ -1,0 +1,164 @@
+// The five read routes (PLAN.md section 8.2) as functions of the database, so tests run
+// them against an in-memory SQLite without a server. Routes under server/api/ only read
+// the request and call these.
+import type {
+  DataSource,
+  ForecastParams,
+  ForecastResponse,
+  ModelResponse,
+  PlannedResponse,
+  StaffingResponse,
+  StatusResponse,
+} from '#shared/types/api'
+import { SOURCE_LABELS } from '#shared/utils/constants'
+import type { AppDb } from '../db'
+import type { Env } from '../env'
+import { apiError } from '../http'
+import { isoUtc, toRunSummary } from '../mappers'
+import {
+  equalWeightTalkSec,
+  forecastDays,
+  holidayCoverage,
+  hourRows,
+  judgePlanned,
+  resolvePatience,
+  rollupShifts,
+  staffingDays,
+  windowSummary,
+} from './compute'
+import { parseForecastQuery, parsePlannedBody, type ForecastInput } from './params'
+import { describeSource } from './source'
+import { readForecastSnapshot, readServingModel, readStatus, type ForecastSnapshot } from './store'
+
+export interface ForecastRuntime {
+  dataSourceKind: Env['V4W_DATA_SOURCE']
+  today: string // YYYY-MM-DD on the line (America/New_York)
+}
+
+export interface StatusViewer {
+  email: string
+  name: string
+  role: 'viewer' | 'admin'
+}
+
+const NO_MODEL = 'No model yet. An admin needs to load call data and run a retrain.'
+
+function params(
+  input: ForecastInput,
+  patience: ReturnType<typeof resolvePatience>
+): ForecastParams {
+  return {
+    start: input.start,
+    end: input.end,
+    efficiency: input.efficiency,
+    target_pct: input.targetPct,
+    target_sec: input.targetSec,
+    queue_model: input.queueModel,
+    patience_sec: patience.patienceSec,
+    patience_source: patience.source,
+    recency: input.recency,
+    include_holidays: input.includeHolidays,
+  }
+}
+
+// Everything the three forecast answers share: snapshot, patience, hours, roll-up.
+function evaluate(db: AppDb, runtime: ForecastRuntime, input: ForecastInput) {
+  const snapshot: ForecastSnapshot = readForecastSnapshot(db, input)
+  const patience = resolvePatience(input, snapshot.state)
+  const hours = hourRows(snapshot, input, patience.patienceSec)
+  const source: DataSource = describeSource(runtime.dataSourceKind, snapshot.state)
+  return { snapshot, patience, hours, rolled: rollupShifts(hours), source }
+}
+
+export function getForecast(
+  db: AppDb,
+  runtime: ForecastRuntime,
+  query: Record<string, unknown>
+): ForecastResponse {
+  const input = parseForecastQuery(query, runtime.today)
+  const { snapshot, patience, hours, rolled, source } = evaluate(db, runtime, input)
+  return {
+    params: params(input, patience),
+    data_source: source,
+    holiday_coverage: holidayCoverage(snapshot.lastHoliday, input.end),
+    hours,
+    days: forecastDays(rolled, hours, snapshot.holidayNames),
+    window: windowSummary(
+      hours,
+      input,
+      patience.patienceSec,
+      equalWeightTalkSec(snapshot, input, hours)
+    ),
+    quick_hangups: snapshot.state.quickHangups,
+  }
+}
+
+export function getStaffing(
+  db: AppDb,
+  runtime: ForecastRuntime,
+  query: Record<string, unknown>
+): StaffingResponse {
+  const input = parseForecastQuery(query, runtime.today)
+  const { snapshot, patience, rolled, source } = evaluate(db, runtime, input)
+  return {
+    params: params(input, patience),
+    data_source: source,
+    holiday_coverage: holidayCoverage(snapshot.lastHoliday, input.end),
+    days: staffingDays(rolled),
+  }
+}
+
+export function postPlanned(db: AppDb, runtime: ForecastRuntime, body: unknown): PlannedResponse {
+  const input = parsePlannedBody(body)
+  const { patience, hours, rolled, source } = evaluate(db, runtime, input)
+  return {
+    params: params(input, patience),
+    data_source: source,
+    shifts: judgePlanned(hours, rolled, input, patience.patienceSec),
+  }
+}
+
+export function getModel(db: AppDb, runtime: ForecastRuntime): ModelResponse {
+  const serving = readServingModel(db)
+  if (!serving) throw apiError(404, 'not_found', NO_MODEL)
+  return {
+    ...serving.model.metadata,
+    data_source: describeSource(runtime.dataSourceKind, serving.state),
+  }
+}
+
+export function getStatus(
+  db: AppDb,
+  runtime: ForecastRuntime,
+  user: StatusViewer
+): StatusResponse {
+  const { state, model, dataState, run } = readStatus(db)
+  return {
+    viewer: { email: user.email, name: user.name, role: user.role },
+    data_source: { kind: runtime.dataSourceKind, label: SOURCE_LABELS[runtime.dataSourceKind] },
+    forecast: state
+      ? {
+          run_id: state.runId,
+          generated_at: isoUtc(state.generatedAt),
+          horizon_start: state.horizonStart,
+          horizon_end: state.horizonEnd,
+          data_start: state.dataStart,
+          data_end: state.dataEnd,
+          calls_count: state.callsCount,
+          stale: (dataState?.callsRevision ?? 0) !== state.callsRevision,
+        }
+      : null,
+    model: model
+      ? {
+          id: model.id,
+          created_at: isoUtc(model.createdAt),
+          train_start: model.trainStart,
+          train_end: model.trainEnd,
+          train_rows: model.trainRows,
+          model_sha256: model.modelSha256,
+          label: model.metadata.config?.label ?? '',
+        }
+      : null,
+    run: run ? toRunSummary(run) : null,
+  }
+}
