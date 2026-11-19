@@ -142,6 +142,15 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
   ],
   forecast_hours: ['date', 'hour', 'predicted_calls', 'predicted_calls_no_holidays'],
   forecast_cells: ['recency', 'dow', 'hour', 'aht_sec', 'real_share'],
+  forecast_snapshots: [
+    'date',
+    'hour',
+    'predicted_calls',
+    'model_id',
+    'run_id',
+    'upload_id',
+    'captured_at',
+  ],
 }
 
 const EXPECTED_INDEXES = [
@@ -176,7 +185,7 @@ describe('database schema', () => {
     const applied = sqlite.prepare('SELECT count(*) AS n FROM __drizzle_migrations').get() as {
       n: number
     }
-    expect(applied.n).toBe(2)
+    expect(applied.n).toBe(3)
   })
 
   it('has exactly the documented tables and column names', () => {

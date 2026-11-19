@@ -336,3 +336,49 @@ export interface PersonRow {
   email_verified: boolean
   created_at: string
 }
+
+// 8.6 Forecast accuracy (GET /api/admin/accuracy)
+
+// Where a day's prediction comes from. 'snapshot': the forecast that was being served
+// when the day's calls were imported, kept before they went in. 'replay': the forecast
+// in use now (the model in use run over that day).
+export type AccuracySource = 'snapshot' | 'replay'
+
+export interface AccuracyDay {
+  date: string
+  actual_calls: number
+  predicted_calls: number
+  error_calls: number // predicted - actual: positive means the forecast was too high
+  abs_pct_error: number | null // |error| / actual * 100; null on a day without calls
+  hourly_mae: number // mean |predicted - actual| over the day's 24 hours
+  source: AccuracySource
+  // false: the model that made this prediction was trained on this day's calls, so the
+  // day says nothing about accuracy and is left out of the metrics.
+  held_out: boolean
+}
+
+// What db/monitor.py reported, plus the partner's daily accuracy and total bias.
+export interface AccuracyMetrics {
+  days: number
+  hours: number
+  actual_calls: number
+  predicted_calls: number
+  hourly_mae: number
+  hourly_rmse: number
+  daily_total_mae: number
+  signed_bias: number // mean predicted - actual calls per hour; positive = over-forecast
+  daily_accuracy_pct: number | null // 100 - mean daily |error| / actual * 100
+  total_bias_pct: number | null // (predicted - actual) / actual * 100 over the period
+}
+
+export type AccuracyStatus = 'success' | 'no_forecast' | 'no_data' | 'not_held_out'
+
+export interface AccuracyResponse {
+  status: AccuracyStatus
+  period: { start: string; end: string } | null // the days asked about
+  calls_range: { first_day: string; last_day: string } | null // all stored calls
+  model: { id: number; train_end: string } | null // the model in use now
+  days: AccuracyDay[] // every day of the period that has calls and a prediction
+  metrics: AccuracyMetrics | null // held-out days only
+  warnings: string[]
+}

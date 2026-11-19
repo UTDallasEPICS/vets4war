@@ -13,7 +13,7 @@
 
   const subtitle = computed(() =>
     route.path.startsWith('/admin')
-      ? 'Admin: call data, forecast runs and people'
+      ? 'Admin: call data, forecast runs, accuracy and people'
       : 'Call-volume forecast and shift staffing'
   )
 

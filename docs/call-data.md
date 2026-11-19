@@ -383,6 +383,13 @@ once the history and the following week are in.
 With `V4W_DATA_SOURCE=synthetic` the badge on the staffing page says "Synthetic data". Keep
 it that way for as long as the database holds generated calls.
 
+Load the "Actual Data for Validity Testing" file once a forecast is being served, and the
+**Accuracy** tab then shows how close that forecast was on its two days. At import the app
+keeps what the served forecast said for every new day (`forecast_snapshots`), so the
+comparison still holds after the retrain the import starts has learned those days. Days the
+model in use was trained on, with no forecast kept from before their import, are listed but
+left out of the numbers, as the old `db/monitor.py` did.
+
 ## What has not been proven about real files
 
 The reader was written against the layouts the old tool's tests describe, and checked

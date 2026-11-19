@@ -93,7 +93,7 @@ like
 
 Type the six digits and press **Sign in**. The staffing page opens and says "No forecast yet.
 An admin needs to load call data and run a retrain." The **Admin** button leads to the admin
-page with its three tabs: **Call data**, **Forecast runs** and **People**.
+page with its four tabs: **Call data**, **Forecast runs**, **Accuracy** and **People**.
 
 To use another port, start with `pnpm dev --port 3001` and set
 `BETTER_AUTH_URL=http://localhost:3001` in `.env`.

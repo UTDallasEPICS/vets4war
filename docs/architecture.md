@@ -23,7 +23,7 @@ is TypeScript.
 
 ```
 app/                      the pages and what they are made of
-  pages/                  index.vue (console), auth.vue (sign-in), admin.vue (three tabs)
+  pages/                  index.vue (console), auth.vue (sign-in), admin.vue (four tabs)
   components/console/     the staffing console
   components/admin/       UploadsPanel, RunsPanel, PeoplePanel and their parts
   composables/, utils/    page logic; utils/console/ holds the console's arithmetic
@@ -118,20 +118,21 @@ Conventions:
 
 The tables and who writes them:
 
-| Table                                        | Holds                                                               | Node writes                                      | Python writes                               |
-| -------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------- |
-| `user`, `session`, `account`, `verification` | people, their role, sessions, sign-in codes                         | Better Auth, the people routes, first admins     | never                                       |
-| `uploads`                                    | one row per uploaded file (or per copy from Postgres)               | yes                                              | never                                       |
-| `upload_rows`                                | the calls of a file that was read but not imported yet              | yes                                              | never                                       |
-| `calls`                                      | the call history the model learns from                              | on import only (insert, delete on a replacement) | never (reads it)                            |
-| `replaced_calls`                             | what a day replacement removed from `calls`                         | on import                                        | never                                       |
-| `data_state`                                 | one row: the data revision and the "run again" flag                 | yes                                              | never (reads it)                            |
-| `holidays`                                   | the official holidays by date                                       | the copy from Postgres only                      | adds missing official holidays at each run  |
-| `forecast_runs`                              | one row per retrain or refresh                                      | creates rows, records how a run ended            | its own row; creates the row of a shell run |
-| `model_artifacts`                            | trained models (the model text and its description)                 | never                                            | yes                                         |
-| `forecast_hours`                             | predicted calls per date and hour, with and without holidays        | never                                            | yes                                         |
-| `forecast_cells`                             | handle time and real-call share per weekday and hour                | never                                            | yes                                         |
-| `forecast_state`                             | one row: which run and model are being served, and from which calls | never                                            | yes                                         |
+| Table                                        | Holds                                                                | Node writes                                      | Python writes                               |
+| -------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------- |
+| `user`, `session`, `account`, `verification` | people, their role, sessions, sign-in codes                          | Better Auth, the people routes, first admins     | never                                       |
+| `uploads`                                    | one row per uploaded file (or per copy from Postgres)                | yes                                              | never                                       |
+| `upload_rows`                                | the calls of a file that was read but not imported yet               | yes                                              | never                                       |
+| `calls`                                      | the call history the model learns from                               | on import only (insert, delete on a replacement) | never (reads it)                            |
+| `replaced_calls`                             | what a day replacement removed from `calls`                          | on import                                        | never                                       |
+| `data_state`                                 | one row: the data revision and the "run again" flag                  | yes                                              | never (reads it)                            |
+| `holidays`                                   | the official holidays by date                                        | the copy from Postgres only                      | adds missing official holidays at each run  |
+| `forecast_runs`                              | one row per retrain or refresh                                       | creates rows, records how a run ended            | its own row; creates the row of a shell run |
+| `model_artifacts`                            | trained models (the model text and its description)                  | never                                            | yes                                         |
+| `forecast_hours`                             | predicted calls per date and hour, with and without holidays         | never                                            | yes                                         |
+| `forecast_cells`                             | handle time and real-call share per weekday and hour                 | never                                            | yes                                         |
+| `forecast_state`                             | one row: which run and model are being served, and from which calls  | never                                            | yes                                         |
+| `forecast_snapshots`                         | what the served forecast said for a day when its calls were imported | on import (new days only)                        | never                                       |
 
 Two numbers tie the two sides together:
 

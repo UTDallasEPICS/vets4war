@@ -1,6 +1,6 @@
 // @vitest-environment nuxt
 //
-// The admin page: three tabs, the tab comes from ?tab=, and exactly one panel shows.
+// The admin page: four tabs, the tab comes from ?tab=, and exactly one panel shows.
 // The panels are replaced by markers: this file checks the page's side of the contract
 // (which panel is on screen for which tab), not what a panel renders. Each panel has
 // its own tests where it is built.
@@ -28,6 +28,8 @@ const stubs = {
   AdminUploadsPanel: marker('uploads'),
   RunsPanel: marker('runs'),
   AdminRunsPanel: marker('runs'),
+  AccuracyPanel: marker('accuracy'),
+  AdminAccuracyPanel: marker('accuracy'),
   PeoplePanel: marker('people'),
   AdminPeoplePanel: marker('people'),
 }
@@ -37,11 +39,20 @@ function panelsOnScreen(wrapper: VueWrapper) {
 }
 
 describe('admin page', () => {
-  it('has three tabs and opens Call data by default', async () => {
+  it('has four tabs and opens Call data by default', async () => {
     const wrapper = await mountSuspended(AdminPage, { route: '/admin', global: { stubs } })
     const tabs = wrapper.findAll('[role="tab"]').map((t) => t.text())
-    expect(tabs).toEqual(['Call data', 'Forecast runs', 'People'])
+    expect(tabs).toEqual(['Call data', 'Forecast runs', 'Accuracy', 'People'])
     expect(panelsOnScreen(wrapper)).toEqual(['uploads'])
+  })
+
+  it('shows the accuracy panel for ?tab=accuracy', async () => {
+    const wrapper = await mountSuspended(AdminPage, {
+      route: '/admin?tab=accuracy',
+      global: { stubs },
+    })
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe('Accuracy')
+    expect(panelsOnScreen(wrapper)).toEqual(['accuracy'])
   })
 
   it('shows the runs panel for ?tab=runs', async () => {

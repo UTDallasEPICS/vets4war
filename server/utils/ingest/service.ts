@@ -13,6 +13,7 @@ import { dataState, forecastRuns, uploadRows, uploads } from '../../db/schema'
 import { addDays, dateRange, isIsoDate } from '../../../shared/utils/dates'
 import type { DayPlan, ImportRequest, ImportResult, UploadReport } from '../../../shared/types/api'
 import type Database from 'better-sqlite3'
+import { captureForecastSnapshots } from '../accuracy/snapshot'
 import type { AppDb } from '../db'
 import { apiError } from '../http'
 import { toUploadDetail } from '../mappers'
@@ -799,8 +800,11 @@ export function importUpload(
     for (const day of [...added, ...conflicts].sort()) {
       inserted += insert.run(uploadId, day, nextDay(day)).changes
     }
-    tx.delete(uploadRows).where(eq(uploadRows.uploadId, uploadId)).run()
+    // What the served forecast said for the new days, kept before the retrain this import
+    // starts learns them (server/utils/accuracy). A replaced day was in the data already.
     const now = new Date()
+    captureForecastSnapshots(client, added, uploadId, Math.floor(now.getTime() / 1000))
+    tx.delete(uploadRows).where(eq(uploadRows.uploadId, uploadId)).run()
     const state = tx
       .insert(dataState)
       .values({ id: 1, callsRevision: 1, updatedAt: now })

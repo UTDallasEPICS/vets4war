@@ -22,6 +22,7 @@ import {
   type IngestDeps,
 } from '../../../server/utils/ingest/service'
 import type { RetrainRun } from '../../../server/utils/retrain/runner'
+import { seedForecast } from '../forecast/helpers'
 import {
   HEADER,
   call,
@@ -365,6 +366,27 @@ describe('import', () => {
       importUpload(db, deps(), again.id, { total_rows: 24, replace_days: [] }, admin)
     ).toThrow('Every day in this file is already loaded. Nothing to import.')
     expect(revision()).toBe(1)
+  })
+
+  it('keeps the served forecast of the days it adds, not of the days it replaces', async () => {
+    seedForecast(db) // 12 calls at noon on every day
+    const first = await upload(rawLayout(NOV_5))
+    importUpload(db, deps(), first.id, { total_rows: 24, replace_days: [] }, admin)
+    db.update(schema.forecastHours).set({ predictedCalls: 99 }).run()
+
+    const changed = NOV_5.slice(0, -1)
+    const second = await upload(rawLayout([...changed, ...NOV_6]))
+    importUpload(db, deps(), second.id, { total_rows: 47, replace_days: ['2026-11-05'] }, admin)
+
+    const noon = (date: string) =>
+      db
+        .select()
+        .from(schema.forecastSnapshots)
+        .all()
+        .find((r) => r.date === date && r.hour === 12)
+    expect(db.select({ n: count() }).from(schema.forecastSnapshots).get()!.n).toBe(48)
+    expect(noon('2026-11-05')).toMatchObject({ predictedCalls: 12, uploadId: first.id })
+    expect(noon('2026-11-06')).toMatchObject({ predictedCalls: 99, uploadId: second.id })
   })
 
   it('replaces a changed day only when it is named, and keeps what it removed', async () => {

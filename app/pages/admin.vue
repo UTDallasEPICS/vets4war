@@ -1,27 +1,31 @@
 <script setup lang="ts">
-  // Three panels, one per tab. The panels take no props and emit nothing: a panel that
+  // Four panels, one per tab. The panels take no props and emit nothing: a panel that
   // wants another tab opened navigates to /admin?tab=<name>.
-  const TABS = [
+  type Tab = 'uploads' | 'runs' | 'accuracy' | 'people'
+  const TABS: { label: string; value: Tab }[] = [
     { label: 'Call data', value: 'uploads' },
     { label: 'Forecast runs', value: 'runs' },
+    { label: 'Accuracy', value: 'accuracy' },
     { label: 'People', value: 'people' },
   ]
-  type Tab = 'uploads' | 'runs' | 'people'
 
   const INTRO: Record<Tab, string> = {
     uploads:
       'Load the call-records export. You see what each day would do before anything changes.',
     runs: 'The model behind the forecast: retrain it on the stored calls, or move the forecast forward.',
+    accuracy: 'What the forecast said against the calls that actually came, day by day.',
     people: 'Who can sign in, and who can manage call data, runs and people.',
   }
 
   const route = useRoute()
   const router = useRouter()
 
+  const isTab = (value: unknown): value is Tab => TABS.some((t) => t.value === value)
+
   const tab = computed<Tab>({
     get() {
       const value = route.query.tab
-      return value === 'runs' || value === 'people' ? value : 'uploads'
+      return isTab(value) ? value : 'uploads'
     },
     set(value) {
       router.replace({ query: { tab: value } })
@@ -54,6 +58,7 @@
     </div>
     <AdminUploadsPanel v-if="tab === 'uploads'" />
     <AdminRunsPanel v-else-if="tab === 'runs'" />
+    <AdminAccuracyPanel v-else-if="tab === 'accuracy'" />
     <AdminPeoplePanel v-else />
   </div>
 </template>

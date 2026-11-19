@@ -291,6 +291,23 @@ export const forecastCells = sqliteTable(
   (t) => [primaryKey({ columns: [t.recency, t.dow, t.hour] })]
 )
 
+export const forecastSnapshots = sqliteTable(
+  'forecast_snapshots',
+  {
+    // What the served forecast said for a day at the moment that day's calls were first
+    // imported: kept so accuracy can be measured after a retrain has learned the day.
+    // Written by the web app only (the import); Python never touches it.
+    date: text('date').notNull(), // 'YYYY-MM-DD'
+    hour: integer('hour').notNull(), // 0..23
+    predictedCalls: real('predicted_calls').notNull(), // include_holidays = true
+    modelId: integer('model_id').notNull(), // model_artifacts.id that made it (no FK on purpose)
+    runId: integer('run_id').notNull(), // forecast_runs.id that wrote it
+    uploadId: integer('upload_id').notNull(), // the import that brought the day's calls
+    capturedAt: integer('captured_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.date, t.hour] })]
+)
+
 export const userRelations = relations(user, ({ many }) => ({
   sessions: many(session),
   accounts: many(account),
@@ -334,3 +351,5 @@ export const selectForecastHoursSchema = createSelectSchema(forecastHours)
 export const insertForecastHoursSchema = createInsertSchema(forecastHours)
 export const selectForecastCellsSchema = createSelectSchema(forecastCells)
 export const insertForecastCellsSchema = createInsertSchema(forecastCells)
+export const selectForecastSnapshotsSchema = createSelectSchema(forecastSnapshots)
+export const insertForecastSnapshotsSchema = createInsertSchema(forecastSnapshots)
