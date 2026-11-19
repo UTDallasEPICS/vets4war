@@ -113,8 +113,17 @@ function post(
 }
 
 const uploadCount = () => db.select().from(schema.uploads).all().length
-const ourTempFolders = async () =>
-  (await readdir(tmpdir())).filter((name) => name.startsWith(`v4w-upload-${process.pid}-`))
+// The folder goes in parseUpload's `finally`, just after the upload's status is set:
+// wait a moment for it rather than read the directory once.
+const ourTempFolders = async () => {
+  let left: string[] = []
+  for (let i = 0; i < 100; i++) {
+    left = (await readdir(tmpdir())).filter((name) => name.startsWith(`v4w-upload-${process.pid}-`))
+    if (left.length === 0) break
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  return left
+}
 
 // Waits until no upload is being read (the background part of an accepted upload).
 async function settled() {
