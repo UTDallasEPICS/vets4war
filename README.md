@@ -451,16 +451,17 @@ first-deploy checklist and how to size the task: [docs/deployment.md](docs/deplo
 
 - `.env` and any other file with a secret or a connection string.
 - A database (`*.db`, its `-journal` file, the `*-cli-run-*.lock` file of a shell retrain).
-- Call data in any form: `*.xlsx`, `*.xls`, `*.csv`, `*.parquet`, anything under `data/`.
-  No call export, extract or caller detail belongs in this repository, synthetic or real.
+- Call data in any form: `*.xlsx`, `*.xls`, `*.csv`, `*.csv.gz`, `*.parquet`, anything under
+  `data/`. No call export, extract or caller detail belongs in this repository, synthetic or
+  real.
 - Screenshots or logs that show real numbers of the line.
 
 `.gitignore` blocks exactly these names: `.env` and `.env.<anything>` except `.env.example`,
-the three kinds of database file, the four data file types, and every folder called `data`.
+the three kinds of database file, the five data file types, and every folder called `data`.
 So keep every file with secrets under a name that starts with `.env.`, for example
-`.env.deploy`. Git does not know a settings file called `deploy.env`, a compressed export
-such as `calls.csv.gz` outside a `data` folder, or a screenshot: those are up to you, so
-read `git status` before every commit. Test data is generated when a test runs. The one
+`.env.deploy`. Git does not know a settings file called `deploy.env`, an export packed some
+other way such as `calls.zip` outside a `data` folder, or a screenshot: those are up to you,
+so read `git status` before every commit. Test data is generated when a test runs. The one
 data-like file that is committed,
 `tests/server/forecast/fixtures/SYNTHETIC-legacy-golden.json`, holds answers of the old API
 computed from synthetic data and no call record.

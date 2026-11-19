@@ -37,6 +37,7 @@ venv/
 # Call data must never be committed: no exports, no extracts, no caller info.
 data/
 *.csv
+*.csv.gz
 *.xlsx
 *.xls
 *.parquet

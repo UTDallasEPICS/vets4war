@@ -27,6 +27,7 @@ data/
 **/*.xlsx
 **/*.xls
 **/*.csv
+**/*.csv.gz
 **/*.parquet
 
 # Tests, research record, documents and reports: not needed to build or run the app
