@@ -4,10 +4,14 @@
     read_snapshot(conn)                  -> Snapshot(calls, calls_revision), one read transaction
     load_holidays(conn)                  -> holiday_date, holiday_name, by date
     insert_missing_holidays(conn, rows)  -> how many rows were new
-    start_run(conn, run_id, ...)         -> claim the run row Node created, or insert a 'cli' one
+    start_run(conn, run_id, ...)         -> claim the queued run row Node created, or insert a 'cli' one
     serving_model(conn)                  -> the model forecast_state points at, or None
     write_forecast(conn, ...)            -> model, forecast, derived numbers and run row in ONE transaction
     finish_run(conn, run_id, ...)        -> close a run that writes no forecast
+
+A run writes its row only while the row is 'running' (RunNotOpen otherwise),
+so a process the web app has already given up on cannot overwrite what it
+decided, nor swap in a forecast behind a newer run.
 
 The tables belong to the web app (server/db/schema.ts and its drizzle
 migrations): nothing here creates or alters one. Python reads `calls`,
@@ -251,18 +255,39 @@ def _set_clause(columns: dict) -> tuple[str, list]:
     return ", ".join(f"{name} = ?" for name in names), [_sql_value(columns[name]) for name in names]
 
 
+class RunNotOpen(ValueError):
+    """The run row is missing, or is not in the state this step needs: the web
+    app closed it (it restarted, or stopped the run) or it ran before."""
+
+
+def _run_status(conn: sqlite3.Connection, run_id: int) -> str | None:
+    row = conn.execute("SELECT status FROM forecast_runs WHERE id = ?", (run_id,)).fetchone()
+    return None if row is None else row[0]
+
+
+def _not_open(conn: sqlite3.Connection, run_id: int, needed: str) -> RunNotOpen:
+    status = _run_status(conn, run_id)
+    if status is None:
+        return RunNotOpen(f"forecast_runs has no row {run_id}")
+    return RunNotOpen(f"run {run_id} is {status}, not {needed}")
+
+
 def _update_run(conn: sqlite3.Connection, run_id: int, columns: dict) -> None:
+    """Only a running row: once the web app has closed a run (a restart marks it
+    interrupted), a late write from its process must change nothing."""
     clause, values = _set_clause(columns)
-    cursor = conn.execute(f"UPDATE forecast_runs SET {clause} WHERE id = ?", [*values, run_id])
+    cursor = conn.execute(f"UPDATE forecast_runs SET {clause} WHERE id = ? AND status = 'running'",
+                          [*values, run_id])
     if cursor.rowcount != 1:
-        raise ValueError(f"forecast_runs has no row {run_id}")
+        raise _not_open(conn, run_id, "running")
 
 
 def start_run(conn: sqlite3.Connection, run_id: int | None, *, mode: str, pid: int, calls_revision: int,
               calls_count: int, data_start: str | None, data_end: str | None) -> int:
     """Mark the run as running with what it read. With run_id, claim the row
-    Node created (its trigger, creator and created_at stay); without, insert
-    a row of a person at a shell (trigger 'cli'). Returns the run id."""
+    Node created (its trigger, creator and created_at stay), only while it is
+    still queued: a row is run once (RunNotOpen otherwise); without, insert a
+    row of a person at a shell (trigger 'cli'). Returns the run id."""
     now = now_seconds()
     read = (calls_revision, calls_count, data_start, data_end)
     with _transaction(conn, write=True):
@@ -276,11 +301,11 @@ def start_run(conn: sqlite3.Connection, run_id: int | None, *, mode: str, pid: i
             return int(cursor.lastrowid)
         cursor = conn.execute(
             "UPDATE forecast_runs SET status = 'running', started_at = COALESCE(started_at, ?), pid = ?, "
-            "calls_revision = ?, calls_count = ?, data_start = ?, data_end = ? WHERE id = ?",
+            "calls_revision = ?, calls_count = ?, data_start = ?, data_end = ? WHERE id = ? AND status = 'queued'",
             (now, pid, *read, run_id),
         )
         if cursor.rowcount != 1:
-            raise ValueError(f"forecast_runs has no row {run_id}")
+            raise _not_open(conn, run_id, "queued")
         return run_id
 
 
