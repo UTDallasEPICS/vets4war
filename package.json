@@ -24,6 +24,8 @@
     "forecast:test": "cd forecast && .venv/bin/python -m pytest tests -q"
   },
   "dependencies": {
+    "@iconify-json/heroicons": "1.2.3",
+    "@iconify-json/lucide": "1.2.156",
     "@nuxt/image": "2.1.0",
     "@nuxt/ui": "^4.11.0",
     "@types/nodemailer": "^8.0.1",
