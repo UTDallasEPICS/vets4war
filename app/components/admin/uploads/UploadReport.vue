@@ -64,7 +64,7 @@
       data-testid="file-warning"
     />
 
-    <div v-if="report.days.length" class="overflow-x-auto">
+    <div v-if="report.days.length" class="relative overflow-x-auto">
       <table class="w-full text-left text-sm" data-testid="day-table">
         <thead class="text-gray-500 dark:text-gray-400">
           <tr>

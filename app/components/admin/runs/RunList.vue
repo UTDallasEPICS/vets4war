@@ -22,7 +22,7 @@
       <h2 class="text-lg font-semibold">Recent runs</h2>
     </template>
     <p v-if="!runs.length" class="text-sm text-gray-600 dark:text-gray-300">No runs yet.</p>
-    <div v-else class="overflow-x-auto">
+    <div v-else class="relative overflow-x-auto">
       <table class="w-full text-left text-sm" data-testid="run-list">
         <thead class="text-gray-500 dark:text-gray-400">
           <tr>
