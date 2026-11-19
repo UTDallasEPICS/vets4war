@@ -50,7 +50,12 @@ export interface IngestDeps {
 
 // What the import compares against: the fingerprint each file day had in `calls` when
 // the file was checked (null: no calls that day). Stored with the report, never sent.
-export type StoredReport = UploadReport & { stored_days?: Record<string, string | null> }
+// calls_revision: data_state.calls_revision when the plan was made, so a ready upload
+// whose plan the stored calls have since outdated is planned again before it is shown.
+export type StoredReport = UploadReport & {
+  stored_days?: Record<string, string | null>
+  calls_revision?: number
+}
 
 export interface StagedBatch {
   sheet: string
@@ -69,6 +74,7 @@ const DAY_SECONDS = 86_400
 
 const CALL_COLUMNS = 'start_ts, in_queue_sec, agent_sec, abandon_sec, routing_sec, abandoned'
 const IMMEDIATE = { behavior: 'immediate' } as const
+const COMBINED_SHEETS = 'more than one sheet and were combined'
 
 interface RawCall {
   id?: number
@@ -117,7 +123,7 @@ function cleanFilename(name: string): string {
 
 export function publicReport(report: StoredReport | null): UploadReport | null {
   if (!report) return null
-  const { stored_days: _hidden, ...rest } = report
+  const { stored_days: _hidden, calls_revision: _revision, ...rest } = report
   return rest
 }
 
@@ -450,7 +456,11 @@ async function planAgainstStoredInTurns(
   return { days: planDays(fileDays, stored), storedDays }
 }
 
-function withPlan(report: StoredReport, plan: StoredPlan): StoredReport {
+function callsRevision(db: AppDb): number {
+  return db.select().from(dataState).get()?.callsRevision ?? 0
+}
+
+function withPlan(report: StoredReport, plan: StoredPlan, revision: number): StoredReport {
   const count = (status: DayPlan['status']) => plan.days.filter((d) => d.status === status).length
   return {
     ...report,
@@ -465,6 +475,7 @@ function withPlan(report: StoredReport, plan: StoredPlan): StoredReport {
     },
     days: plan.days,
     stored_days: plan.storedDays,
+    calls_revision: revision,
   }
 }
 
@@ -572,27 +583,11 @@ export async function buildReport(
     })
   }
   const gaps = daysWithoutCalls(days)
-  const warnings: string[] = []
-  const unreported = errors.length ? [] : recentDaysWithoutCalls(db, days)
-  if (unreported.length) {
-    warnings.push(
-      `After this import, ${unreported.length} day(s) would have no calls at all: ` +
-        `${listDays(unreported)}. The forecast cannot be retrained while a day in the last ` +
-        `${RECENT_GAP_DAYS} days of call data has no calls. Load the calls of these days too ` +
-        '(in this file or another one); until then the forecast in use stays as it is.'
-    )
-  }
-  const otherGaps = gaps.filter((day) => !unreported.includes(day))
-  if (otherGaps.length) {
-    warnings.push(
-      `${otherGaps.length} date(s) have no calls recorded in this workbook: ${listDays(otherGaps)}. They are left untouched.`
-    )
-  }
+  const warnings = errors.length ? [] : gapWarnings(db, days, gaps)
   if (split.length) {
-    warnings.push(
-      `${split.length} day(s) have calls on more than one sheet and were combined: ${listDays(split)}.`
-    )
+    warnings.push(`${split.length} day(s) have calls on ${COMBINED_SHEETS}: ${listDays(split)}.`)
   }
+  const revision = callsRevision(db)
 
   const base: StoredReport = {
     ok: errors.length === 0,
@@ -611,7 +606,67 @@ export async function buildReport(
     file_errors: errors,
     warnings,
   }
-  return withPlan(base, await planAgainstStoredInTurns(db, fileDays))
+  return withPlan(base, await planAgainstStoredInTurns(db, fileDays), revision)
+}
+
+// Unreported days: those the retrain would refuse once the file is in, and the other
+// dates inside the file that have no call.
+function gapWarnings(db: AppDb, days: string[], gaps: string[]): string[] {
+  const warnings: string[] = []
+  const unreported = recentDaysWithoutCalls(db, days)
+  if (unreported.length) {
+    warnings.push(
+      `After this import, ${unreported.length} day(s) would have no calls at all: ` +
+        `${listDays(unreported)}. The forecast cannot be retrained while a day in the last ` +
+        `${RECENT_GAP_DAYS} days of call data has no calls. Load the calls of these days too ` +
+        '(in this file or another one); until then the forecast in use stays as it is.'
+    )
+  }
+  const otherGaps = gaps.filter((day) => !unreported.includes(day))
+  if (otherGaps.length) {
+    warnings.push(
+      `${otherGaps.length} date(s) have no calls recorded in this workbook: ${listDays(otherGaps)}. They are left untouched.`
+    )
+  }
+  return warnings
+}
+
+// An upload as the page should see it. A ready upload whose plan was made before the
+// stored calls last changed (another import since) is planned again first, so the page
+// never shows an outdated plan, such as "nothing to import" for a day that now differs.
+export async function currentUpload(db: AppDb, uploadId: number): Promise<UploadRow> {
+  const row = getUpload(db, uploadId)
+  const report = row.report as StoredReport | null
+  if (row.status !== 'ready' || !report || report.calls_revision === callsRevision(db)) return row
+  const revision = callsRevision(db)
+  const lines = new Map<string, string[]>()
+  for await (const rows of rowsInChunks(db, 'upload_rows', 'upload_id = ?', [uploadId])) {
+    for (const call of rows) {
+      const day = dayOf(call.start_ts)
+      const dayLines = lines.get(day)
+      if (dayLines) dayLines.push(callLine(toCall(call)))
+      else lines.set(day, [callLine(toCall(call))])
+    }
+  }
+  const fileDays = await summarizeLines(lines)
+  const plan = await planAgainstStoredInTurns(db, fileDays)
+  const days = [...fileDays.keys()]
+  const refreshed = withPlan(
+    {
+      ...report,
+      warnings: [
+        ...gapWarnings(db, days, daysWithoutCalls(days)),
+        ...report.warnings.filter((w) => w.includes(COMBINED_SHEETS)),
+      ],
+    },
+    plan,
+    revision
+  )
+  db.update(uploads)
+    .set({ report: refreshed })
+    .where(and(eq(uploads.id, uploadId), eq(uploads.status, 'ready')))
+    .run()
+  return getUpload(db, uploadId)
 }
 
 // Days that would have no call at all once this file is in, among those the retrain
@@ -703,7 +758,7 @@ export function importUpload(
     const report = upload.report as StoredReport
     if (!sameSnapshot(report.stored_days, plan.storedDays)) {
       tx.update(uploads)
-        .set({ report: withPlan(report, plan) })
+        .set({ report: withPlan(report, plan, callsRevision(db)) })
         .where(eq(uploads.id, uploadId))
         .run()
       return new Refusal(

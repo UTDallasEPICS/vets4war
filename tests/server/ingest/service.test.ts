@@ -11,6 +11,7 @@ import { createTestDb, createTestUser } from '../../helpers/db'
 import * as schema from '../../../server/db/schema'
 import type { AppDb } from '../../../server/utils/db'
 import {
+  currentUpload,
   discardUpload,
   getUpload,
   importUpload,
@@ -611,5 +612,45 @@ describe('the run that read an import (review X-6)', () => {
     expect(queued).toBe(false)
     expect(done.runId).toBe(run!.id)
     expect(listUploads(db)[0]!.runId).toBe(run!.id)
+  })
+})
+
+describe('a ready upload whose plan another import outdated', () => {
+  it('is planned again before it is shown', async () => {
+    const first = await upload(rawLayout(NOV_5))
+    importUpload(db, deps(), first.id, { total_rows: 24, replace_days: [] }, admin)
+    // Checked now: Nov 5 is already loaded, Nov 6 is new.
+    const waiting = await upload(rawLayout([...NOV_5, ...NOV_6]))
+    expect(waiting.report!.summary).toMatchObject({ new_days: 1, identical_days: 1 })
+    // Another file loads a different Nov 5 and Nov 6 after that check.
+    const changed = [
+      ...wholeDay('2026-11-05', 60, () => 'Y'),
+      ...wholeDay('2026-11-06', 60, () => 'Y'),
+    ]
+    const other = await upload(rawLayout(changed))
+    importUpload(db, deps(), other.id, { total_rows: 48, replace_days: ['2026-11-05'] }, admin)
+
+    const shown = await currentUpload(db, waiting.id)
+    expect(shown.report!.summary).toMatchObject({
+      new_days: 0,
+      identical_days: 0,
+      conflict_days: 2,
+    })
+    expect(shown.report!.nothing_to_import).toBe(false)
+    // and the import accepts the refreshed plan as it is
+    const { upload: done } = importUpload(
+      db,
+      deps(),
+      waiting.id,
+      { total_rows: 48, replace_days: ['2026-11-05', '2026-11-06'] },
+      admin
+    )
+    expect(done.status).toBe('imported')
+  })
+
+  it('is left as it is while nothing changed', async () => {
+    const waiting = await upload(rawLayout(NOV_5))
+    const shown = await currentUpload(db, waiting.id)
+    expect(shown.report).toEqual(waiting.report)
   })
 })
