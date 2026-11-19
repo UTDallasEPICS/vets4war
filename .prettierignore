@@ -23,3 +23,8 @@ forecast/
 docs/archive/
 pnpm-lock.yaml
 drizzle/
+
+# Carried over unchanged on purpose: the console's stylesheet is the old page's, declaration
+# for declaration, and the deploy workflow is the EPICS template's file.
+app/assets/css/console.css
+.github/workflows/deploy.yml
