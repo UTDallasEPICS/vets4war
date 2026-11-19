@@ -378,7 +378,7 @@ because printing sign-in codes to the log is allowed under `pnpm dev` only.)
 | `V4W_HOLIDAYS_THROUGH_YEAR` | see below              | Last year of official holidays kept in the database.       |
 | `V4W_UPLOAD_MAX_MB`         | `40`                   | Largest upload, in MB.                                     |
 | `V4W_UPLOAD_MAX_ROWS`       | `750000`               | Most calls in one file.                                    |
-| `PORT`, `HOST`              | `3000`, all interfaces | Where a production build listens.                          |
+| `PORT`, `HOST`              | `3000`, all interfaces | Where the server listens.                                  |
 | `V4W_DATABASE_URL`          | none                   | The old Postgres database, for the one-time copy.          |
 | `V4W_DEV_API_PROXY`         | not set                | `pnpm dev` only. Leave it unset.                           |
 
@@ -392,6 +392,8 @@ because printing sign-in codes to the log is allowed under `pnpm dev` only.)
   removes anyone.
 - `V4W_DATA_SOURCE`: anything else, or nothing, makes the badge say "Data source not set
   (V4W_DATA_SOURCE)". The app never guesses.
+- `PORT` is read by `pnpm dev` and by a production build; `HOST` matters for a production
+  build, which listens on all interfaces unless told otherwise.
 - `V4W_PYTHON`: by default `forecast/.venv/bin/python` when that file exists, else `python3`
   from `PATH`.
 - `V4W_RETRAIN_CRON`: a cron line in the server's local time (UTC in the image). It is read

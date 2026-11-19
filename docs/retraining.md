@@ -14,13 +14,13 @@ and timeouts, what to do when a run fails, and how to run the script by hand.
 
 ## What starts a run
 
-| Started by   | On the page ("Started by") | When                                                                                        |
-| ------------ | -------------------------- | ------------------------------------------------------------------------------------------- |
-| An import    | After an import            | Every import of call data starts a retrain. Turn it off with `V4W_RETRAIN_ON_IMPORT=false`. |
-| The schedule | Scheduled                  | Once a day; see [The schedule](#the-schedule).                                              |
-| An admin     | By hand                    | **Retrain now** or **Refresh forecast** on the Forecast runs tab.                           |
-| The server   | Server start               | At start, when call data is waiting that no run has finished on.                            |
-| A shell      | Command line               | Somebody ran the script; see [Running a retrain by hand](#running-a-retrain-by-hand).       |
+| Started by   | On the page ("Started by") | When                                                                                  |
+| ------------ | -------------------------- | ------------------------------------------------------------------------------------- |
+| An import    | After an import            | Every import of call data starts a retrain, unless `V4W_RETRAIN_ON_IMPORT=false`.     |
+| The schedule | Scheduled                  | Once a day; see [The schedule](#the-schedule).                                        |
+| An admin     | By hand                    | **Retrain now** or **Refresh forecast** on the Forecast runs tab.                     |
+| The server   | Server start               | At start, when call data is waiting that no run has finished on.                      |
+| A shell      | Command line               | Somebody ran the script; see [Running a retrain by hand](#running-a-retrain-by-hand). |
 
 **Only one run works at a time.** When a run is asked for while another is working (a second
 import, a second click), nothing new starts. The answer names the run in progress, and one
