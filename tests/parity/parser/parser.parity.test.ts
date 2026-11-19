@@ -1,6 +1,7 @@
 // Parity rung P4 (PLAN.md section 12): the TypeScript workbook reader gives exactly the
 // calls of the proven Python parser (db.client_files.read_call_records) on SYNTHETIC
-// workbooks written by openpyxl, and refuses every file Python refuses. With
+// workbooks written by openpyxl and in the markup Excel and other export tools write
+// (excel_like.py), and refuses every file Python refuses. With
 // V4W_LEGACY_DIR set it also reads the legacy stack's synthetic workbooks and compares
 // them with the CSV the legacy databases were loaded from.
 // Needs forecast/.venv (pnpm forecast:setup); without it this test fails, never skips.
@@ -21,6 +22,13 @@ const SCRIPT = fileURLToPath(new URL('./make_cases.py', import.meta.url))
 const PYTHON = join(REPO_ROOT, 'forecast', '.venv', 'bin', 'python')
 const LEGACY_DIR = process.env.V4W_LEGACY_DIR
 const SETUP_TIMEOUT = 180_000
+
+// Files Python reads by guessing and this reader refuses on purpose (PLAN.md R1: refuse
+// what it does not recognise). A refusal is loud; different calls never are allowed.
+const REFUSED_ON_PURPOSE: Record<string, string> = {
+  'xl_month_name_text_dates.xlsx':
+    'Start_Date as text like "Nov 10, 2026": only YYYY-MM-DD and M/D/YYYY text is read',
+}
 
 type PyCall = [string, number, number, number, number, boolean]
 type PyResult = { calls: PyCall[] } | { error: true }
@@ -85,7 +93,12 @@ beforeAll(async () => {
     throw new Error(`${PYTHON} not found: run pnpm forecast:setup`)
   }
   folder = await mkdtemp(join(tmpdir(), 'v4w-parity-parser-'))
-  const run = spawnSync(PYTHON, ['-I', SCRIPT, folder], { cwd: REPO_ROOT, encoding: 'utf8' })
+  const run = spawnSync(PYTHON, ['-I', SCRIPT, folder], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    // The long-sheet case alone prints about 100,000 calls.
+    maxBuffer: 256 * 1024 * 1024,
+  })
   if (run.status !== 0) {
     throw new Error(`make_cases.py failed (exit ${run.status}): ${run.stderr}`)
   }
@@ -98,7 +111,8 @@ afterAll(async () => {
 
 describe('P4: the TypeScript reader against the Python parser', () => {
   it('covers every case the Python script wrote', () => {
-    expect(Object.keys(python).length).toBeGreaterThanOrEqual(14)
+    expect(Object.keys(python).length).toBeGreaterThanOrEqual(40)
+    for (const name of Object.keys(REFUSED_ON_PURPOSE)) expect(python).toHaveProperty([name])
     expect(Object.values(python).some((r) => 'error' in r)).toBe(true)
     expect(Object.values(python).some((r) => 'calls' in r)).toBe(true)
   })
@@ -106,8 +120,8 @@ describe('P4: the TypeScript reader against the Python parser', () => {
   it('gives identical calls where Python reads the file, and an error where it refuses', async () => {
     for (const [name, expected] of Object.entries(python)) {
       const { result, calls } = await readAll(join(folder, name))
-      if ('error' in expected) {
-        expect(result.errors.length, `${name}: TypeScript must refuse it too`).toBeGreaterThan(0)
+      if ('error' in expected || name in REFUSED_ON_PURPOSE) {
+        expect(result.errors.length, `${name}: TypeScript must refuse it`).toBeGreaterThan(0)
         continue
       }
       expect(result.errors, `${name}: unexpected errors`).toEqual([])
