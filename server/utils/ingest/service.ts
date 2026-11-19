@@ -14,7 +14,6 @@ import { addDays, dateRange, isIsoDate } from '../../../shared/utils/dates'
 import type { DayPlan, ImportRequest, ImportResult, UploadReport } from '../../../shared/types/api'
 import type Database from 'better-sqlite3'
 import type { AppDb } from '../db'
-import type { RunRow } from '../forecast/store'
 import { apiError } from '../http'
 import { toUploadDetail } from '../mappers'
 import {
@@ -34,6 +33,10 @@ import { NOT_A_WORKBOOK } from './archive'
 import { EARLIEST_CALL_DAY, RECENT_GAP_DAYS, STAGED_DAYS } from './limits'
 import { parseWorkbook, type ParsedCall, type ParseResult } from './parser'
 import { makeUploadFolder } from './tempfiles'
+
+// A forecast_runs row, as the retrain runner hands one back. Defined here rather than
+// imported: the read side and the runner each keep their own name for it.
+type RunRow = typeof forecastRuns.$inferSelect
 
 export type UploadRow = typeof uploads.$inferSelect
 

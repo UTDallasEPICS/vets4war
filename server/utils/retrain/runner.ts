@@ -22,8 +22,8 @@ import type { RunMode, RunTrigger } from '../../../shared/types/api'
 import type { AppDb } from '../db'
 import { apiError } from '../http'
 
-// Not named RetrainRun: server/utils/forecast/store.ts exports that name, and Nitro's
-// auto-import scan of server/utils warns about two exports of one name.
+// Named RetrainRun, not RunRow: other modules under server/utils use RunRow for the same
+// row, and Nitro's auto-import scan warns when two files export one name.
 export type RetrainRun = typeof forecastRuns.$inferSelect
 
 export interface RetrainConfig {
