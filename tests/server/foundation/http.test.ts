@@ -65,3 +65,34 @@ describe('validationError', () => {
     expect(validationError(issues).message).toMatch(/^planned\.1\.planned: /)
   })
 })
+
+describe('readJsonBody', () => {
+  // A real request through h3, so the body is parsed exactly as in a route.
+  async function answer(body: string): Promise<{ status: number; json: Record<string, unknown> }> {
+    const { createApp, eventHandler, toWebHandler } = await import('h3')
+    const { readJsonBody } = await import('../../../server/utils/http')
+    const app = createApp()
+    app.use(eventHandler(async (event) => ({ body: await readJsonBody(event) })))
+    const response = await toWebHandler(app)(
+      new Request('http://localhost/', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      })
+    )
+    return { status: response.status, json: (await response.json()) as Record<string, unknown> }
+  }
+
+  it('returns the parsed body', async () => {
+    expect(await answer('{"name":"Vee"}')).toEqual({ status: 200, json: { body: { name: 'Vee' } } })
+  })
+
+  it('answers malformed JSON with 422 and data.code validation', async () => {
+    const { status, json } = await answer('{not json')
+    expect(status).toBe(422)
+    expect(json.data).toEqual({
+      code: 'validation',
+      issues: [{ path: '', message: 'The request body must be valid JSON.' }],
+    })
+  })
+})

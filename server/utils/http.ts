@@ -1,7 +1,7 @@
 // The one error shape of the API (ApiErrorBody in shared/types/api.ts):
 // { statusCode, statusMessage, message, data: { code, ... } }.
 import { STATUS_CODES } from 'node:http'
-import { createError, type H3Error } from 'h3'
+import { createError, readBody, type H3Error, type H3Event } from 'h3'
 import type { z } from 'zod'
 
 export interface Issue {
@@ -42,4 +42,14 @@ export function issuesFromZod(error: z.ZodError): Issue[] {
     path: issue.path.map((part) => String(part)).join('.'),
     message: issue.message,
   }))
+}
+
+// The JSON body of a request. Malformed JSON is a 422 like any other bad input, so the
+// answer keeps the one error shape (h3's own 400 carries no data.code).
+export async function readJsonBody(event: H3Event): Promise<unknown> {
+  try {
+    return await readBody(event)
+  } catch {
+    throw validationError([{ path: '', message: 'The request body must be valid JSON.' }])
+  }
 }

@@ -84,8 +84,25 @@ afterEach(async () => {
   await rm(folder, { recursive: true, force: true })
 })
 
+// Linux has /proc; elsewhere (macOS) the same facts come from ps.
+const HAS_PROC = existsSync('/proc/self/stat')
+
+// Every process as { pid, pgid, state } from ps, for systems without /proc.
+function psTable(): { pid: number; pgid: number; state: string }[] {
+  const out = spawnSync('ps', ['-axo', 'pid=,pgid=,stat='], { encoding: 'utf8' }).stdout ?? ''
+  return out
+    .split('\n')
+    .map((line) => line.trim().split(/\s+/))
+    .filter((f) => f.length >= 3 && /^\d+$/.test(f[0]!))
+    .map(([pid, pgid, state]) => ({ pid: Number(pid), pgid: Number(pgid), state: state! }))
+}
+
 // Running, not a zombie waiting to be reaped.
 function alive(pid: number): boolean {
+  if (!HAS_PROC) {
+    const entry = psTable().find((p) => p.pid === pid)
+    return entry !== undefined && !entry.state.startsWith('Z')
+  }
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
     return stat[stat.lastIndexOf(')') + 2] !== 'Z'
@@ -105,6 +122,11 @@ async function until(check: () => boolean, ms = SLOW / 2): Promise<boolean> {
 
 // The other members of process group `pgid` (the gate workers of a run).
 function workersOf(pgid: number): number[] {
+  if (!HAS_PROC) {
+    return psTable()
+      .filter((p) => p.pid !== pgid && p.pgid === pgid && !p.state.startsWith('Z'))
+      .map((p) => p.pid)
+  }
   const members: number[] = []
   for (const name of readdirSync('/proc')) {
     if (!/^\d+$/.test(name) || Number(name) === pgid) continue
@@ -303,7 +325,9 @@ describe('a run whose workers outlive the script and hold its pipes', () => {
     SLOW
   )
 
-  it.each([
+  // The runner finds a dead server's processes through /proc (Linux, as in the image);
+  // without /proc it sees none, so these two can only run on Linux.
+  it.skipIf(!HAS_PROC).each([
     ['the script still running', false],
     ['only its workers left', true],
   ])(

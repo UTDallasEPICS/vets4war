@@ -22,7 +22,15 @@ export default defineConfig({
         },
       },
       await defineVitestProject({
-        test: { name: 'nuxt', environment: 'nuxt', include: ['tests/nuxt/**/*.test.ts'] },
+        test: {
+          name: 'nuxt',
+          environment: 'nuxt',
+          include: ['tests/nuxt/**/*.test.ts'],
+          // Node 25+ defines its own global localStorage (undefined without
+          // --localstorage-file), which hides the DOM environment's one. Turn it off so
+          // the components see the browser-like storage on every Node version.
+          execArgv: ['--no-experimental-webstorage'],
+        },
       }),
       {
         resolve: { alias },
