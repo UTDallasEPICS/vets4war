@@ -62,7 +62,18 @@
 </script>
 
 <template>
-  <form class="space-y-4" data-testid="import-form" @submit.prevent="submit">
+  <form
+    class="border-primary/30 bg-default space-y-5 rounded-xl border p-5"
+    data-testid="import-form"
+    @submit.prevent="submit"
+  >
+    <div class="space-y-1">
+      <h3 class="text-[15px] font-semibold">Confirm the import</h3>
+      <p class="text-muted text-[13px]">
+        A last check that the file is the export you meant: the counts must agree before anything is
+        stored.
+      </p>
+    </div>
     <UFormField
       label="How many rows does your export have?"
       description="Type the row count from the export itself (without the header row). It must match the calls read from the file."
@@ -71,19 +82,23 @@
         v-model="typed"
         inputmode="numeric"
         placeholder="e.g. 1313"
-        class="w-48"
+        size="lg"
+        class="w-56"
         data-testid="row-count"
       />
     </UFormField>
     <UCheckbox
       v-if="conflicts.length"
       v-model="replaceConfirmed"
+      class="rounded-lg bg-[var(--v4w-warn-soft)] p-3"
       :label="`Replace ${conflicts.length} day(s): ${conflicts.join(', ')}`"
       description="The calls stored for these days are removed (and kept aside) and the file's calls take their place."
       data-testid="replace-confirm"
     />
     <UButton
       type="submit"
+      size="lg"
+      icon="i-heroicons-arrow-down-tray-20-solid"
       :label="buttonLabel"
       :loading="sending"
       :disabled="!ready || sending"

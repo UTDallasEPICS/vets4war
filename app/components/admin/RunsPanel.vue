@@ -84,20 +84,31 @@
 </script>
 
 <template>
-  <div class="space-y-6">
-    <UCard>
-      <template #header>
-        <h2 class="text-lg font-semibold">Forecast</h2>
-      </template>
-      <div class="space-y-4">
-        <p class="text-sm" data-testid="data-line">
-          <template v-if="!overview">Loading…</template>
-          <template v-else-if="hasCalls">
-            {{ overview.data.calls_count.toLocaleString('en-US') }} calls stored, from
-            {{ overview.data.first_day }} to {{ overview.data.last_day }}.
-          </template>
-          <template v-else>No call data yet. Load a call-records file under Call data.</template>
-        </p>
+  <div class="space-y-4">
+    <div class="grid gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+      <section class="tile space-y-5" aria-labelledby="forecast-title">
+        <h2 id="forecast-title" class="tile-title">Forecast in use</h2>
+        <div data-testid="data-line">
+          <p v-if="!overview" class="text-muted text-sm">Loading…</p>
+          <div v-else-if="hasCalls" class="flex flex-wrap items-end gap-x-10 gap-y-4">
+            <div>
+              <p class="num text-[44px]">
+                {{ overview.data.calls_count.toLocaleString('en-US') }}
+              </p>
+              <p class="stat-label mt-2">calls stored</p>
+            </div>
+            <div>
+              <p class="num text-[22px]">
+                {{ overview.data.first_day }} to {{ overview.data.last_day }}
+              </p>
+              <p class="stat-label mt-2">days they cover</p>
+            </div>
+          </div>
+          <p v-else class="text-muted text-sm">
+            No call data yet. Load a call-records file under
+            <NuxtLink to="/admin?tab=uploads" class="text-link">Call data</NuxtLink>.
+          </p>
+        </div>
 
         <AdminRunsForecastState
           :status="status"
@@ -105,54 +116,77 @@
           :active-run-id="overview?.active_run_id ?? null"
           :last-day="overview?.data.last_day ?? null"
         />
+      </section>
+
+      <section class="tile flex flex-col gap-4" aria-labelledby="update-title">
+        <h2 id="update-title" class="tile-title">Update the forecast</h2>
 
         <div
           v-if="active"
-          class="bg-primary-50 dark:bg-primary-950 flex items-center gap-3 rounded-md p-3 text-sm"
+          class="text-primary flex items-center gap-3 rounded-xl bg-[var(--v4w-accent-soft)] px-4 py-3 text-sm"
           data-testid="active-run"
         >
           <span
             class="inline-block size-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
             aria-hidden="true"
           />
-          <span>
+          <span class="font-medium">
             Run {{ active.id }} ({{ active.mode === 'full' ? 'retrain' : 'forecast refresh' }}) is
             running: {{ elapsed(active.started_at ?? active.created_at) }} so far.
           </span>
         </div>
 
-        <div class="flex flex-wrap gap-3">
-          <UButton
-            label="Retrain now"
-            :disabled="!hasCalls || starting !== null"
-            :loading="starting === 'full'"
-            data-testid="retrain-now"
-            @click="start('full')"
-          />
-          <UButton
-            label="Refresh forecast"
-            color="neutral"
-            variant="outline"
-            :disabled="!hasCalls || starting !== null"
-            :loading="starting === 'forecast-only'"
-            data-testid="refresh-forecast"
-            @click="start('forecast-only')"
-          />
+        <div class="space-y-3">
+          <div class="bg-default flex flex-col gap-2 rounded-xl p-4">
+            <UButton
+              label="Retrain now"
+              icon="i-heroicons-arrow-path-20-solid"
+              class="self-start"
+              :disabled="!hasCalls || starting !== null"
+              :loading="starting === 'full'"
+              data-testid="retrain-now"
+              @click="start('full')"
+            />
+            <p class="text-muted text-[13px]">
+              Fits a new model on all stored calls and keeps it only if it beats the simple
+              baseline. Takes a few minutes.
+            </p>
+          </div>
+          <div class="bg-default flex flex-col gap-2 rounded-xl p-4">
+            <UButton
+              label="Refresh forecast"
+              icon="i-heroicons-forward-20-solid"
+              color="neutral"
+              variant="soft"
+              class="self-start"
+              :disabled="!hasCalls || starting !== null"
+              :loading="starting === 'forecast-only'"
+              data-testid="refresh-forecast"
+              @click="start('forecast-only')"
+            />
+            <p class="text-muted text-[13px]">
+              Keeps the model in use and moves the forecast forward from the newest calls.
+            </p>
+          </div>
         </div>
-        <p class="text-xs text-gray-500 dark:text-gray-400">
-          Retrain fits a new model on all stored calls and keeps it only if it beats the simple
-          baseline. Refresh keeps the current model and moves the forecast forward.
-        </p>
+
         <UAlert
           v-if="notice"
           color="info"
           variant="subtle"
+          icon="i-heroicons-information-circle-20-solid"
           :title="notice"
           data-testid="run-notice"
         />
-        <UAlert v-if="problem" color="error" variant="subtle" :title="problem" />
-      </div>
-    </UCard>
+        <UAlert
+          v-if="problem"
+          color="error"
+          variant="subtle"
+          icon="i-heroicons-exclamation-triangle-20-solid"
+          :title="problem"
+        />
+      </section>
+    </div>
 
     <AdminRunsRunList :runs="overview?.runs ?? []" @open="detailId = $event" />
     <AdminRunsRunDetail :run-id="detailId" @close="detailId = null" />

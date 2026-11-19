@@ -1,27 +1,30 @@
 <script setup lang="ts">
   import type { RunStatus } from '#shared/types/api'
+  import type { StatusTone } from '../StatusChip.vue'
 
   // forecastWritten: a rejected FIRST model leaves nothing served, so nothing was kept.
   const props = defineProps<{ status: RunStatus; forecastWritten?: boolean | null }>()
 
-  type Color = 'success' | 'neutral' | 'warning' | 'error' | 'info'
-  const STATUS: Record<RunStatus, { label: string; color: Color }> = {
-    queued: { label: 'Running', color: 'info' },
-    running: { label: 'Running', color: 'info' },
-    succeeded: { label: 'Done', color: 'success' },
-    rejected: { label: 'Kept the previous model', color: 'warning' },
-    failed: { label: 'Failed', color: 'error' },
-    interrupted: { label: 'Interrupted', color: 'neutral' },
+  const STATUS: Record<RunStatus, { label: string; tone: StatusTone; busy?: boolean }> = {
+    queued: { label: 'Running', tone: 'info', busy: true },
+    running: { label: 'Running', tone: 'info', busy: true },
+    succeeded: { label: 'Done', tone: 'good' },
+    rejected: { label: 'Kept the previous model', tone: 'warn' },
+    failed: { label: 'Failed', tone: 'bad' },
+    interrupted: { label: 'Interrupted', tone: 'neutral' },
   }
   const shown = computed(() =>
     props.status === 'rejected' && props.forecastWritten === false
-      ? { label: 'Rejected, nothing served', color: 'warning' as const }
+      ? { label: 'Rejected, nothing served', tone: 'warn' as const, busy: false }
       : STATUS[props.status]
   )
 </script>
 
 <template>
-  <UBadge :color="shown.color" variant="subtle" data-testid="run-status">
-    {{ shown.label }}
-  </UBadge>
+  <AdminStatusChip
+    :tone="shown.tone"
+    :label="shown.label"
+    :busy="shown.busy"
+    data-testid="run-status"
+  />
 </template>

@@ -85,7 +85,6 @@ export const MAJOR_HOURS = new Set([0, 6, 12, 18])
 export const SL_MIN = 80
 export const SL_MAX = 95
 const SL_STANDARD = 90
-const SL_CURRENT = [80, 85] as const
 // above this heat level the numeral takes the deep-cell ink
 const DEEP_LEVEL = 0.6
 const THUMB_PX = 20
@@ -93,8 +92,8 @@ const THUMB_PX = 20
 // stylesheet). Above this the 24 hours always fit the panel; below it (phones) the grid
 // scrolls sideways instead.
 const GRID_PX = { date: 128, hour: 24, roster: 78, gap: 3, tourGap: 10 }
-// how long freshly loaded rows keep their fade-in class
-const ROW_FADE_MS = 700
+// how long the freshly loaded table keeps its single fade
+const ROW_FADE_MS = 300
 // tallest bar in the calls-per-hour strip
 const PROFILE_BAR_PX = 26
 // Day chart: above these many days the per-day numbers, then the labels, no longer fit.
@@ -209,7 +208,6 @@ export interface DayBarPatch {
   dv: string
   roster: string
   rec: string
-  top: boolean
   label: string
 }
 export interface DayListRowVm {
@@ -386,6 +384,9 @@ export function createConsoleState() {
     dayFocusTitle: 'One day, hour by hour',
     sheetTitle: 'Details',
     rowsFresh: false,
+    // Which preset the roster sliders match: the partner's current 4/4/6, our
+    // recommendation, or neither (shown as "Custom").
+    rosterPreset: 'current' as 'current' | 'recommended' | 'custom',
   })
   const grid = shallowRef<GridVm>({ tours: [], rows: [], minWidth: '' })
   const cells = shallowRef(new Map<string, CellVm>())
@@ -489,6 +490,16 @@ export function createConsoleState() {
     ctl.rosterO = String(r.Overnight)
     ctl.rosterD = String(r.Day)
     ctl.rosterE = String(r.Evening)
+    updateRosterPreset()
+  }
+  const sameRoster = (a: Roster, b: Roster) =>
+    a.Overnight === b.Overnight && a.Day === b.Day && a.Evening === b.Evening
+  function updateRosterPreset() {
+    const value = roster()
+    if (sameRoster(value, CURRENT_ROSTER)) ui.rosterPreset = 'current'
+    else if (judged.length > 0 && sameRoster(value, recommendedRoster()))
+      ui.rosterPreset = 'recommended'
+    else ui.rosterPreset = 'custom'
   }
   // Our recommended peak per shift over the loaded dates. Falls back to the current
   // value when the recommendation is undefined (efficiency 0).
@@ -527,8 +538,6 @@ export function createConsoleState() {
   })
   const at = (v: number) => (v - SL_MIN) / (SL_MAX - SL_MIN)
   const slMarks = {
-    bandLeft: along(at(SL_CURRENT[0])),
-    bandWidth: `calc((100% - ${THUMB_PX}px) * ${(at(SL_CURRENT[1]) - at(SL_CURRENT[0])).toFixed(4)})`,
     tickLeft: along(at(SL_STANDARD)),
   }
   function flashChanged(n: number) {
@@ -716,6 +725,7 @@ export function createConsoleState() {
     computedHours = next
     hourIndex = new Map(computedHours.map((h) => [hourKey(h.date, h.hour), h]))
     judged = judgeRoster(rollupShifts(cache.days, computedHours), store, c)
+    updateRosterPreset()
     repaint()
     renderSummary(c)
     renderDayFocus(c)
@@ -920,7 +930,6 @@ export function createConsoleState() {
       }
     })
     const top = topOf(rows)
-    const worst = Math.max(0, ...rows.map((r) => r.roster).filter((v): v is number => v !== null))
     const holidays = new Map(days.map((d) => [d.date, d.holiday]))
     const next = new Map<string, DayBarPatch>()
     rows.forEach((row) => {
@@ -929,8 +938,6 @@ export function createConsoleState() {
         dv: lostText(row.roster),
         roster: share(row.roster, top),
         rec: share(row.recommended, top),
-        // the worst day keeps its number, for scale
-        top: row.roster !== null && row.roster === worst,
         label:
           `${dayLabel(row.date)}${hol ? `, ${hol}` : ''}: ${lostText(row.calls)} calls. ` +
           `Hang-ups: ${lostText(row.roster)} with your roster, ${lostText(row.recommended)} as recommended.`,
@@ -1086,7 +1093,7 @@ export function createConsoleState() {
     const date = cache!.window.start
     ui.dayFocusTitle = `${longDate(date)}, hour by hour`
     dayFocus.value = buildFocus(
-      computedHours.filter((h) => h.date === date),
+      computedHours.filter((h) => h.date === date && inHours(h.hour)),
       roster(),
       c
     )
@@ -1429,6 +1436,7 @@ export function createConsoleState() {
     const v = input.value.trim()
     store.set(input.dataset.d!, input.dataset.s!, v === '' ? null : clampInt(v, 0, 99, null))
     judged = judgeRoster(rollupShifts(cache.days, computedHours), store, controls())
+    updateRosterPreset()
     patchShifts(judged)
     const cur = view.value
     if (cur && cur.type === 'day' && cur.date === input.dataset.d) renderSheet()

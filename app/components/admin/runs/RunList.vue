@@ -25,55 +25,55 @@
 </script>
 
 <template>
-  <UCard>
-    <template #header>
-      <h2 class="text-lg font-semibold">Recent runs</h2>
-    </template>
-    <p v-if="!runs.length" class="text-sm text-gray-600 dark:text-gray-300">No runs yet.</p>
+  <section class="tile space-y-4" aria-labelledby="runs-title">
+    <h2 id="runs-title" class="tile-title">Recent runs</h2>
+    <p v-if="!runs.length" class="text-muted text-sm">
+      No runs yet. A retrain starts by itself after an import, or with Retrain now.
+    </p>
     <div v-else class="relative overflow-x-auto">
-      <table class="w-full text-left text-sm" data-testid="run-list">
-        <thead class="text-gray-500 dark:text-gray-400">
+      <table class="data-table" data-testid="run-list">
+        <thead>
           <tr>
-            <th class="py-1 pr-4 font-medium">Run</th>
-            <th class="py-1 pr-4 font-medium">When</th>
-            <th class="py-1 pr-4 font-medium">Started by</th>
-            <th class="py-1 pr-4 font-medium">Kind</th>
-            <th class="py-1 pr-4 font-medium">Status</th>
-            <th class="py-1 pr-4 font-medium">Took</th>
-            <th class="min-w-64 py-1 pr-4 font-medium">Message</th>
-            <th class="py-1"><span class="sr-only">Details</span></th>
+            <th>Run</th>
+            <th>When</th>
+            <th>Started by</th>
+            <th>Kind</th>
+            <th>Status</th>
+            <th>Took</th>
+            <th class="min-w-64">Message</th>
+            <th><span class="sr-only">Details</span></th>
           </tr>
         </thead>
         <tbody>
-          <tr
-            v-for="run in runs"
-            :key="run.id"
-            class="border-t border-gray-100 dark:border-gray-800"
-          >
-            <td class="py-1 pr-4 tabular-nums">{{ run.id }}</td>
-            <td class="py-1 pr-4 whitespace-nowrap">{{ when(run.created_at) }}</td>
-            <td class="py-1 pr-4">
+          <tr v-for="run in runs" :key="run.id">
+            <td class="num text-[17px]">{{ run.id }}</td>
+            <td class="text-muted whitespace-nowrap">{{ when(run.created_at) }}</td>
+            <td>
               {{ TRIGGER[run.trigger] }}
               <span
                 v-if="run.requested_by && run.requested_by !== run.trigger"
-                class="text-gray-500 dark:text-gray-400"
+                class="text-muted block text-xs"
                 >({{ run.requested_by }})</span
               >
             </td>
-            <td class="py-1 pr-4">{{ run.mode === 'full' ? 'Retrain' : 'Forecast refresh' }}</td>
-            <td class="py-1 pr-4">
+            <td class="whitespace-nowrap">
+              {{ run.mode === 'full' ? 'Retrain' : 'Forecast refresh' }}
+            </td>
+            <td>
               <AdminRunsStatusBadge :status="run.status" :forecast-written="run.forecast_written" />
             </td>
-            <td class="py-1 pr-4 whitespace-nowrap tabular-nums">
+            <td class="whitespace-nowrap">
               {{ duration(run.started_at ?? run.created_at, run.finished_at) }}
             </td>
-            <td class="min-w-64 py-1 pr-4">{{ run.message }}</td>
-            <td class="py-1 text-right">
+            <td class="text-toned min-w-64">{{ run.message }}</td>
+            <td class="text-right">
               <UButton
                 size="xs"
                 color="neutral"
-                variant="outline"
+                variant="soft"
+                class="bg-default"
                 label="Details"
+                trailing-icon="i-heroicons-chevron-right-16-solid"
                 @click="$emit('open', run.id)"
               />
             </td>
@@ -81,5 +81,5 @@
         </tbody>
       </table>
     </div>
-  </UCard>
+  </section>
 </template>

@@ -71,16 +71,18 @@
           <AdminRunsStatusBadge :status="run.status" :forecast-written="run.forecast_written" />
           <span>{{ run.message }}</span>
         </div>
-        <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2">
-          <dt class="text-gray-500 dark:text-gray-400">Created</dt>
+        <dl
+          class="bg-elevated grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2.5 rounded-xl p-4"
+        >
+          <dt class="text-muted">Created</dt>
           <dd>{{ when(run.created_at) }}</dd>
-          <dt class="text-gray-500 dark:text-gray-400">Started</dt>
+          <dt class="text-muted">Started</dt>
           <dd>{{ when(run.started_at) }}</dd>
-          <dt class="text-gray-500 dark:text-gray-400">Finished</dt>
+          <dt class="text-muted">Finished</dt>
           <dd>{{ when(run.finished_at) }}</dd>
-          <dt class="text-gray-500 dark:text-gray-400">Took</dt>
+          <dt class="text-muted">Took</dt>
           <dd>{{ runDuration(run) }}</dd>
-          <dt class="text-gray-500 dark:text-gray-400">Calls read</dt>
+          <dt class="text-muted">Calls read</dt>
           <dd>
             <template v-if="run.calls_count !== null">
               {{ run.calls_count.toLocaleString('en-US') }} ({{ run.data_start }} to
@@ -88,21 +90,21 @@
             </template>
             <template v-else>–</template>
           </dd>
-          <dt class="text-gray-500 dark:text-gray-400">Forecast covers</dt>
+          <dt class="text-muted">Forecast covers</dt>
           <dd>
             <template v-if="run.horizon_start"
               >{{ run.horizon_start }} to {{ run.horizon_end }}</template
             >
             <template v-else>–</template>
           </dd>
-          <dt class="text-gray-500 dark:text-gray-400">New model</dt>
+          <dt class="text-muted">New model</dt>
           <dd>{{ run.trained === null ? '–' : run.trained ? 'Yes' : 'No' }}</dd>
-          <dt class="text-gray-500 dark:text-gray-400">Exit code</dt>
+          <dt class="text-muted">Exit code</dt>
           <dd>{{ run.exit_code ?? '–' }}</dd>
         </dl>
 
         <div v-if="run.gate">
-          <h3 class="mb-2 font-semibold">
+          <h3 class="mb-2 text-[15px] font-semibold">
             Model against the simple baseline:
             {{
               run.gate.passed
@@ -112,29 +114,25 @@
                   : 'not better, and there was no previous model'
             }}
           </h3>
-          <p class="mb-2 text-gray-500 dark:text-gray-400">
+          <p class="text-muted mb-3">
             {{ run.gate.origins }} backtests from {{ run.gate.first_origin }} to
             {{ run.gate.last_origin }}.
           </p>
-          <table class="w-full text-left" data-testid="gate-table">
-            <thead class="text-gray-500 dark:text-gray-400">
+          <table class="data-table" data-testid="gate-table">
+            <thead class="text-muted">
               <tr>
-                <th class="py-1 pr-4 font-medium">Measure</th>
-                <th class="py-1 pr-4 text-right font-medium">Model</th>
-                <th class="py-1 text-right font-medium">Simple baseline</th>
+                <th>Measure</th>
+                <th class="text-right">Model</th>
+                <th class="text-right">Simple baseline</th>
               </tr>
             </thead>
             <tbody>
-              <tr
-                v-for="metric in METRICS"
-                :key="metric.key"
-                class="border-t border-gray-100 dark:border-gray-800"
-              >
-                <td class="py-1 pr-4">{{ metric.label }}</td>
-                <td class="py-1 pr-4 text-right tabular-nums">
+              <tr v-for="metric in METRICS" :key="metric.key">
+                <td>{{ metric.label }}</td>
+                <td class="text-right">
                   {{ format(run.gate.model[metric.key], metric.percent) }}
                 </td>
-                <td class="py-1 text-right tabular-nums">
+                <td class="text-right">
                   {{ format(run.gate.naive[metric.key], metric.percent) }}
                 </td>
               </tr>
@@ -143,9 +141,9 @@
         </div>
 
         <div>
-          <h3 class="mb-2 font-semibold">Output (last part)</h3>
+          <h3 class="mb-2 text-[15px] font-semibold">Output (last part)</h3>
           <pre
-            class="max-h-96 overflow-auto rounded-md bg-gray-50 p-3 text-xs break-all whitespace-pre-wrap dark:bg-gray-800"
+            class="bg-elevated max-h-96 overflow-auto rounded-xl p-4 text-xs leading-relaxed break-all whitespace-pre-wrap"
             data-testid="log-tail"
             >{{ run.log_tail || 'No output.' }}</pre>
         </div>

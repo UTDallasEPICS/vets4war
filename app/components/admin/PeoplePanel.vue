@@ -90,15 +90,15 @@
 
 <template>
   <div class="space-y-6">
-    <UCard>
-      <template #header>
-        <h2 class="text-lg font-semibold">Add person</h2>
-        <p class="text-sm text-gray-500 dark:text-gray-400">
+    <section class="tile space-y-5" aria-labelledby="add-person-title">
+      <div class="space-y-1">
+        <h2 id="add-person-title" class="tile-title">Add person</h2>
+        <p class="text-muted text-sm">
           Only people on this list can sign in. They get a sign-in code by email.
         </p>
-      </template>
+      </div>
       <AdminPeopleAddPersonForm @added="load" />
-    </UCard>
+    </section>
 
     <UAlert
       v-if="loadError"
@@ -108,65 +108,82 @@
       :description="loadError"
     />
 
-    <p v-if="loading" class="text-sm text-gray-500 dark:text-gray-400">Loading people...</p>
+    <p v-if="loading" class="tile text-muted text-sm">Loading people…</p>
     <!-- Rendered only in the browser, after the list arrived: the list is fetched on mount,
          and an empty server-rendered table does not hydrate cleanly. -->
-    <UTable v-else :data="people" :columns="columns" class="w-full">
-      <template #email-cell="{ row }">
-        <!-- The table's cells do not wrap, so on a phone the note under the admin's own
+    <section v-else class="tile space-y-2" aria-labelledby="people-title">
+      <h2 id="people-title" class="tile-title">
+        People
+        <span class="text-muted ml-1 text-sm font-normal">{{ people.length }}</span>
+      </h2>
+      <UTable
+        :data="people"
+        :columns="columns"
+        class="w-full"
+        :ui="{
+          thead: '[&>tr]:after:bg-transparent',
+          th: 'px-0 pr-4 py-2.5 text-xs font-medium text-muted',
+          td: 'px-0 pr-4 py-3 text-[13px] text-default border-t border-accented',
+          tbody: 'divide-y-0',
+        }"
+      >
+        <template #email-cell="{ row }">
+          <!-- The table's cells do not wrap, so on a phone the note under the admin's own
              address ran past the edge of the table's scrolling box and could not be
              read. Below `sm` this cell has a width of its own and wraps (a long address
              breaks too); the other columns are reached by scrolling the box sideways,
              as in the uploads and runs tables. -->
-        <div
-          class="max-w-64 min-w-48 break-words whitespace-normal sm:max-w-none sm:whitespace-nowrap"
-          data-testid="person-email"
-        >
-          <div class="font-medium">{{ row.original.email }}</div>
-          <div v-if="isMe(row.original)" class="text-xs text-gray-500 dark:text-gray-400">
-            This is you: you cannot remove yourself or your own admin access.
-          </div>
-        </div>
-      </template>
-      <template #role-cell="{ row }">
-        <div class="flex items-center gap-2">
-          <UBadge
-            :color="row.original.role === 'admin' ? 'primary' : 'neutral'"
-            variant="subtle"
-            :label="row.original.role === 'admin' ? 'Admin' : 'Viewer'"
-          />
-          <USelect
-            :model-value="row.original.role"
-            :items="ROLE_ITEMS"
-            :disabled="isMe(row.original) || pendingId === row.original.id"
-            :aria-label="`Role of ${row.original.email}`"
-            size="sm"
-            class="w-28"
-            @update:model-value="(role) => changeRole(row.original, role as PersonRow['role'])"
-          />
-        </div>
-      </template>
-      <template #email_verified-cell="{ row }">
-        {{ row.original.email_verified ? 'Yes' : 'Not yet' }}
-      </template>
-      <template #created_at-cell="{ row }">
-        {{ row.original.created_at.slice(0, 10) }}
-      </template>
-      <template #actions-cell="{ row }">
-        <div class="flex items-center justify-end gap-2">
-          <UButton
-            color="error"
-            variant="ghost"
-            icon="i-heroicons-trash-20-solid"
-            :aria-label="`Remove ${row.original.email}`"
-            :disabled="isMe(row.original) || pendingId === row.original.id"
-            @click="removing = row.original"
+          <div
+            class="max-w-64 min-w-48 break-words whitespace-normal sm:max-w-none sm:whitespace-nowrap"
+            data-testid="person-email"
           >
-            Remove
-          </UButton>
-        </div>
-      </template>
-    </UTable>
+            <div class="font-medium">{{ row.original.email }}</div>
+            <div v-if="isMe(row.original)" class="text-muted text-xs">
+              This is you: you cannot remove yourself or your own admin access.
+            </div>
+          </div>
+        </template>
+        <template #role-cell="{ row }">
+          <div class="flex items-center gap-2">
+            <AdminStatusChip
+              :tone="row.original.role === 'admin' ? 'info' : 'neutral'"
+              :label="row.original.role === 'admin' ? 'Admin' : 'Viewer'"
+            />
+            <USelect
+              :model-value="row.original.role"
+              :items="ROLE_ITEMS"
+              :disabled="isMe(row.original) || pendingId === row.original.id"
+              :aria-label="`Role of ${row.original.email}`"
+              size="sm"
+              class="w-28"
+              @update:model-value="(role) => changeRole(row.original, role as PersonRow['role'])"
+            />
+          </div>
+        </template>
+        <template #email_verified-cell="{ row }">
+          <span :class="row.original.email_verified ? '' : 'text-muted'">
+            {{ row.original.email_verified ? 'Yes' : 'Not yet' }}
+          </span>
+        </template>
+        <template #created_at-cell="{ row }">
+          {{ row.original.created_at.slice(0, 10) }}
+        </template>
+        <template #actions-cell="{ row }">
+          <div class="flex items-center justify-end gap-2">
+            <UButton
+              color="error"
+              variant="soft"
+              icon="i-heroicons-trash-20-solid"
+              :aria-label="`Remove ${row.original.email}`"
+              :disabled="isMe(row.original) || pendingId === row.original.id"
+              @click="removing = row.original"
+            >
+              Remove
+            </UButton>
+          </div>
+        </template>
+      </UTable>
+    </section>
 
     <AdminPeopleRemovePersonModal
       :person="removing"

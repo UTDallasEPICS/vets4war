@@ -23,10 +23,7 @@
         v-for="bar in dayChart.bars"
         :key="bar.date"
         type="button"
-        :class="[
-          bar.cls,
-          { picked: bar.date === picked, top: dayChartPatch.get(bar.date)?.top === true },
-        ]"
+        :class="[bar.cls, { picked: bar.date === picked }]"
         :data-day="bar.date"
         :title="dayChartPatch.get(bar.date)?.label"
         :aria-label="dayChartPatch.get(bar.date)?.label"

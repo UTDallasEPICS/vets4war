@@ -1,19 +1,19 @@
 <script setup lang="ts">
   // The last uploads: file, who, when, status, days, and the run an import started.
   import type { UploadStatus, UploadSummary } from '#shared/types/api'
+  import type { StatusTone } from '../StatusChip.vue'
 
   defineProps<{ uploads: UploadSummary[] }>()
   defineEmits<{ open: [id: number]; discard: [id: number] }>()
 
-  type Color = 'success' | 'neutral' | 'warning' | 'error' | 'info'
-  const STATUS: Record<UploadStatus, { label: string; color: Color }> = {
-    parsing: { label: 'Reading', color: 'info' },
-    ready: { label: 'Checked, not imported', color: 'warning' },
-    invalid: { label: 'Cannot be imported', color: 'error' },
-    importing: { label: 'Importing', color: 'info' },
-    imported: { label: 'Imported', color: 'success' },
-    discarded: { label: 'Discarded', color: 'neutral' },
-    failed: { label: 'Could not be read', color: 'error' },
+  const STATUS: Record<UploadStatus, { label: string; tone: StatusTone; busy?: boolean }> = {
+    parsing: { label: 'Reading', tone: 'info', busy: true },
+    ready: { label: 'Checked, not imported', tone: 'warn' },
+    invalid: { label: 'Cannot be imported', tone: 'bad' },
+    importing: { label: 'Importing', tone: 'info', busy: true },
+    imported: { label: 'Imported', tone: 'good' },
+    discarded: { label: 'Discarded', tone: 'neutral' },
+    failed: { label: 'Could not be read', tone: 'bad' },
   }
   const DISCARDABLE: UploadStatus[] = ['ready', 'invalid', 'failed']
   const OPENABLE: UploadStatus[] = ['parsing', 'ready', 'invalid', 'failed']
@@ -22,72 +22,66 @@
 </script>
 
 <template>
-  <UCard>
-    <template #header>
-      <h2 class="text-lg font-semibold">Recent uploads</h2>
-    </template>
-    <p v-if="!uploads.length" class="text-sm text-gray-600 dark:text-gray-300">
-      No call data has been uploaded yet.
+  <section class="tile space-y-4" aria-labelledby="uploads-title">
+    <h2 id="uploads-title" class="tile-title">Recent uploads</h2>
+    <p v-if="!uploads.length" class="text-muted text-sm">
+      No call data has been uploaded yet. Load the call-records export above to start.
     </p>
     <div v-else class="relative overflow-x-auto">
-      <table class="w-full text-left text-sm" data-testid="upload-history">
-        <thead class="text-gray-500 dark:text-gray-400">
+      <table class="data-table" data-testid="upload-history">
+        <thead>
           <tr>
-            <th class="py-1 pr-4 font-medium">File</th>
-            <th class="py-1 pr-4 font-medium">By</th>
-            <th class="py-1 pr-4 font-medium">When</th>
-            <th class="py-1 pr-4 font-medium">Status</th>
-            <th class="py-1 pr-4 font-medium">Days</th>
-            <th class="py-1 pr-4 font-medium">Retrain</th>
-            <th class="py-1"><span class="sr-only">Actions</span></th>
+            <th>File</th>
+            <th>By</th>
+            <th>When</th>
+            <th>Status</th>
+            <th>Days</th>
+            <th>Retrain</th>
+            <th><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
-          <tr
-            v-for="upload in uploads"
-            :key="upload.id"
-            class="border-t border-gray-100 dark:border-gray-800"
-          >
-            <td class="max-w-80 min-w-48 py-1 pr-4 break-words">
+          <tr v-for="upload in uploads" :key="upload.id">
+            <td class="max-w-80 min-w-48 break-words">
               <button
                 v-if="OPENABLE.includes(upload.status)"
                 type="button"
-                class="text-left underline"
+                class="text-link text-left"
                 @click="$emit('open', upload.id)"
               >
                 {{ upload.filename }}
               </button>
-              <span v-else>{{ upload.filename }}</span>
+              <span v-else class="font-medium">{{ upload.filename }}</span>
             </td>
-            <td class="py-1 pr-4 whitespace-nowrap">{{ upload.uploaded_by }}</td>
-            <td class="py-1 pr-4 whitespace-nowrap">{{ when(upload.created_at) }}</td>
-            <td class="py-1 pr-4 whitespace-nowrap">
-              <UBadge :color="STATUS[upload.status].color" variant="subtle">
-                {{ STATUS[upload.status].label }}
-              </UBadge>
+            <td class="text-muted whitespace-nowrap">{{ upload.uploaded_by }}</td>
+            <td class="text-muted whitespace-nowrap">{{ when(upload.created_at) }}</td>
+            <td>
+              <AdminStatusChip
+                :tone="STATUS[upload.status].tone"
+                :label="STATUS[upload.status].label"
+                :busy="STATUS[upload.status].busy"
+              />
             </td>
-            <td class="py-1 pr-4 whitespace-nowrap tabular-nums">
+            <td class="whitespace-nowrap">
               <template v-if="upload.first_day">
                 {{ upload.first_day }} to {{ upload.last_day }}
               </template>
             </td>
-            <td class="py-1 pr-4 whitespace-nowrap">
-              <NuxtLink v-if="upload.run_id" to="/admin?tab=runs" class="underline">
+            <td class="whitespace-nowrap">
+              <NuxtLink v-if="upload.run_id" to="/admin?tab=runs" class="text-link">
                 Run {{ upload.run_id }}
               </NuxtLink>
-              <span
-                v-else-if="upload.status === 'imported'"
-                class="text-gray-500 dark:text-gray-400"
-              >
+              <span v-else-if="upload.status === 'imported'" class="text-muted">
                 Waiting for a retrain
               </span>
             </td>
-            <td class="py-1 text-right">
+            <td class="text-right">
               <UButton
                 v-if="DISCARDABLE.includes(upload.status)"
                 size="xs"
                 color="neutral"
-                variant="outline"
+                variant="soft"
+                class="bg-default"
                 label="Discard"
                 @click="$emit('discard', upload.id)"
               />
@@ -96,5 +90,5 @@
         </tbody>
       </table>
     </div>
-  </UCard>
+  </section>
 </template>

@@ -92,6 +92,12 @@
 :where(.v4w) .pill:active { transform: scale(0.97); }
 :where(.v4w) .pill.primary { background: var(--accent); color: var(--on-accent); }
 :where(.v4w) .pill.primary:hover { background: var(--accent-strong); }
+/* Not in the old stylesheet: the three exports share one menu, floating as glass. */
+:where(.v4w) .menu { position: relative; }
+:where(.v4w) .menu-list { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: 260px; padding: 6px; border-radius: var(--r-lg); display: flex; flex-direction: column; gap: 2px; }
+:where(.v4w) .menu-list button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: var(--s2) 10px; border: 0; border-radius: var(--r-md); background: transparent; cursor: pointer; text-align: left; font-size: 13px; font-weight: 500; }
+:where(.v4w) .menu-list button:hover, :where(.v4w) .menu-list button:focus-visible { background: var(--surface); }
+:where(.v4w) .menu-list .hint { font-size: 12px; font-weight: 400; color: var(--muted); }
 
 /* view switch: a range of dates, or one day laid out hour by hour */
 .v4w:not(.one-day) .day-only { display: none !important; }
@@ -129,8 +135,7 @@
 /* 0 to 20% efficiency is not actionable: hatched on the track */
 :where(.v4w) .range.caution::after { content: ""; position: absolute; left: 0; width: 20%; top: 50%; height: 4px; transform: translateY(-50%); border-radius: 2px 0 0 2px; pointer-events: none;
   background: repeating-linear-gradient(135deg, transparent 0 2px, var(--bg) 2px 3px); opacity: 0.6; }
-/* service-level marks: the band the line works in today, and 90% */
-:where(.v4w) .range .band { position: absolute; top: 50%; height: 12px; transform: translateY(-50%); border-radius: 6px; background: var(--warn-line); opacity: 0.32; pointer-events: none; }
+/* service-level mark: the 90% industry standard */
 :where(.v4w) .range .tick { position: absolute; top: 3px; bottom: 3px; width: 2px; border-radius: 1px; background: var(--fg); opacity: 0.5; pointer-events: none; }
 /* hours: two thumbs on one track */
 :where(.v4w) .range.dual input { position: absolute; inset: 0; pointer-events: none; }
@@ -202,8 +207,10 @@
 :where(.v4w) .card.ink .figs { gap: var(--s2) var(--s6); }
 :where(.v4w) .card.ink .pill { background: color-mix(in srgb, var(--ink-fg) 14%, transparent); color: var(--ink-fg); }
 :where(.v4w) .card.ink .pill:hover { background: color-mix(in srgb, var(--ink-fg) 24%, transparent); }
-:where(.v4w) .card.ink .pill.primary { background: var(--accent); color: var(--on-accent); }
-:where(.v4w) .card.ink .pill.primary:hover { background: var(--accent-strong); }
+:where(.v4w) .card.ink .pill.preset[aria-pressed="true"] { background: var(--ink-fg); color: var(--ink); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink-fg) 32%, transparent); }
+:where(.v4w) .card.ink .pill.preset[aria-pressed="true"]:hover { background: var(--ink-fg); }
+:where(.v4w) .roster-mode { display: inline-flex; align-items: center; height: 24px; padding: 0 var(--s2); border: 1px solid color-mix(in srgb, var(--ink-fg) 34%, transparent); border-radius: 999px; color: var(--muted); font-size: 11px; font-weight: 600; }
+:where(.v4w) .roster-mode[hidden] { display: none; }
 :where(.v4w) .shifts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s3) var(--s5); padding-top: var(--s4); border-top: 1px solid color-mix(in srgb, var(--ink-fg) 18%, transparent); margin-top: auto; }
 :where(.v4w) .shift label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; font-size: 13px; font-weight: 500; }
 :where(.v4w) .shift label small { font-size: 12px; font-weight: 400; color: var(--muted); white-space: nowrap; }
@@ -238,7 +245,7 @@
 :where(.v4w) .db { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 1px 3px; border: 0; border-radius: var(--r-sm); background: transparent; cursor: pointer; }
 :where(.v4w) .db:hover, :where(.v4w) .db.picked { background: var(--surface-2); }
 :where(.v4w) .db .dv { font-size: 11px; font-weight: 500; line-height: 1; white-space: nowrap; opacity: 0; transition: opacity 140ms ease; }
-:where(.v4w) .db.top .dv, :where(.v4w) .db:hover .dv, :where(.v4w) .db:focus-visible .dv, :where(.v4w) .db.picked .dv { opacity: 1; }
+:where(.v4w) .db:hover .dv, :where(.v4w) .db:focus-visible .dv, :where(.v4w) .db.picked .dv { opacity: 1; }
 :where(.v4w) .db .track { flex: 1; width: 100%; display: flex; align-items: flex-end; justify-content: center; gap: 2px; }
 :where(.v4w) .db .track i { display: block; width: min(40%, 14px); min-height: 2px; border-radius: 3px 3px 0 0; background: var(--fg); transition: height var(--t-bar) var(--ease); }
 :where(.v4w) .db .track i.b-rec { background: var(--accent); }
@@ -331,7 +338,7 @@
 :where(.v4w) .legend .sw.own { background: var(--surface); box-shadow: inset 0 0 0 1.5px var(--fg); }
 :where(.v4w) .legend b { color: var(--fg); font-weight: 600; }
 
-:where(.v4w) .grid-scroll { container-type: inline-size; overflow: auto; max-height: max(420px, calc(100vh - 128px)); user-select: none; -webkit-user-select: none; border-top: 1px solid var(--line); }
+:where(.v4w) .grid-scroll { container-type: inline-size; overflow: auto; max-height: max(420px, calc(100vh - 128px)); user-select: none; -webkit-user-select: none; }
 :where(.v4w) table.grid { border-collapse: separate; border-spacing: 3px; width: 100%; table-layout: fixed; }
 :where(.v4w) .grid col.c-date { width: 140px; }
 :where(.v4w) .grid col.c-roster { width: 86px; }
@@ -541,7 +548,7 @@
 :where(.v4w) .reveal { opacity: 0; }
 .v4w.ready .reveal { opacity: 1; animation: rise 560ms var(--ease) both; animation-delay: calc(var(--i, 0) * 70ms); }
 .v4w.ready .card.ink.reveal { animation: rise 560ms var(--ease) both, glow-sweep 1600ms cubic-bezier(0.2, 0.7, 0.2, 1) 120ms both; }
-:where(.v4w) #rows.fresh tr { animation: fade 320ms ease-out both; animation-delay: calc(min(var(--r, 0), 16) * 18ms + 200ms); }
+:where(.v4w) #rows.fresh { animation: fade 220ms ease-out both; }
 @media (prefers-reduced-motion: reduce) { :where(.v4w) *, :where(.v4w) *::before, :where(.v4w) *::after { transition: none !important; animation: none !important; } }
 
 /* ---- Element defaults the old page relied on --------------------------------------

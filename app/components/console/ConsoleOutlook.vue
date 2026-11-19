@@ -5,6 +5,7 @@
   import type { ShiftName } from '#shared/types/api'
 
   const {
+    ui,
     ctl,
     feedback,
     rosterStat,
@@ -31,10 +32,19 @@
       <header class="card-head">
         <h2>With your roster</h2>
         <div class="card-actions">
+          <span
+            class="roster-mode"
+            id="rosterMode"
+            role="status"
+            aria-live="polite"
+            :hidden="ui.rosterPreset !== 'custom'"
+            >Custom</span
+          >
           <button
             type="button"
-            class="pill"
+            class="pill preset"
             id="rosterReal"
+            :aria-pressed="ui.rosterPreset === 'current'"
             title="Back to what the partner actually staffed Oct 14-20 2026"
             @click="useCurrent"
           >
@@ -42,8 +52,9 @@
           </button>
           <button
             type="button"
-            class="pill primary"
+            class="pill preset"
             id="rosterRec"
+            :aria-pressed="ui.rosterPreset === 'recommended'"
             title="Set each shift to our recommended peak for the selected dates (capped)"
             @click="useRecommended"
           >

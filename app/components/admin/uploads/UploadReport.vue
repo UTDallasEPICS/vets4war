@@ -1,6 +1,7 @@
 <script setup lang="ts">
   // What a checked file holds and what importing it would do, day by day.
   import type { DayStatus, UploadDetail } from '#shared/types/api'
+  import type { StatusTone } from '../StatusChip.vue'
 
   const props = defineProps<{ upload: UploadDetail }>()
 
@@ -58,10 +59,10 @@
   })
   const grouped = computed(() => lines.value.length < report.value.days.length)
 
-  const STATUS: Record<DayStatus, { label: string; color: 'success' | 'neutral' | 'warning' }> = {
-    new: { label: 'New', color: 'success' },
-    identical: { label: 'Already loaded', color: 'neutral' },
-    conflict: { label: 'Different', color: 'warning' },
+  const STATUS: Record<DayStatus, { label: string; tone: StatusTone }> = {
+    new: { label: 'New', tone: 'good' },
+    identical: { label: 'Already loaded', tone: 'neutral' },
+    conflict: { label: 'Different', tone: 'warn' },
   }
   const number = (n: number) => n.toLocaleString('en-US')
 </script>
@@ -71,26 +72,26 @@
     <!-- A file refused while it was read has no days to count: zeros would mislead. -->
     <dl
       v-if="report.days.length"
-      class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4"
+      class="grid grid-cols-2 gap-2 lg:grid-cols-4"
       data-testid="report-summary"
     >
-      <div>
-        <dt class="text-gray-500 dark:text-gray-400">First day</dt>
-        <dd class="font-medium">{{ report.summary.first_day ?? '–' }}</dd>
+      <div class="bg-default space-y-2 rounded-xl p-4">
+        <dt class="stat-label">First day</dt>
+        <dd class="num text-[22px]">{{ report.summary.first_day ?? '–' }}</dd>
       </div>
-      <div>
-        <dt class="text-gray-500 dark:text-gray-400">Last day</dt>
-        <dd class="font-medium">{{ report.summary.last_day ?? '–' }}</dd>
+      <div class="bg-default space-y-2 rounded-xl p-4">
+        <dt class="stat-label">Last day</dt>
+        <dd class="num text-[22px]">{{ report.summary.last_day ?? '–' }}</dd>
       </div>
-      <div>
-        <dt class="text-gray-500 dark:text-gray-400">Calls in the file</dt>
-        <dd class="font-medium" data-testid="total-rows">
+      <div class="bg-default space-y-2 rounded-xl p-4">
+        <dt class="stat-label">Calls in the file</dt>
+        <dd class="num text-[22px]" data-testid="total-rows">
           {{ number(report.summary.total_rows) }}
         </dd>
       </div>
-      <div>
-        <dt class="text-gray-500 dark:text-gray-400">Days</dt>
-        <dd class="font-medium" data-testid="day-counts">
+      <div class="bg-default space-y-2 rounded-xl p-4">
+        <dt class="stat-label">Days</dt>
+        <dd class="text-[13px] leading-snug font-medium" data-testid="day-counts">
           {{ report.summary.new_days }} new, {{ report.summary.identical_days }} already loaded,
           {{ report.summary.conflict_days }} different
         </dd>
@@ -102,6 +103,7 @@
       :key="issue.code + issue.message"
       color="error"
       variant="subtle"
+      icon="i-heroicons-x-circle-20-solid"
       :title="issue.message"
       data-testid="file-error"
     />
@@ -110,48 +112,48 @@
       :key="warning"
       color="warning"
       variant="subtle"
+      icon="i-heroicons-exclamation-triangle-20-solid"
       :title="warning"
       data-testid="file-warning"
     />
 
-    <div v-if="report.days.length" class="relative overflow-x-auto">
-      <table class="w-full text-left text-sm" data-testid="day-table">
-        <thead class="text-gray-500 dark:text-gray-400">
-          <tr>
-            <th class="py-1 pr-4 font-medium">Date</th>
-            <th class="py-1 pr-4 text-right font-medium">Calls in the file</th>
-            <th class="py-1 pr-4 text-right font-medium">Calls stored</th>
-            <th class="py-1 font-medium">What happens</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="line in lines"
-            :key="line.key"
-            class="border-t border-gray-100 dark:border-gray-800"
-          >
-            <td class="py-1 pr-4 whitespace-nowrap tabular-nums">
-              <template v-if="line.days === 1">{{ line.first }}</template>
-              <template v-else>
-                {{ line.first }} to {{ line.last }}
-                <span class="text-gray-500 dark:text-gray-400">({{ number(line.days) }} days)</span>
-              </template>
-            </td>
-            <td class="py-1 pr-4 text-right tabular-nums">{{ number(line.rows) }}</td>
-            <td class="py-1 pr-4 text-right tabular-nums">{{ number(line.existing) }}</td>
-            <td class="py-1">
-              <UBadge :color="STATUS[line.status].color" variant="subtle">
-                {{ STATUS[line.status].label }}
-              </UBadge>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-if="grouped" class="mt-2 text-sm text-gray-600 dark:text-gray-300">
+    <div v-if="report.days.length" class="bg-default rounded-xl px-4 pt-4 pb-2">
+      <div class="relative max-h-[420px] overflow-auto">
+        <table class="data-table" data-testid="day-table">
+          <thead class="bg-default sticky top-0">
+            <tr>
+              <th>Date</th>
+              <th class="text-right">Calls in the file</th>
+              <th class="text-right">Calls stored</th>
+              <th>What happens</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="line in lines" :key="line.key">
+              <td class="whitespace-nowrap">
+                <template v-if="line.days === 1">{{ line.first }}</template>
+                <template v-else>
+                  {{ line.first }} to {{ line.last }}
+                  <span class="text-muted">({{ number(line.days) }} days)</span>
+                </template>
+              </td>
+              <td class="text-right">{{ number(line.rows) }}</td>
+              <td class="text-right">{{ number(line.existing) }}</td>
+              <td>
+                <AdminStatusChip
+                  :tone="STATUS[line.status].tone"
+                  :label="STATUS[line.status].label"
+                />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p v-if="grouped" class="text-muted flex flex-wrap items-center gap-x-1 py-2 text-[13px]">
         Days in a row with the same outcome are shown as one line.
         <UButton
           variant="link"
-          class="px-1"
+          class="px-1 text-[13px]"
           :label="`Show all ${number(report.days.length)} days`"
           data-testid="show-all-days"
           @click="showAll = true"

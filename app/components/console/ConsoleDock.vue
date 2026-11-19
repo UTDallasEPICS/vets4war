@@ -135,15 +135,11 @@
         >
       </div>
     </div>
-    <div
-      class="ctl"
-      title="Amber band: where the line performs today (80 to 85%). Tick: the 90% industry standard."
-    >
+    <div class="ctl" title="Tick: the 90% industry standard.">
       <label class="name" for="sl">Calls answered in time</label>
       <div class="ctl-row">
         <div class="range" id="slTrack">
-          <span class="band" :style="{ left: slMarks.bandLeft, width: slMarks.bandWidth }"></span
-          ><span class="tick" :style="{ left: slMarks.tickLeft }"></span
+          <span class="tick" :style="{ left: slMarks.tickLeft }"></span
           ><input
             type="range"
             id="sl"

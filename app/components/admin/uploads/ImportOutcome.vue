@@ -85,6 +85,7 @@
     :color="color"
     variant="subtle"
     title="Imported"
+    icon="i-heroicons-check-circle-20-solid"
     close
     data-testid="import-outcome"
     @update:open="$emit('close')"
@@ -106,7 +107,7 @@
         <li v-else-if="!followed" data-testid="retrain-queued">
           A retrain was already running (run {{ run.id }}); another one starts when it ends and
           reads this file.
-          <NuxtLink to="/admin?tab=runs" class="underline">Forecast runs</NuxtLink>
+          <NuxtLink to="/admin?tab=runs" class="text-link underline">Forecast runs</NuxtLink>
         </li>
         <li
           v-else
@@ -120,7 +121,9 @@
             >. <span v-if="followed.message"> {{ followed.message }}</span
             >{{ ' ' }}
           </template>
-          <NuxtLink to="/admin?tab=runs" class="underline">Follow it under Forecast runs</NuxtLink>.
+          <NuxtLink to="/admin?tab=runs" class="text-link underline"
+            >Follow it under Forecast runs</NuxtLink
+          >.
         </li>
       </ul>
     </template>

@@ -96,12 +96,17 @@
 </script>
 
 <template>
-  <div v-if="status" class="space-y-2 text-sm" data-testid="forecast-state">
-    <p v-if="serving">{{ serving.text }}</p>
+  <div v-if="status" class="space-y-3 text-sm" data-testid="forecast-state">
+    <p v-if="serving" class="text-toned leading-relaxed">{{ serving.text }}</p>
     <UAlert
       v-if="note"
       :color="note.tone"
       variant="subtle"
+      :icon="
+        note.tone === 'warning'
+          ? 'i-heroicons-exclamation-triangle-20-solid'
+          : 'i-heroicons-information-circle-20-solid'
+      "
       :title="note.text"
       data-testid="forecast-note"
     />

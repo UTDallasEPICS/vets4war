@@ -8,6 +8,13 @@
   ]
   type Tab = 'uploads' | 'runs' | 'people'
 
+  const INTRO: Record<Tab, string> = {
+    uploads:
+      'Load the call-records export. You see what each day would do before anything changes.',
+    runs: 'The model behind the forecast: retrain it on the stored calls, or move the forecast forward.',
+    people: 'Who can sign in, and who can manage call data, runs and people.',
+  }
+
   const route = useRoute()
   const router = useRouter()
 
@@ -25,11 +32,28 @@
 </script>
 
 <template>
-  <UContainer class="py-8">
-    <h1 class="mb-6 text-2xl font-bold">Admin</h1>
-    <UTabs v-model="tab" :items="TABS" :content="false" class="mb-6" />
+  <div class="space-y-6">
+    <div class="flex flex-wrap items-end justify-between gap-4">
+      <div class="min-w-0 space-y-1.5">
+        <h1 class="page-title">Admin</h1>
+        <p class="text-muted text-sm">{{ INTRO[tab] }}</p>
+      </div>
+      <UTabs
+        v-model="tab"
+        :items="TABS"
+        :content="false"
+        color="neutral"
+        :ui="{
+          root: 'w-auto',
+          list: 'w-auto rounded-full bg-elevated p-[3px]',
+          indicator: 'rounded-full bg-inverted shadow-none inset-y-[3px]',
+          trigger:
+            'grow-0 h-[30px] rounded-full px-4 text-[13px] font-medium text-muted hover:text-default data-[state=active]:text-inverted',
+        }"
+      />
+    </div>
     <AdminUploadsPanel v-if="tab === 'uploads'" />
     <AdminRunsPanel v-else-if="tab === 'runs'" />
     <AdminPeoplePanel v-else />
-  </UContainer>
+  </div>
 </template>

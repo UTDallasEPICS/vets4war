@@ -1,2 +1,223 @@
 @import 'tailwindcss';
 @import '@nuxt/ui';
+
+/* One look for the whole app. The staffing console (console.css) set it first: a white
+   sheet, black type, one pale grey step for tiles, one blue, colour only for meaning.
+   These tokens give the sign-in and admin pages the same system through Nuxt UI's
+   variables, so its components (buttons, inputs, tables, alerts) match the console.
+
+   Instrument Sans is loaded from Google Fonts in app.vue, with the width axis the
+   condensed numerals use. This face covers one code point no text uses, so @nuxt/fonts
+   leaves the family alone (same guard as console.css). */
+@font-face {
+  font-family: 'Instrument Sans';
+  src: local('Instrument Sans');
+  font-stretch: 50%;
+  font-weight: 1;
+  unicode-range: U+10FFFF;
+}
+
+@theme {
+  --font-sans:
+    'Instrument Sans', -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+:root {
+  --ui-primary: #1a4be0;
+  --ui-secondary: #111111;
+  --ui-success: #17713f;
+  --ui-info: #1a4be0;
+  --ui-warning: #9a5b00;
+  --ui-error: #c5301c;
+
+  --ui-text-dimmed: #9a9a9a;
+  --ui-text-muted: #6b6b6b;
+  --ui-text-toned: #3d3d3d;
+  --ui-text: #111111;
+  --ui-text-highlighted: #111111;
+  --ui-text-inverted: #ffffff;
+
+  --ui-bg: #ffffff;
+  --ui-bg-muted: #f4f4f4;
+  --ui-bg-elevated: #f4f4f4;
+  --ui-bg-accented: #e9e9e9;
+  --ui-bg-inverted: #111111;
+
+  --ui-border: #e6e6e6;
+  --ui-border-muted: #ececec;
+  --ui-border-accented: #cfcfcf;
+  --ui-border-inverted: #111111;
+
+  --ui-radius: 0.5625rem;
+
+  /* The console's own names, for the few places that need them directly. */
+  --v4w-accent-soft: #e6ecfd;
+  --v4w-good-soft: #e3f2e9;
+  --v4w-warn-soft: #fbefd9;
+  --v4w-bad-soft: #fbe6e2;
+  --v4w-r-xl: 18px;
+}
+
+.dark {
+  --ui-primary: #7d9dff;
+  --ui-secondary: #ffffff;
+  --ui-success: #4ade80;
+  --ui-info: #7d9dff;
+  --ui-warning: #fbbf24;
+  --ui-error: #ff7a66;
+
+  --ui-text-dimmed: #6f6f6f;
+  --ui-text-muted: #9a9a9a;
+  --ui-text-toned: #cfcfcf;
+  --ui-text: #ffffff;
+  --ui-text-highlighted: #ffffff;
+  --ui-text-inverted: #111111;
+
+  --ui-bg: #111111;
+  --ui-bg-muted: #1c1c1c;
+  --ui-bg-elevated: #1c1c1c;
+  --ui-bg-accented: #282828;
+  --ui-bg-inverted: #ffffff;
+
+  --ui-border: #2a2a2a;
+  --ui-border-muted: #222222;
+  --ui-border-accented: #404040;
+  --ui-border-inverted: #ffffff;
+
+  --v4w-accent-soft: rgba(125, 157, 255, 0.18);
+  --v4w-good-soft: rgba(74, 222, 128, 0.14);
+  --v4w-warn-soft: rgba(251, 191, 36, 0.14);
+  --v4w-bad-soft: rgba(255, 122, 102, 0.16);
+}
+
+@layer base {
+  body {
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer components {
+  /* Large numerals: slightly condensed and tight, the console's one type gesture. */
+  .num {
+    font-weight: 500;
+    font-stretch: 88%;
+    letter-spacing: -0.035em;
+    line-height: 1;
+  }
+
+  /* A page title in the console's voice. */
+  .page-title {
+    font-size: 28px;
+    font-weight: 600;
+    font-stretch: 92%;
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+  }
+
+  /* A tile: the console's grey card. Holds one question and its answer. */
+  .tile {
+    background: var(--ui-bg-elevated);
+    border-radius: var(--v4w-r-xl);
+    padding: 24px;
+    min-width: 0;
+  }
+  .tile-title {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+
+  /* The label under or over a figure. */
+  .stat-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ui-text-muted);
+  }
+
+  /* Tables inside tiles: quiet header, hairlines between rows, numbers aligned. */
+  .data-table {
+    width: 100%;
+    text-align: left;
+    font-size: 13px;
+    border-collapse: collapse;
+  }
+  .data-table thead th {
+    padding: 0 16px 10px 0;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ui-text-muted);
+    white-space: nowrap;
+  }
+  .data-table tbody td {
+    padding: 11px 16px 11px 0;
+    border-top: 1px solid var(--ui-border-accented);
+    vertical-align: middle;
+  }
+  .data-table th:last-child,
+  .data-table td:last-child {
+    padding-right: 0;
+  }
+
+  /* Status: a dot and a word on a soft tint, as the console's data badge. */
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    background: var(--ui-bg-accented);
+    color: var(--ui-text-toned);
+  }
+  .status::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: none;
+  }
+  .status.is-good {
+    background: var(--v4w-good-soft);
+    color: var(--ui-success);
+  }
+  .status.is-warn {
+    background: var(--v4w-warn-soft);
+    color: var(--ui-warning);
+  }
+  .status.is-bad {
+    background: var(--v4w-bad-soft);
+    color: var(--ui-error);
+  }
+  .status.is-info {
+    background: var(--v4w-accent-soft);
+    color: var(--ui-primary);
+  }
+  .status.is-busy::before {
+    animation: status-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes status-pulse {
+    50% {
+      opacity: 0.25;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .status.is-busy::before {
+      animation: none;
+    }
+  }
+
+  /* Inline links in prose: the accent, underlined on hover. */
+  .text-link {
+    color: var(--ui-primary);
+    font-weight: 500;
+    text-underline-offset: 3px;
+  }
+  .text-link:hover {
+    text-decoration: underline;
+  }
+}
