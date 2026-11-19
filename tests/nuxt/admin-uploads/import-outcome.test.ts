@@ -62,6 +62,8 @@ describe('ImportOutcome', () => {
     expect(ended).toContain('Retrain (run 4): Failed.')
     expect(ended).toContain('Cannot retrain: 1 recent day(s) have no calls at all.')
     expect(wrapper.text()).not.toContain('run 3')
+    // the import worked, the retrain did not: not shown in the success colour
+    expect(wrapper.find('[data-testid="import-outcome"]').classes().join(' ')).toContain('warning')
   })
 
   it('says a retrain is queued before the re-run has begun', async () => {

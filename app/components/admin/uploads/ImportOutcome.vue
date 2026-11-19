@@ -22,6 +22,12 @@
   // The run that reads this file: once known (the upload answers with it), else the one
   // this import started. A queued import has none until the re-run begins.
   const followed = ref<RunDetail | RunSummary | null>(props.queued ? null : props.run)
+  // The import itself succeeded; a retrain that then failed must not read as success.
+  const color = computed(() =>
+    followed.value && ['failed', 'interrupted'].includes(followed.value.status)
+      ? 'warning'
+      : 'success'
+  )
   const elapsed = ref(0)
   let timer: ReturnType<typeof setTimeout> | null = null
   let stopped = false
@@ -60,7 +66,7 @@
 
 <template>
   <UAlert
-    color="success"
+    :color="color"
     variant="subtle"
     title="Imported"
     close
