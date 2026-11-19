@@ -45,7 +45,12 @@ if (!pgUrl)
 const target = sqlitePath(process.env.DATABASE_URL?.trim() || 'file:./dev.db')
 
 // --- the SQLite side ------------------------------------------------------------------
-const file = new Database(target, { timeout: 15_000, fileMustExist: true })
+let file: Database.Database
+try {
+  file = new Database(target, { timeout: 15_000, fileMustExist: true })
+} catch {
+  fail('the SQLite file of DATABASE_URL does not exist. Run pnpm db:migrate first.')
+}
 file.pragma('foreign_keys = ON')
 const db = drizzle(file, { schema })
 const tables = new Set(
