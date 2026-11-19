@@ -195,3 +195,65 @@ def test_a_run_id_that_is_not_a_queued_row_is_refused_and_left_alone(db, status)
                 f"run {run_id} is {'succeeded' if status == 'queued-then-run' else status}, not queued")
     assert process.stderr.startswith(f"Cannot retrain: {expected}.")
     assert _rows(db, "SELECT * FROM forecast_runs") == before
+
+
+# Runs db.retrain in-process with one step wrapped, to stop it at a chosen point.
+# argv: <module.attribute to wrap> <what to do: "term-during" | "kill-inside"> <retrain args...>
+WRAPPED = """
+import os, signal, sys, threading
+from db import retrain, store
+target, action, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+module = {"retrain": retrain, "store": store}[target.split(".")[0]]
+name = target.split(".")[1]
+real = getattr(module, name)
+
+def wrapped(*a, **k):
+    if action == "term-during":
+        # SIGTERM arrives while the step runs (LightGBM's fit is mostly native code).
+        threading.Timer(0.2, os.kill, (os.getpid(), signal.SIGTERM)).start()
+        return real(*a, **k)
+    os.kill(os.getpid(), signal.SIGKILL)  # kill-inside: dies right here
+
+setattr(module, name, wrapped)
+raise SystemExit(retrain.main(args))
+"""
+FAST = ["--gate-origins", "2", "--workers", "1", "--today", TODAY, "--horizon-days", "30"]
+
+
+def _wrapped_run(path: Path, target: str, action: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-c", WRAPPED, target, action, "--db", str(path), *FAST],
+                          cwd=FORECAST_DIR, capture_output=True, text=True, timeout=600)
+
+
+def _served(path: Path) -> list:
+    return [_rows(path, f"SELECT * FROM {table} ORDER BY 1, 2") for table in
+            ("forecast_state", "model_artifacts", "forecast_hours", "forecast_cells")]
+
+
+def test_a_run_stopped_during_the_fit_writes_nothing(db):
+    process = _wrapped_run(db, "retrain.fit_model", "term-during")
+    assert process.returncode == -signal.SIGTERM, process.stderr
+    assert "level factor" not in process.stdout  # printed right after the fit: never reached
+    assert _rows(db, "SELECT status, message FROM forecast_runs") == [
+        ("failed", "Stopped by SIGTERM before it finished. Nothing new was written; "
+                   "the previous forecast is still in use.")]
+    assert _rows(db, "SELECT count(*) FROM model_artifacts") == [(0,)]
+
+
+def test_a_run_killed_inside_its_final_write_leaves_the_previous_forecast_whole(db):
+    first = subprocess.run([sys.executable, "-m", "db.retrain", "--db", str(db), *FAST],
+                           cwd=FORECAST_DIR, capture_output=True, text=True, timeout=600)
+    assert first.returncode == 0, first.stderr
+    before = _served(db)
+
+    # _prune_artifacts runs inside the write transaction, after every table was replaced.
+    killed = _wrapped_run(db, "store._prune_artifacts", "kill-inside")
+
+    assert killed.returncode == -signal.SIGKILL
+    assert _served(db) == before  # the next reader rolls the half-done write back
+    assert [status for (status,) in _rows(db, "SELECT status FROM forecast_runs ORDER BY id")] == \
+        ["succeeded", "running"]
+    again = subprocess.run([sys.executable, "-m", "db.retrain", "--db", str(db), *FAST],
+                           cwd=FORECAST_DIR, capture_output=True, text=True, timeout=600)
+    assert again.returncode == 0, again.stderr
+    assert _rows(db, "PRAGMA integrity_check") == [("ok",)]

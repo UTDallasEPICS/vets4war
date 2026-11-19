@@ -352,19 +352,38 @@ def test_a_rejected_first_model_writes_only_the_run_row(db, monkeypatch):
         assert _count(db, table) == 0
 
 
-def test_an_unexpected_error_exits_1_and_is_recorded(db, monkeypatch, capsys):
+def test_an_unexpected_error_exits_1_and_is_recorded_without_its_text(db, monkeypatch, capsys):
+    """The text of an error may quote the stored value it failed on (here a
+    call's start time): it reaches neither the run row nor the output."""
+    stored = "2026-05-04" + "T08:15:00"  # built here so the traceback's code line does not hold it
+
     def broken(*args, **kwargs):
-        raise RuntimeError("disk on fire")
+        raise ValueError(f"time data {stored!r} does not match format")
 
     monkeypatch.setattr(retrain, "forecast_frame", broken)
 
     code = _in_process(db)
 
     run = _rows(db, "SELECT * FROM forecast_runs")[0]
+    out = capsys.readouterr()
     assert code == 1
-    assert (run["status"], run["message"]) == ("failed", "Unexpected error: RuntimeError: disk on fire")
+    assert (run["status"], run["message"]) == (
+        "failed", "Unexpected error: ValueError (its text is not shown, as it may quote stored data; "
+                  "see where it happened in the output)")
     assert _count(db, "forecast_state") == 0 and _count(db, "model_artifacts") == 0
-    assert "Traceback" in capsys.readouterr().err
+    assert "Traceback" in out.err and "in broken" in out.err
+    assert "2026-05-04T08:15:00" not in out.err + out.out
+
+
+def test_a_database_error_keeps_its_text(db, monkeypatch):
+    def locked(*args, **kwargs):
+        raise store.DatabaseError("database is locked")
+
+    monkeypatch.setattr(retrain, "forecast_frame", locked)
+
+    assert _in_process(db) == 1
+    assert _rows(db, "SELECT message FROM forecast_runs")[0]["message"] == \
+        "Unexpected error: Error: database is locked"
 
 
 def test_an_import_landing_mid_run_does_not_change_what_the_run_read(db, monkeypatch):

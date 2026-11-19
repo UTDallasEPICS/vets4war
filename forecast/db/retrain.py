@@ -369,6 +369,25 @@ def _print_result(run_id: int | None, status: str, model_id: int | None, model_s
     print(f"{RESULT_PREFIX} {json.dumps(payload, separators=(',', ':'))}", flush=True)
 
 
+def _describe(error: Exception) -> str:
+    """The error's type, and its text only when that cannot quote stored data.
+
+    The message and the output reach the admin page. SQLite's own texts name
+    tables, columns and conditions, never values; any other text might quote
+    a value it failed on (a call's start time, say), so it is left out."""
+    name = type(error).__name__
+    if isinstance(error, store.DatabaseError):
+        return f"{name}: {error}"
+    return f"{name} (its text is not shown, as it may quote stored data; see where it happened in the output)"
+
+
+def _print_traceback(error: Exception) -> None:
+    """Where it happened (file, line, code), then _describe: no exception text."""
+    print("Traceback (most recent call last):", file=sys.stderr)
+    print("".join(traceback.format_tb(error.__traceback__)), end="", file=sys.stderr)
+    print(_describe(error), file=sys.stderr, flush=True)
+
+
 def _record_failure(conn, run_id: int | None, message: str) -> None:
     """Best effort: the run row is the report, but a broken database must not
     hide the original error."""
@@ -439,8 +458,8 @@ def _main(argv: list[str] | None) -> int:
                                           f"the previous forecast is still in use.")
         raise
     except Exception as error:  # noqa: BLE001  (reported on the run row, then exit 1)
-        traceback.print_exc()
-        _record_failure(conn, run_id, f"Unexpected error: {type(error).__name__}: {error}")
+        _print_traceback(error)
+        _record_failure(conn, run_id, f"Unexpected error: {_describe(error)}")
         _print_result(run_id or settings.run_id, "failed", None, None)
         return EXIT_UNEXPECTED
     finally:
