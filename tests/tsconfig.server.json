@@ -1,0 +1,22 @@
+{
+  // Type-checks every test and script that runs in Node the way `pnpm typecheck` checks
+  // the server: Nuxt's generated server config (Nitro types, #shared alias), widened to
+  // the node-environment tests, the parity tests, the test helpers and scripts/.
+  // `pnpm typecheck` itself only reaches tests/nuxt. (tests/unit/console is checked
+  // with the app config, tests/unit/shell with the node config: the files next to this.)
+  // Run through `pnpm typecheck:tests`; needs .nuxt/ (pnpm install creates it).
+  "extends": "../.nuxt/tsconfig.server.json",
+  "compilerOptions": { "noEmit": true },
+  "include": [
+    "../.nuxt/types/nitro-nuxt.d.ts",
+    "../.nuxt/types/nitro.d.ts",
+    "../server/**/*",
+    "../shared/**/*.d.ts",
+    "./unit/shared/**/*.ts",
+    "./server/**/*.ts",
+    "./parity/**/*.ts",
+    "./helpers/**/*.ts",
+    "../scripts/**/*.ts",
+    "../scripts/**/*.d.mts"
+  ]
+}

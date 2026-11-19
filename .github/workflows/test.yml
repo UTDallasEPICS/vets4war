@@ -41,5 +41,10 @@ jobs:
       - name: Type check
         run: pnpm typecheck
 
+      # The folders `pnpm typecheck` does not reach: the node-environment tests, the
+      # parity tests, the test helpers and scripts/.
+      - name: Type check the tests and scripts
+        run: pnpm typecheck:tests
+
       - name: Run tests
         run: pnpm test

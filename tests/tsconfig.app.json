@@ -1,0 +1,15 @@
+{
+  // Type-checks the console's unit tests the way `pnpm typecheck` checks the app:
+  // Nuxt's generated app config (browser libs, auto-imports, ~ and #shared aliases),
+  // widened to tests/unit/console. `pnpm typecheck` itself only reaches tests/nuxt.
+  // Run through `pnpm typecheck:tests`; needs .nuxt/ (pnpm install creates it).
+  "extends": "../.nuxt/tsconfig.app.json",
+  "compilerOptions": { "noEmit": true },
+  "include": [
+    "../.nuxt/nuxt.d.ts",
+    "../app/**/*",
+    "../shared/**/*.d.ts",
+    "../*.d.ts",
+    "./unit/console/**/*.ts"
+  ]
+}

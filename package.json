@@ -12,6 +12,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "typecheck": "nuxi typecheck",
+    "typecheck:tests": "vue-tsc --noEmit -p tests/tsconfig.app.json && vue-tsc --noEmit -p tests/tsconfig.server.json && vue-tsc --noEmit -p tests/tsconfig.node.json",
     "test": "vitest run --project unit --project nuxt",
     "test:watch": "vitest --project unit --project nuxt",
     "test:parity": "vitest run --project parity",
