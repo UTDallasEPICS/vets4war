@@ -30,7 +30,7 @@
 - `holidays.volume_multiplier` / `evening_multiplier` (filled in by a teammate) are NOT used as features: their origin is unknown and they may encode hold-out data.
 - One file per concern. Functions under 50 lines. Immutable style (return new frames).
 - No call-level data in git: caches live under `data/` (ignored).
-- Do not overwrite `models/volume_lgbm.txt` until the final training step. Backup of the current model: session scratchpad `pre_final_run/`.
+- Do not overwrite `models/volume_lgbm.txt` until the final training step. Backup of the current model: a folder outside the repository, `pre_final_run/`.
 - The dashboard server (`make serve`, port 8001, `--reload`) is running from this working tree and will reload on edits.
 
 ## Evaluation Protocol (fixed before any result is seen)

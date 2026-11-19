@@ -1,4 +1,4 @@
-// Parity rung P1 (PLAN.md section 12): the TypeScript staffing arithmetic equals
+// Parity rung P1 (docs/testing.md): the TypeScript staffing arithmetic equals
 // final-main's Python on final-main's own grid (tests/test_erlang_js.py), crossed with
 // both shift caps. Floats within 1e-9 (abs and rel), everything else exact.
 // Needs forecast/.venv (pnpm forecast:setup); without it this test fails, never skips.

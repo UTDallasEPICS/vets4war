@@ -1,4 +1,4 @@
-// POST /api/admin/uploads over real HTTP (review W3-9): a body sent without
+// POST /api/admin/uploads over real HTTP: a body sent without
 // Content-Length (chunked, as a proxy that streams request bodies forwards it) is read
 // and accepted; a chunked body that passes the limit is refused with 413 as soon as it
 // does; a declared length over the limit is refused before reading; a body longer than
@@ -192,7 +192,7 @@ describe('POST /api/admin/uploads', () => {
   })
 })
 
-describe('POST /api/admin/uploads: a hostile workbook (review N-2)', () => {
+describe('POST /api/admin/uploads: a hostile workbook', () => {
   it('one row of 200,000 unclosed <f> ends failed in well under a second, the server answering throughout', async () => {
     await settled()
     const book = handmadeWorkbook({

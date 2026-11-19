@@ -1,7 +1,7 @@
 // Where an upload's bytes wait while they are read: a private folder per upload in the
 // OS temp directory, named after the process that made it, so a process cleaning up at
-// start-up removes only what a stopped process left (review W3-8: another server on the
-// same host, or a dev server next to a preview, may be reading a file right now).
+// start-up removes only what a stopped process left (another server on the same host,
+// or a dev server next to a preview, may be reading a file right now).
 import { readFileSync } from 'node:fs'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'

@@ -1,4 +1,4 @@
-// Input of the forecast routes (PLAN.md section 8.2): the query of GET /api/forecast and
+// Input of the forecast routes: the query of GET /api/forecast and
 // /api/staffing, the JSON body of POST /api/planned. Ranges and defaults are final-main's
 // FastAPI declarations (api/main.py). Every field problem is collected and thrown as ONE
 // 422; then the two range refusals, in final-main's order.

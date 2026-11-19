@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// A TEST DOUBLE for the retrain PROCESS (PLAN.md section 7), not for its results: it
+// A TEST DOUBLE for the retrain PROCESS (docs/retraining.md), not for its results: it
 // takes exactly the arguments the runner passes,
 //
 //   -m <module> --db <abs path> --run-id <id> --mode <full|forecast-only>

@@ -66,9 +66,9 @@ describe('parseForecastQuery', () => {
     expect(parseForecastQuery({ ...RANGE, patience_sec: '3600' }, TODAY).patienceSec).toBe(3600)
   })
 
-  // Review finding W2-2: outside these bounds one request could cost up to 31 s of CPU
-  // per day of range on the server's only thread; W2-1: a target_pct within 2e-16 of 1
-  // and a denormal patience ended in a 500.
+  // Outside these bounds one request could cost up to 31 s of CPU per day of range on
+  // the server's only thread, and a target_pct within 2e-16 of 1 or a denormal patience
+  // ended in a 500.
   it.each([
     ['target_pct', '0.9991', 'must be a number greater than 0 and at most 0.999'],
     ['target_pct', '0.9999999999999999', 'must be a number greater than 0 and at most 0.999'],

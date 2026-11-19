@@ -130,7 +130,7 @@ describe('forecast service without a forecast', () => {
 })
 
 describe('forecast service on a stored forecast', () => {
-  // Review finding W2-2: the Erlang chain runs on the server's one thread; a long range
+  // The Erlang chain runs on the server's one thread; a long range
   // must give the event loop back between days instead of holding it to the end.
   it('lets other work run while a long range is computed', async () => {
     const db = seeded()
@@ -141,7 +141,7 @@ describe('forecast service on a stored forecast', () => {
     expect(order).toEqual(['other work', 'forecast done'])
   })
 
-  // Review finding N-5, end to end: a hand-edited or badly estimated stored patience.
+  // End to end: a hand-edited or badly estimated stored patience.
   it('answers 503 implausible_patience at once on the default path, and serves the rest', async () => {
     const db = seeded()
     db.update(schema.forecastState).set({ patienceSec: 0.5 }).run()

@@ -5,7 +5,7 @@ import { env } from '../utils/env'
 import { postPlanned } from '../utils/forecast/service'
 import { requireUser } from '../utils/session'
 
-// POST /api/planned: a supervisor's roster judged against the forecast (PLAN.md 8.2).
+// POST /api/planned: a supervisor's roster judged against the forecast.
 export default defineEventHandler(async (event) => {
   requireUser(event)
   const body: unknown = await readBody(event)

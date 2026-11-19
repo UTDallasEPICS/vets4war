@@ -15,7 +15,7 @@ declare module 'h3' {
   }
 }
 
-// API gateway (PLAN.md section 5): public prefixes, session, admin prefix, origin of
+// API gateway (docs/better_auth.md): public prefixes, session, admin prefix, origin of
 // writes. Page navigation and assets are handled by app/middleware/auth.global.ts.
 export default defineEventHandler(async (event) => {
   if (isPublicPath(event.path)) {

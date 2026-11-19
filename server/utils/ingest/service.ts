@@ -134,7 +134,7 @@ export function publicReport(report: StoredReport | null): UploadReport | null {
 // import's revision (the script writes forecast_runs.calls_revision when it claims a
 // run). Until one has, the run this import started itself, if it started one. An
 // import queued behind a running retrain is read by the run that follows it, not by
-// the one that was running (review X-6).
+// the one that was running.
 function runThatReadIt(db: AppDb, row: UploadRow): number | null {
   const revision = row.status === 'imported' ? row.result?.calls_revision : undefined
   if (revision === undefined) return row.runId
@@ -284,7 +284,7 @@ export async function parseUpload(
     const insert = sqliteOf(db).prepare(
       `INSERT INTO upload_rows (upload_id, ${CALL_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-    // One transaction per batch, so no write lock is held for long (PLAN.md 6).
+    // One transaction per batch, so no write lock is held for long.
     const stage = sqliteOf(db).transaction((rows: ParsedCall[]): [number, number] => {
       let first = 0
       let last = 0

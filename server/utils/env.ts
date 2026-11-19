@@ -4,7 +4,7 @@ import { isAbsolute, join, resolve } from 'node:path'
 import { z } from 'zod'
 import { parseAdminEmails } from '../db/admins'
 
-// Environment variables the server reads (PLAN.md section 4). Validated once, on
+// Environment variables the server reads (.env.example lists them). Validated once, on
 // import, so a missing or malformed value stops the start with a message that names
 // the variable, instead of failing later inside the database, auth or mail code.
 //

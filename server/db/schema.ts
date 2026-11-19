@@ -101,7 +101,7 @@ export const verification = sqliteTable(
 )
 
 // ---------------------------------------------------------------------------
-// Vets4Warriors tables (PLAN.md section 6). SQL names are snake_case because the
+// Vets4Warriors tables (docs/architecture.md). SQL names are snake_case because the
 // Python retrain script reads and writes them. Timestamps are unix seconds, dates
 // 'YYYY-MM-DD', call timestamps naive Eastern wall-clock 'YYYY-MM-DDTHH:MM:SS'.
 

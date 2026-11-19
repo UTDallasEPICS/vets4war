@@ -1,4 +1,4 @@
-// Parity rung P4 (PLAN.md section 12): the TypeScript workbook reader gives exactly the
+// Parity rung P4 (docs/testing.md): the TypeScript workbook reader gives exactly the
 // calls of the proven Python parser (db.client_files.read_call_records) on SYNTHETIC
 // workbooks written by openpyxl and in the markup Excel and other export tools write
 // (excel_like.py), and refuses every file Python refuses. With
@@ -23,8 +23,8 @@ const PYTHON = join(REPO_ROOT, 'forecast', '.venv', 'bin', 'python')
 const LEGACY_DIR = process.env.V4W_LEGACY_DIR
 const SETUP_TIMEOUT = 180_000
 
-// Files Python reads by guessing and this reader refuses on purpose (PLAN.md R1: refuse
-// what it does not recognise). A refusal is loud; different calls never are allowed.
+// Files Python reads by guessing and this reader refuses on purpose (it refuses what
+// it does not recognise). A refusal is loud; different calls never are allowed.
 const REFUSED_ON_PURPOSE: Record<string, string> = {
   'xl_month_name_text_dates.xlsx':
     'Start_Date as text like "Nov 10, 2026": only YYYY-MM-DD and M/D/YYYY text is read',

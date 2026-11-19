@@ -1,4 +1,4 @@
-// The one error shape of the API (PLAN.md section 8.1, ApiErrorBody):
+// The one error shape of the API (ApiErrorBody in shared/types/api.ts):
 // { statusCode, statusMessage, message, data: { code, ... } }.
 import { STATUS_CODES } from 'node:http'
 import { createError, type H3Error } from 'h3'

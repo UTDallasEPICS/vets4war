@@ -1,7 +1,7 @@
 // Scanning XML text without regular expressions that can backtrack. Everything here is
 // linear in the length of the text, whatever it holds: a crafted part full of unclosed
-// tags, quotes or long words costs as much as an honest part of the same size (review
-// N-2: lazy patterns such as <f>[\s\S]*?</f> are quadratic on unclosed tags).
+// tags, quotes or long words costs as much as an honest part of the same size (lazy
+// patterns such as <f>[\s\S]*?</f> are quadratic on unclosed tags).
 
 // indexOf with memory, for one needle: a search from `from` reuses the previous answer
 // when it still holds, so the searches over one text, made at increasing positions,

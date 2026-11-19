@@ -5,7 +5,7 @@ import { env } from '../utils/env'
 import { getStaffing } from '../utils/forecast/service'
 import { requireUser } from '../utils/session'
 
-// GET /api/staffing: the daily shift roll-up only (PLAN.md 8.2).
+// GET /api/staffing: the daily shift roll-up only.
 export default defineEventHandler((event) => {
   requireUser(event)
   return getStaffing(

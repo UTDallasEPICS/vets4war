@@ -1,4 +1,4 @@
-// POST /api/admin/uploads/:id/import: bring a checked file into `calls` (PLAN.md 8.4).
+// POST /api/admin/uploads/:id/import: bring a checked file into `calls`.
 import { defineEventHandler, readBody } from 'h3'
 import { db } from '../../../../utils/db'
 import { issuesFromZod, validationError } from '../../../../utils/http'

@@ -444,7 +444,7 @@ describe('parseWorkbook: markup written by Excel and other export tools', () => 
     })
   }
 
-  it('reads an ISO 8601 date cell (t="d") as its date, never as a serial number (W3-1)', async () => {
+  it('reads an ISO 8601 date cell (t="d") as its date, never as a serial number', async () => {
     const { result, calls } = await read(
       handmadeWorkbook({
         rows:
@@ -458,7 +458,7 @@ describe('parseWorkbook: markup written by Excel and other export tools', () => 
     expect(calls).toEqual([EXPECTED])
   })
 
-  it('reads a formula cell by its cached result, also a cached 0 and shared formulas (W3-2)', async () => {
+  it('reads a formula cell by its cached result, also a cached 0 and shared formulas', async () => {
     const formulas = {
       D: '<c r="D2"><f t="shared" ref="D2:D3" si="0">5+0*A1</f><v>5</v></c>',
       E: '<c r="E2"><f>0+0</f><v>0</v></c>',
@@ -495,7 +495,7 @@ describe('parseWorkbook: markup written by Excel and other export tools', () => 
   })
 
   it.each(['1', 'true'] as const)(
-    'reads a workbook in the 1904 date system (date1904="%s") (W3-3)',
+    'reads a workbook in the 1904 date system (date1904="%s")',
     async (flag) => {
       const { result, calls } = await read(
         handmadeWorkbook({

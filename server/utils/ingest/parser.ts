@@ -53,7 +53,7 @@ const SECONDS_PER_DAY = 86_400
 const EXCEL_EPOCH = Date.UTC(1899, 11, 30)
 const EXCEL_EPOCH_1904 = Date.UTC(1904, 0, 1)
 // One reading of each digit (no nested quantifiers to backtrack through): a long run of
-// digits that ends badly is refused in linear time (review N-2 class).
+// digits that ends badly is refused in linear time.
 const DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/
 const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?$/
 const US_DAY = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/
@@ -199,8 +199,8 @@ type WorksheetRows = AsyncIterable<ExcelJS.Row>
 
 // The steps of exceljs' streaming WorkbookReader, called one part at a time. Its own walk
 // over the zip is not used: on workbooks whose worksheets come before the workbook part
-// (openpyxl writes them that way) it parks sheets in temp files and, in this sandbox,
-// read the same file as zero calls in two of six runs without any error. Driving the
+// (openpyxl writes them that way) it parks sheets in temp files and, when this reader
+// was built, read the same file as zero calls in two of six runs without any error. Driving the
 // steps ourselves gives a fixed order (relationships, workbook, styles, strings, then
 // each sheet in workbook order), no temp files, and parts capped at their declared size.
 // exceljs is pinned (4.4.0); tests/parity/parser checks this path against Python.

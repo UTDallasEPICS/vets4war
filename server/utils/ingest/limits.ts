@@ -18,8 +18,8 @@ export const MAX_SHEETS = 32
 // are a few kilobytes.
 export const MAX_WORKBOOK_PART_BYTES = 4 * 1024 * 1024
 
-// Rows go to the stage, and back to the caller, in batches of this size (PLAN.md 6:
-// staging rows are written in chunks of 5,000 rows per transaction).
+// Rows go to the stage, and back to the caller, in batches of this size: one
+// transaction per batch, so no write lock is held for long.
 export const ROW_BATCH = 5000
 
 // Messages list at most this many days or Excel rows, then "and <n> more".

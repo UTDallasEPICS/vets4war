@@ -1,5 +1,5 @@
 // The runner with REAL child processes: fixtures/fake-python.mjs plays the process
-// contract of PLAN.md section 7 against a migrated SQLite file on disk. Its `workers`
+// contract of the retrain script against a migrated SQLite file on disk. Its `workers`
 // mode builds the process tree the real gate can leave at its worst (workers that hold
 // the pipes, ignore SIGTERM and outlive their parent), so the kill, timeout, shutdown
 // and start-up tests below prove the runner itself leaves nothing behind.
@@ -388,7 +388,7 @@ describe('while Python holds the write lock', () => {
   )
 })
 
-// N-1 of the second review: a retrain started from a shell is judged by the lock it
+// A retrain started from a shell is judged by the lock it
 // holds next to the database, so the server never closes one that is alive, however
 // its command line spells the database and whatever pid namespace it runs in, and
 // still closes one that died. These use the REAL script (forecast/.venv) on SYNTHETIC

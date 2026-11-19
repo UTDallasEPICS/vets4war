@@ -88,7 +88,7 @@ describe('resolvePatience', () => {
     })
   })
 
-  // Review finding N-5: the stored estimate is not a request field, so the parameter
+  // The stored estimate is not a request field, so the parameter
   // bounds never saw it; a tiny one made every default request cost seconds per day.
   it.each([9.99, 2, 0.5, 0, -1, Number.NaN])(
     'refuses to compute with a stored estimate of %s s, quickly and plainly',
@@ -478,7 +478,7 @@ describe('judgePlanned', () => {
 describe('a target no staffing level reaches', () => {
   const table = cells({ equal: 600, weighted: 660, recent: 720 })
 
-  // Review finding W2-1: this ended in an unmapped RangeError (500). final-main: 400.
+  // This once ended in an unmapped RangeError (500). final-main: 400.
   it('answers 400 unreachable_target with a plain message', () => {
     const snapshot = { hours: stored(['2026-12-01'], () => 1e7), cells: table }
     const error = caught(() => hourRows(snapshot, DEFAULTS, null))

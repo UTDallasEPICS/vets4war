@@ -1,4 +1,4 @@
-// The five read routes (PLAN.md section 8.2) as functions of the database, so tests run
+// The five read routes as functions of the database, so tests run
 // them against an in-memory SQLite without a server. Routes under server/api/ only read
 // the request and call these.
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'

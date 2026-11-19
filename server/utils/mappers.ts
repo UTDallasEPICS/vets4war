@@ -1,5 +1,5 @@
-// Table rows -> the API shapes of PLAN.md section 8 (snake_case on the wire). WP2 and
-// WP3 use these instead of writing their own, so every route answers the same way.
+// Table rows -> the API shapes of shared/types/api.ts (snake_case on the wire). Every
+// route uses these instead of writing its own, so they all answer the same way.
 import type { forecastRuns, uploads, user } from '../db/schema'
 import type {
   PersonRow,

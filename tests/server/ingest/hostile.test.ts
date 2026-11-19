@@ -1,4 +1,4 @@
-// Review N-2: the reader's work must be linear in the size of what it reads, whatever a
+// The reader's work must be linear in the size of what it reads, whatever a
 // workbook holds. Lazy patterns such as <f>[\s\S]*?</f> are quadratic on unclosed tags:
 // a 2.7 KB workbook with one row of 200,000 unclosed <f> froze the production server for
 // 42.5 s. Each case here is small, hostile, and must end (read or refused) in well under
@@ -48,8 +48,8 @@ const SHEET_HEAD =
   '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1">'
 const SHEET_TAIL = '</c></row></sheetData></worksheet>'
 
-describe('hostile workbooks end quickly (review N-2)', () => {
-  it("the reviewer's file: one row of 200,000 unclosed <f>, refused in well under a second", async () => {
+describe('hostile workbooks end quickly', () => {
+  it('one row of 200,000 unclosed <f>: refused in well under a second', async () => {
     const book = handmadeWorkbook({
       rows: headerRow() + `<row r="2"><c r="B2"><v>1</v>${'<f>'.repeat(N)}</c></row>`,
     })

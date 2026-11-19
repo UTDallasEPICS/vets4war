@@ -213,7 +213,7 @@ describe('receive and read', () => {
     expect(row.report!.warnings).toEqual([RETRAIN_GAP_WARNING('2026-11-06')])
   })
 
-  it('warns when the file leaves days without calls between the stored calls and the file (W3-4)', async () => {
+  it('warns when the file leaves days without calls between the stored calls and the file', async () => {
     const first = await upload(rawLayout(NOV_5))
     importUpload(db, deps(), first.id, { total_rows: 24, replace_days: [] }, admin)
     const row = await upload(rawLayout(NOV_7))
@@ -237,7 +237,7 @@ describe('receive and read', () => {
     ])
   })
 
-  it('refuses days no call of this line can have, whatever misread them (W3-1)', async () => {
+  it('refuses days no call of this line can have, whatever misread them', async () => {
     const row = await upload(rawLayout(wholeDay('1905-07-18')))
     expect(row.status).toBe('invalid')
     expect(row.report!.file_errors.map((e) => e.code)).toEqual(['day_out_of_range'])
@@ -564,7 +564,7 @@ describe('housekeeping', () => {
   })
 })
 
-describe('the run that read an import (review X-6)', () => {
+describe('the run that read an import', () => {
   const runRow = (values: Partial<typeof schema.forecastRuns.$inferInsert>) =>
     db
       .insert(schema.forecastRuns)

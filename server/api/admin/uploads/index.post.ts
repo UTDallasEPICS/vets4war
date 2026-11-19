@@ -1,4 +1,4 @@
-// POST /api/admin/uploads: one multipart part named `file` (PLAN.md 8.4). Answers 202
+// POST /api/admin/uploads: one multipart part named `file`. Answers 202
 // while the file is read in the background, or 200 with the upload that already holds
 // these exact bytes.
 import { defineEventHandler, getRequestHeader, setResponseHeader, setResponseStatus } from 'h3'

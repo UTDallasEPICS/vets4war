@@ -1,4 +1,4 @@
-// Review X-2: while another connection (the retrain script) holds SQLite's write lock,
+// While another connection (the retrain script) holds SQLite's write lock,
 // an upload or an import must wait for it (busy timeout), not fail at once with
 // SQLITE_BUSY as a deferred read-then-write transaction does. On-disk database; the
 // lock is held by a separate process, as the script holds it.

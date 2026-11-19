@@ -1,7 +1,7 @@
 // The request body of an upload, read up to a limit. A body that declares no size
 // (Transfer-Encoding: chunked, as a proxy that streams bodies sends it) is read too, and
 // reading stops as soon as it passes the limit, so the limit holds without a declared
-// Content-Length (review W3-9).
+// Content-Length.
 export async function readBodyWithin(
   source: AsyncIterable<Buffer | string>,
   maxBytes: number

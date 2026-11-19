@@ -1,7 +1,7 @@
 // @vitest-environment nuxt
 //
 // The uploads history: an import that no retrain has read yet says so, and on a phone
-// the file name keeps a readable width (review W3-6: `break-all` in a scrolling table
+// the file name keeps a readable width (`break-all` in a scrolling table once
 // collapsed it to two characters per line and rows of about 480 px).
 import { describe, expect, it } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'

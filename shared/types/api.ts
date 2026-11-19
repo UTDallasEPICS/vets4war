@@ -1,4 +1,4 @@
-// Request and response types of the HTTP API (PLAN.md section 8). Field names are
+// Request and response types of the HTTP API. Field names are
 // snake_case on the wire, as in final-main. Types only: no runtime code in this file,
 // because server/db/schema.ts imports it from places that run without Nuxt.
 

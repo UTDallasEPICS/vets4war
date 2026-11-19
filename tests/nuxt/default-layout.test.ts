@@ -84,7 +84,7 @@ describe('theme toggle', () => {
   // The server cannot know the stored theme, so the button must render the same markup
   // in both themes and let CSS (the `dark` class set before the page paints) pick the
   // icon. Markup that depends on the theme mismatches at hydration, and a production
-  // build does not repair it: the button stayed blank or wrong (review finding W0-1).
+  // build does not repair it: the button stayed blank or wrong.
   it('renders the same markup in light and dark, with both icons', async () => {
     const colorMode = useColorMode()
     colorMode.preference = 'light'
@@ -105,8 +105,8 @@ describe('theme toggle', () => {
 })
 
 describe('header on a phone', () => {
-  // At 390 px the one-row header needed 409 px and the page scrolled sideways (review
-  // finding W0-3). happy-dom has no layout, so this pins the two things that keep it
+  // At 390 px the one-row header once needed 409 px and the page scrolled sideways.
+  // happy-dom has no layout, so this pins the two things that keep it
   // inside 360 px: the row may wrap, and below `sm` Sign out is an icon button whose
   // name stays readable to assistive technology. The width itself is measured in a
   // production build with a real browser.

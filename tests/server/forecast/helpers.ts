@@ -1,5 +1,5 @@
 // Fills the forecast tables of a test database with a small, hand-traceable forecast:
-// what the Python retrain script writes (PLAN.md section 6), with numbers simple enough
+// what the Python retrain script writes (docs/architecture.md), with numbers simple enough
 // to check by hand.
 import { H3Error } from 'h3'
 import * as schema from '../../../server/db/schema'
@@ -186,7 +186,7 @@ export function seedForecast(db: AppDb, options: SeedOptions = {}) {
   return { run, model }
 }
 
-// The data every API error carries (PLAN.md section 8.1).
+// The data every API error carries (ApiErrorBody in shared/types/api.ts).
 export type ErrorData = { code: string; [extra: string]: unknown }
 
 export interface CaughtError {

@@ -22,7 +22,7 @@
 //
 // It is a small state machine over the text, tag by tag (tags.ts), so its work is
 // linear in the size of the part whatever the part holds, and each chunk is handled
-// as it arrives: nothing waits for the end of a row (review N-2). Only one tag, comment
+// as it arrives: nothing waits for the end of a row. Only one tag, comment
 // or CDATA section, or one inline string, is ever held, up to MAX_HELD_CHARS.
 import { StringDecoder } from 'node:string_decoder'
 import { Transform, type TransformCallback } from 'node:stream'

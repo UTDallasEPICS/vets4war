@@ -2,7 +2,7 @@
 //
 // After an import the outcome follows the retrain that reads the file until it ends.
 // An import queued behind a running retrain is read by the re-run that follows it, never
-// by the run that was running (review X-6); the panel waits for that re-run and shows
+// by the run that was running; the panel waits for that re-run and shows
 // how it ended.
 import { describe, expect, it } from 'vitest'
 import { defineEventHandler } from 'h3'
@@ -85,7 +85,7 @@ describe('ImportOutcome', () => {
   })
 })
 
-// Review W3-7: a rejected run kept the previous model only when there was one.
+// A rejected run kept the previous model only when there was one.
 describe('ImportOutcome for a rejected retrain', () => {
   async function ended(id: number, forecastWritten: boolean) {
     registerEndpoint(

@@ -1,4 +1,4 @@
-// Who may call which API path (PLAN.md section 5). Pure, so every rule is unit-tested;
+// Who may call which API path (docs/better_auth.md). Pure, so every rule is unit-tested;
 // server/middleware/auth.ts applies it to each request.
 
 // Better Auth's own endpoints (sign-in, email OTP, get-session) and the health check

@@ -1,8 +1,8 @@
 // Replays the 44 recorded requests of the legacy (final-main) API against a running new
-// server and compares every answer with the recorded one (rules: ./compare.mjs, PLAN.md
-// section 12). Parity rung P3: legacy goldens of the SYNTHETIC reference stack.
+// server and compares every answer with the recorded one (rules: ./compare.mjs). Parity
+// rung P3 (docs/testing.md): legacy goldens of the SYNTHETIC reference stack.
 //
-//   node scripts/parity/compare-goldens.mjs --base http://localhost:3101 \
+//   node scripts/parity/compare-goldens.mjs --base http://localhost:3000 \
 //     --golden <legacy>/golden/a --db <the server's SQLite file> --email admin@example.org \
 //     [--only <name>] [--json <report file>]
 //

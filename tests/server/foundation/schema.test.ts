@@ -1,4 +1,4 @@
-// The committed migrations produce exactly the tables of PLAN.md section 6. Python reads
+// The committed migrations produce exactly the tables the app expects. Python reads
 // and writes these by their SQL names, so a renamed or missing column is a contract break.
 import { describe, it, expect } from 'vitest'
 import { eq } from 'drizzle-orm'

@@ -1,5 +1,5 @@
 """The pandas twins that replace final-main's Postgres SQL, each against a
-short row-by-row oracle written here from the SQL's definition (PLAN.md 7.4).
+short row-by-row oracle written here from the SQL's definition.
 
 The calls are a small hand-made SYNTHETIC frame with the awkward cases in it:
 missing durations, an answered call with zero talk time, one (dow, hour)

@@ -1,18 +1,19 @@
 """Parity tool: fill the forecast tables of a SCRATCH SQLite file from the legacy stack.
 
 NOT part of the app, never run against a database a server is using. It exists for
-parity rung P3(a) (PLAN.md section 12): the OLD final-main code computes, against
+parity rung P3 (docs/testing.md): the OLD final-main code computes, against
 the legacy Postgres of the SYNTHETIC reference stack, exactly what the new Python
-retrain script writes (PLAN.md section 6), so the new TypeScript read API can be
+retrain script writes (docs/architecture.md), so the new TypeScript read API can be
 compared with the old API's recorded answers before the new pipeline exists.
 
-Run it from a legacy app folder (`$S/legacy/app_a` or `app_b`), so that folder's
-`db` package and its `models/` are the ones imported:
+Run it from a checkout of the OLD app (final-main) that holds its trained model, so
+that folder's `db` package and its `models/` are the ones imported, with the OLD
+app's pinned Python environment:
 
-    cd $S/legacy/app_b && PYTHON_DOTENV_DISABLED=1 V4W_DATA_SOURCE=synthetic \\
-      V4W_DATABASE_URL=postgresql://postgres:legacy@127.0.0.1:55432/legacy_b \\
-      $S/baseline/.venv312/bin/python <repo>/scripts/parity/legacy_export.py \\
-      --out $S/wp2/legacy_b.db --today 2026-11-19
+    cd <old app folder> && PYTHON_DOTENV_DISABLED=1 V4W_DATA_SOURCE=synthetic \\
+      V4W_DATABASE_URL=postgresql://<user>:<password>@<host>:<port>/<database> \\
+      <old app's python> <this repo>/scripts/parity/legacy_export.py \\
+      --out <scratch.db> --today 2026-11-19
 
 The output file must already be migrated (`DATABASE_URL=file:<out> pnpm db:migrate`).
 Every table this tool writes is emptied first, then filled in ONE transaction:

@@ -1,4 +1,4 @@
-// People who may sign in, and their roles (PLAN.md section 8.5). Sign-up is off, so this
+// People who may sign in, and their roles. Sign-up is off, so this
 // is the only way in besides V4W_ADMIN_EMAILS. Each check runs in the same transaction
 // as its write, so two admins acting at once cannot remove the last admin between them.
 //

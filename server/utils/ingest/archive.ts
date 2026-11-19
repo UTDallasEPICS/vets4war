@@ -217,7 +217,7 @@ function decodeXml(text: string): string {
 }
 
 // Attribute values of one start tag, entities decoded. tags.ts scans without
-// backtracking, so a crafted workbook part costs time linear in its size (review N-2).
+// backtracking, so a crafted workbook part costs time linear in its size.
 function attributes(tag: Tag): Map<string, string> {
   return new Map(tag.attributes.map((a) => [a.name, decodeXml(a.value)]))
 }

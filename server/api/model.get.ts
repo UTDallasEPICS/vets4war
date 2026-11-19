@@ -5,7 +5,7 @@ import { env } from '../utils/env'
 import { getModel } from '../utils/forecast/service'
 import { requireUser } from '../utils/session'
 
-// GET /api/model: the serving model's metadata plus the data badge (PLAN.md 8.2).
+// GET /api/model: the serving model's metadata plus the data badge.
 export default defineEventHandler((event) => {
   requireUser(event)
   return getModel(db, { dataSourceKind: env.V4W_DATA_SOURCE, today: easternToday() })

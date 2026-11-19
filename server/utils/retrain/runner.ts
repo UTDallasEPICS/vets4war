@@ -1,4 +1,4 @@
-// The one owner of retrain runs (PLAN.md sections 7 and 8.3). Every run, whatever
+// The one owner of retrain runs (docs/retraining.md). Every run, whatever
 // started it (an import, the schedule, an admin, a server start), is a forecast_runs row
 // created here and one child process of the Python script:
 //

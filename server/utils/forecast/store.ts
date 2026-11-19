@@ -1,4 +1,4 @@
-// Reads what the Python retrain script wrote (PLAN.md section 6). Each function reads
+// Reads what the Python retrain script wrote (docs/architecture.md). Each function reads
 // everything one answer needs inside ONE transaction, so a retrain that commits in
 // between can never mix two forecasts in one response.
 import { between, desc, eq, inArray, max } from 'drizzle-orm'

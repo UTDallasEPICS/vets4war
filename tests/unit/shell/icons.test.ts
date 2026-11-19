@@ -1,6 +1,6 @@
 // Every icon the app shows is served from an installed collection, by our own server,
 // at a path the auth gate lets through: no request to the Iconify API, at build or run
-// time, and no 401 on the sign-in page (review finding W0-2).
+// time, and no 401 on the sign-in page.
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'

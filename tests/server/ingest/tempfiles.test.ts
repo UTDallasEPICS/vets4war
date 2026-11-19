@@ -1,4 +1,4 @@
-// Review W3-8: start-up removes only the upload folders a stopped process left, never
+// Start-up removes only the upload folders a stopped process left, never
 // those of another process on the same host that may be reading a file right now.
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -41,7 +41,7 @@ describe('upload temp folders', () => {
   })
 })
 
-// Seen in this sandbox: a server stopped mid-read stayed a zombie (PID 1 reaps late), so
+// Seen in a container: a server stopped mid-read stayed a zombie (PID 1 reaps late), so
 // the next start kept its folder as "alive". A zombie reads nothing.
 describe.runIf(existsSync('/proc/self/stat'))('isAlive', () => {
   it('is true for a running process and false for a zombie', async () => {

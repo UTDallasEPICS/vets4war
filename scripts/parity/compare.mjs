@@ -1,4 +1,4 @@
-// Comparison rules for the legacy goldens (PLAN.md section 12), shared by
+// Comparison rules for the legacy goldens (parity rung P3, docs/testing.md), shared by
 // scripts/parity/compare-goldens.mjs (live server) and tests/server/forecast/golden.test.ts
 // (frozen fixture), so both judge an answer the same way.
 //

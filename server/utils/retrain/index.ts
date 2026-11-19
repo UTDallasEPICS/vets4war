@@ -1,4 +1,4 @@
-// The process-wide retrain runner, configured from the environment (PLAN.md section 4).
+// The process-wide retrain runner, configured from the environment (server/utils/env.ts).
 import { db, resolveDatabasePath } from '../db'
 import { env } from '../env'
 import { createRetrainRunner, type RetrainConfig, type RetrainRunner } from './runner'
