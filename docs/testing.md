@@ -75,6 +75,10 @@ prints `0`.
 | `pnpm forecast:test`                                               | The whole Python suite.                              |
 | `cd forecast && .venv/bin/python -m pytest tests/test_store.py -q` | One Python file.                                     |
 | `pnpm lint`, `pnpm typecheck`, `pnpm typecheck:tests`              | The checks that are not tests but that CI also runs. |
+| `pnpm format`                                                      | Puts every file into the project's style (Prettier). |
+
+CI does not check the formatting. Run `pnpm format` before you commit, so that a later run
+of it does not rewrite files nobody meant to touch.
 
 ## Reading a test
 
@@ -171,7 +175,10 @@ They run in plain Node (`environment: 'node'` in `vitest.config.ts`).
   the import, locking, the upload route over real HTTP.
 - `tests/server/retrain/`: the runner. Most cases use a stand-in for the script
   (`fixtures/fake-python.mjs`); seven start the real retrain script on a small generated
-  database and skip themselves when `forecast/.venv` does not exist.
+  database and skip themselves when `forecast/.venv` does not exist. One of the seven puts
+  the script into a process namespace of its own with `unshare`, the way a second container
+  on the same volume would see it. That needs root rights, so for a normal user this one
+  stays skipped.
 - `tests/server/users/`: the people rules.
 
 ### Component tests (`tests/nuxt/`)
@@ -341,6 +348,7 @@ changes, unless a mentor records a waiver on it.
 
 **Before you open a merge request:**
 
+- [ ] `pnpm format` was run and left nothing to commit.
 - [ ] `pnpm lint`, `pnpm typecheck` and `pnpm typecheck:tests` pass.
 - [ ] `pnpm test` passes.
 - [ ] If you changed anything under `forecast/`, or the workbook reader, or the staffing

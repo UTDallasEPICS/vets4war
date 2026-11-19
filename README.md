@@ -455,8 +455,13 @@ first-deploy checklist and how to size the task: [docs/deployment.md](docs/deplo
   No call export, extract or caller detail belongs in this repository, synthetic or real.
 - Screenshots or logs that show real numbers of the line.
 
-`.gitignore` blocks the first three; the fourth is up to you. Test data is generated when a
-test runs. The one data-like file that is committed,
+`.gitignore` blocks exactly these names: `.env` and `.env.<anything>` except `.env.example`,
+the three kinds of database file, the four data file types, and every folder called `data`.
+So keep every file with secrets under a name that starts with `.env.`, for example
+`.env.deploy`. Git does not know a settings file called `deploy.env`, a compressed export
+such as `calls.csv.gz` outside a `data` folder, or a screenshot: those are up to you, so
+read `git status` before every commit. Test data is generated when a test runs. The one
+data-like file that is committed,
 `tests/server/forecast/fixtures/SYNTHETIC-legacy-golden.json`, holds answers of the old API
 computed from synthetic data and no call record.
 
@@ -496,7 +501,8 @@ each point. Work through it before anyone schedules people from these numbers.
 ### The deployment
 
 6. **Real mail delivery.** Only a local test mail server was used. Set the `EMAIL_*`
-   values and sign in once from outside.
+   values and sign in once from outside. A mail that cannot be sent shows only in the
+   server log: the page says that a code is on its way either way.
 7. **Where the database file lives on the platform, whether it survives a redeploy, and how
    it is backed up.** Ask the platform owner, point `DATABASE_URL` at that storage, make a
    backup and restore it once.
@@ -511,13 +517,14 @@ each point. Work through it before anyone schedules people from these numbers.
     header (`X-Forwarded-For`). Configure it and run the checks in
     [docs/deployment.md](docs/deployment.md#the-sign-in-rate-limit-and-the-client-address).
     Never let the app's port be reached directly.
-11. **The image on the real platform.** It was built and run for amd64 only. For arm64,
-    which the pipeline deploys, the build has not completed anywhere yet: in the test
-    sandbox, under emulation, the step that builds the app hung. The first complete arm64
-    build is the pipeline's own. Watch it, and watch the first real retrain: how much memory
-    and CPU it needs there is not known. Start with the sizes in
-    [docs/deployment.md](docs/deployment.md#how-big-a-task), which were measured on
-    synthetic data in a test sandbox.
+11. **The image on the real platform.** It was built and run for amd64 only, in a test
+    sandbox whose network made a few extra build lines necessary, so the `Dockerfile`
+    exactly as committed has not been built yet. For arm64, which the pipeline deploys, the
+    build has not completed anywhere: in that sandbox, under emulation, the step that builds
+    the app hung. The first complete arm64 build is the pipeline's own. Watch it, and watch
+    the first real retrain: how much memory and CPU it needs there is not known. Start with
+    the sizes in [docs/deployment.md](docs/deployment.md#how-big-a-task), which were
+    measured on synthetic data in a test sandbox.
 12. **The same model from the same data on a different kind of CPU.** On synthetic data the
     model came out identical on amd64 and on arm64 emulated on the same machine. Real ARM
     hardware with the real data has not been tried. If `--verify-reference` answers
