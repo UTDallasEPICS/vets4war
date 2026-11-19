@@ -25,6 +25,7 @@ Horizon bands: near = days 1 to 14 (what the client validates), far = days
 from __future__ import annotations
 
 import math
+import os
 from concurrent.futures import ProcessPoolExecutor
 from typing import Callable
 
@@ -32,6 +33,7 @@ import numpy as np
 import pandas as pd
 
 from db.features import TARGET
+from db.lifetime import bind_to_parent
 
 HORIZON_DAYS = 28
 DAYS_PER_WEEK = 7
@@ -112,7 +114,9 @@ def _run_task(featured: pd.DataFrame, origin: pd.Timestamp, task: Callable):
     return task(train, future)
 
 
-def _init_worker(featured: pd.DataFrame, task: Callable) -> None:
+def _init_worker(featured: pd.DataFrame, task: Callable, parent_pid: int) -> None:
+    # A worker must never outlive the process that started it (db/lifetime.py).
+    bind_to_parent(parent_pid)
     _WORKER["featured"] = featured
     _WORKER["task"] = task
 
@@ -126,7 +130,8 @@ def map_origins(featured: pd.DataFrame, origins: list[pd.Timestamp], task: Calla
     `task` must be picklable when workers > 1."""
     if workers <= 1:
         return [_run_task(featured, origin, task) for origin in origins]
-    with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(featured, task)) as pool:
+    with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker,
+                             initargs=(featured, task, os.getpid())) as pool:
         return list(pool.map(_worker_run, origins))
 
 

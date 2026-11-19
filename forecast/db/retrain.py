@@ -29,9 +29,17 @@ the serving model.
 Exit codes (the run row says the same, and is the source of truth):
     0  succeeded   forecast written
     3  rejected    the new model did not beat the baseline
-    2  failed      refused for a data reason; the message says what to do
+    2  failed      refused for a data reason; the message says what to do.
+                   Also: a bad argument, or a --run-id that is not a queued
+                   row (the row is left alone: it is not this run's)
     1  failed      unexpected error (the traceback goes to stderr)
     4  --verify-reference: the fingerprints differ
+
+Stopping (db/lifetime.py): SIGTERM, SIGINT or SIGHUP kill the gate workers
+at once, roll back any open write and end the process by that same signal,
+so nothing of the run is left running. A run the web app started
+(--run-id) also ends when the web app's process ends; the web app records
+how such a run ended. A run started from a shell records `failed` itself.
 
 The last line printed is `V4W_RESULT {...}` (run id, status, model id and
 fingerprint). Nothing printed holds a call record: aggregates only.
@@ -43,6 +51,7 @@ import argparse
 import hashlib
 import json
 import os
+import signal
 import sys
 import traceback
 from dataclasses import dataclass
@@ -52,7 +61,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from db import store
+from db import lifetime, store
 from db.add_holidays import official_holidays, rule_mismatches
 from db.aht import RECENCY_HALFLIFE_DAYS, RECENCY_OPTIONS, aht_from_calls
 from db.backtest import HORIZON_DAYS, weekly_origins
@@ -372,6 +381,17 @@ def _record_failure(conn, run_id: int | None, message: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    previous = lifetime.stop_on_signals()
+    try:
+        return _main(argv)
+    except lifetime.Stopped as stop:
+        lifetime.end_by(stop.signum)
+        raise  # not reached: end_by ends the process
+    finally:
+        lifetime.restore_signals(previous)
+
+
+def _main(argv: list[str] | None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     settings = _settings(parser, args)
@@ -383,16 +403,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.verify_reference:
         return verify_reference(settings.db)
 
+    if settings.run_id is not None:
+        # Started by the web app, which owns the run row: when its process ends,
+        # this run ends too (as on SIGTERM), and the web app's next start records it.
+        lifetime.bind_to_parent(os.getppid(), signal.SIGTERM)
+
     conn = None
-    run_id = settings.run_id
+    run_id = None  # set once this process holds the row; until then nothing is recorded on it
     try:
         conn = store.connect(settings.db)
         snapshot = store.read_snapshot(conn)
         calls = snapshot.calls
-        run_id = store.start_run(
-            conn, settings.run_id, mode=settings.mode, pid=os.getpid(), calls_revision=snapshot.calls_revision,
-            calls_count=len(calls), data_start=None if calls.empty else _day(calls["start_ts"].min()),
-            data_end=None if calls.empty else _day(calls["start_ts"].max()))
+        try:
+            run_id = store.start_run(
+                conn, settings.run_id, mode=settings.mode, pid=os.getpid(), calls_revision=snapshot.calls_revision,
+                calls_count=len(calls), data_start=None if calls.empty else _day(calls["start_ts"].min()),
+                data_end=None if calls.empty else _day(calls["start_ts"].max()))
+        except store.RunNotOpen as error:
+            raise Refusal(f"Cannot retrain: {error}. The web app creates a queued row for each run it starts; "
+                          f"run from a shell without --run-id.") from error
         print(f"run {run_id}: {settings.mode}, data revision {snapshot.calls_revision}, {len(calls):,} calls, "
               f"today {settings.today}, horizon {settings.horizon_days} days, gate {settings.gate_origins} origins "
               f"on {settings.workers} worker(s)")
@@ -400,12 +429,19 @@ def main(argv: list[str] | None = None) -> int:
     except Refusal as refusal:
         print(str(refusal), file=sys.stderr)
         _record_failure(conn, run_id, str(refusal))
-        _print_result(run_id, "failed", None, None)
+        _print_result(run_id or settings.run_id, "failed", None, None)
         return EXIT_REFUSED
+    except lifetime.Stopped as stop:
+        print(f"\nStopped by {stop.name}; the gate workers were stopped and nothing more is written.",
+              file=sys.stderr, flush=True)
+        if settings.run_id is None:
+            _record_failure(conn, run_id, f"Stopped by {stop.name} before it finished. Nothing new was written; "
+                                          f"the previous forecast is still in use.")
+        raise
     except Exception as error:  # noqa: BLE001  (reported on the run row, then exit 1)
         traceback.print_exc()
         _record_failure(conn, run_id, f"Unexpected error: {type(error).__name__}: {error}")
-        _print_result(run_id, "failed", None, None)
+        _print_result(run_id or settings.run_id, "failed", None, None)
         return EXIT_UNEXPECTED
     finally:
         if conn is not None:
