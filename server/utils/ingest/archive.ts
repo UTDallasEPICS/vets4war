@@ -49,6 +49,9 @@ export interface ArchiveInfo {
   workbookRels: string
   sharedStrings: string | null
   styles: string | null
+  // The workbook counts dates from 1904-01-01 instead of 1899-12-30 (Excel for Mac's
+  // old default; still a per-file setting).
+  date1904: boolean
 }
 
 export const NOT_A_WORKBOOK =
@@ -280,6 +283,12 @@ function sheetsOf(
   return sheets
 }
 
+function usesDate1904(workbookXml: string): boolean {
+  const match = /<(?:[\w.-]+:)?workbookPr\b([^>]*)>/.exec(workbookXml)
+  const value = match ? attributes(match[1]!).get('date1904') : undefined
+  return value === '1' || value === 'true'
+}
+
 function partOfType(
   relationships: Map<string, Relationship>,
   type: string,
@@ -351,7 +360,8 @@ export async function inspectArchive(path: string): Promise<ArchiveInfo> {
     const rels = parts.get(WORKBOOK_RELS)
     if (!workbook || !rels) refuse()
     const relationships = relationshipsOf(await readSmallPart(file, rels))
-    const sheets = sheetsOf(await readSmallPart(file, workbook), relationships, parts)
+    const workbookXml = await readSmallPart(file, workbook)
+    const sheets = sheetsOf(workbookXml, relationships, parts)
     if (sheets.length > MAX_SHEETS) {
       throw new ArchiveError(
         'too_many_sheets',
@@ -372,6 +382,7 @@ export async function inspectArchive(path: string): Promise<ArchiveInfo> {
       workbookRels: WORKBOOK_RELS,
       sharedStrings: partOfType(relationships, '/sharedStrings', parts),
       styles: partOfType(relationships, '/styles', parts),
+      date1904: usesDate1904(workbookXml),
     }
   } finally {
     await file.close()
