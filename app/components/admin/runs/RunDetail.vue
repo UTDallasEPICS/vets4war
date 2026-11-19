@@ -42,10 +42,20 @@
     { key: 'week_acc_min', label: 'Week accuracy, worst week', percent: true },
     { key: 'week_total_ape', label: 'Week total error', percent: true },
   ]
-  const format = (value: number, percent: boolean) =>
-    percent ? `${value.toFixed(2)}%` : value.toFixed(2)
+  // A metric the backtest could not measure arrives as null.
+  const format = (value: number | null, percent: boolean) =>
+    value === null ? '–' : percent ? `${value.toFixed(2)}%` : value.toFixed(2)
+  const runDuration = (r: RunDetail) => duration(r.started_at ?? r.created_at, r.finished_at)
   const when = (iso: string | null) =>
     iso ? new Date(iso).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'medium' }) : '–'
+  // How long a run took, or "running" while it has not finished.
+  function duration(start: string, end: string | null): string {
+    if (!end) return 'running'
+    const ms = new Date(end).getTime() - new Date(start).getTime()
+    const seconds = Math.max(0, Math.round(ms / 1000))
+    const minutes = Math.floor(seconds / 60)
+    return minutes ? `${minutes} min ${seconds % 60} s` : `${seconds} s`
+  }
 </script>
 
 <template>
@@ -58,7 +68,7 @@
       <UAlert v-if="problem" color="error" variant="subtle" :title="problem" />
       <div v-else-if="run" class="min-w-0 space-y-6 text-sm break-words" data-testid="run-detail">
         <div class="flex items-center gap-3">
-          <AdminRunsStatusBadge :status="run.status" />
+          <AdminRunsStatusBadge :status="run.status" :forecast-written="run.forecast_written" />
           <span>{{ run.message }}</span>
         </div>
         <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2">
@@ -68,6 +78,8 @@
           <dd>{{ when(run.started_at) }}</dd>
           <dt class="text-gray-500 dark:text-gray-400">Finished</dt>
           <dd>{{ when(run.finished_at) }}</dd>
+          <dt class="text-gray-500 dark:text-gray-400">Took</dt>
+          <dd>{{ runDuration(run) }}</dd>
           <dt class="text-gray-500 dark:text-gray-400">Calls read</dt>
           <dd>
             <template v-if="run.calls_count !== null">
@@ -92,7 +104,13 @@
         <div v-if="run.gate">
           <h3 class="mb-2 font-semibold">
             Model against the simple baseline:
-            {{ run.gate.passed ? 'passed' : 'not better, kept the previous model' }}
+            {{
+              run.gate.passed
+                ? 'passed'
+                : run.forecast_written
+                  ? 'not better, kept the previous model'
+                  : 'not better, and there was no previous model'
+            }}
           </h3>
           <p class="mb-2 text-gray-500 dark:text-gray-400">
             {{ run.gate.origins }} backtests from {{ run.gate.first_origin }} to

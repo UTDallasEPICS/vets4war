@@ -2,7 +2,7 @@
   // Forecast runs: what the call data holds, the run in progress, buttons to retrain or
   // refresh by hand, and every recent run with its gate table and output. No props, no
   // emits (the admin page's contract).
-  import type { RunMode, RunSummary } from '#shared/types/api'
+  import type { RunMode, RunSummary, StatusResponse } from '#shared/types/api'
 
   interface Overview {
     runs: RunSummary[]
@@ -19,6 +19,7 @@
   const IDLE_POLL_MS = 30_000
 
   const overview = ref<Overview | null>(null)
+  const status = ref<StatusResponse | null>(null)
   const problem = ref<string | null>(null)
   const notice = ref<string | null>(null)
   const starting = ref<RunMode | null>(null)
@@ -41,7 +42,10 @@
   async function load() {
     if (poll) clearTimeout(poll)
     try {
-      overview.value = await apiFetch<Overview>('/api/admin/runs')
+      ;[overview.value, status.value] = await Promise.all([
+        apiFetch<Overview>('/api/admin/runs'),
+        apiFetch<StatusResponse>('/api/status'),
+      ])
       problem.value = null
     } catch (error) {
       problem.value = error instanceof Error ? error.message : 'The runs could not be loaded.'
@@ -94,6 +98,13 @@
           </template>
           <template v-else>No call data yet. Load a call-records file under Call data.</template>
         </p>
+
+        <AdminRunsForecastState
+          :status="status"
+          :runs="overview?.runs ?? []"
+          :active-run-id="overview?.active_run_id ?? null"
+          :last-day="overview?.data.last_day ?? null"
+        />
 
         <div
           v-if="active"

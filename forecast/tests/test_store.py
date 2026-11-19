@@ -37,6 +37,14 @@ def _node_run(path, trigger="manual", created_at=1_000) -> int:
             "VALUES (?, 'full', 'queued', 'admin@example.org', ?)", (trigger, created_at)).lastrowid
 
 
+def _claimed_run(path) -> int:
+    """A row Node created and the script has claimed: what a run writes into."""
+    run_id = _node_run(path)
+    store.start_run(store.connect(path), run_id, mode="full", pid=1, calls_revision=0, calls_count=0,
+                    data_start=None, data_end=None)
+    return run_id
+
+
 def _state(**overrides) -> dict:
     return {
         "generated_at": 2_000, "calls_revision": 1, "calls_count": 10, "data_start": "2026-01-01",
@@ -203,8 +211,39 @@ def test_start_run_with_an_unknown_id_raises(migrated_db):
                         data_start=None, data_end=None)
 
 
-def test_finish_run_records_status_message_and_json(migrated_db):
+@pytest.mark.parametrize("status", ["running", "succeeded", "failed", "interrupted"])
+def test_start_run_claims_only_a_queued_row(migrated_db, status):
     run_id = _node_run(migrated_db)
+    with _raw(migrated_db) as conn:
+        conn.execute("UPDATE forecast_runs SET status = ? WHERE id = ?", (status, run_id))
+    with pytest.raises(store.RunNotOpen, match=f"run {run_id} is {status}, not queued"):
+        store.start_run(store.connect(migrated_db), run_id, mode="full", pid=1, calls_revision=0, calls_count=0,
+                        data_start=None, data_end=None)
+    assert tuple(_raw(migrated_db).execute("SELECT status, pid FROM forecast_runs").fetchone()) == (status, None)
+
+
+def test_a_run_the_web_app_closed_writes_nothing(migrated_db):
+    """A server restart marks a run interrupted while its process may still be
+    going: that process must not overwrite the row or swap in its forecast."""
+    served = _write(migrated_db, _claimed_run(migrated_db), 1.0)
+    late = _claimed_run(migrated_db)
+    with _raw(migrated_db) as conn:
+        conn.execute("UPDATE forecast_runs SET status = 'interrupted', message = 'restart' WHERE id = ?", (late,))
+    before = {table: _raw(migrated_db).execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall()
+              for table in ("forecast_hours", "forecast_cells", "forecast_state", "forecast_runs", "model_artifacts")}
+
+    with pytest.raises(store.RunNotOpen, match=f"run {late} is interrupted, not running"):
+        _write(migrated_db, late, 2.0)
+    with pytest.raises(store.RunNotOpen):
+        store.finish_run(store.connect(migrated_db), late, status="failed", message="late")
+
+    after = {table: _raw(migrated_db).execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall() for table in before}
+    assert after == before
+    assert _raw(migrated_db).execute("SELECT model_id FROM forecast_state").fetchone()[0] == served
+
+
+def test_finish_run_records_status_message_and_json(migrated_db):
+    run_id = _claimed_run(migrated_db)
 
     store.finish_run(store.connect(migrated_db), run_id, status="rejected", message="kept nothing",
                      gate_passed=False, gate_json={"passed": False}, forecast_written=False)
@@ -216,8 +255,25 @@ def test_finish_run_records_status_message_and_json(migrated_db):
     assert row["finished_at"] > 0
 
 
+def test_a_gate_metric_with_no_data_is_stored_as_null(migrated_db):
+    """A gate over few origins has metrics with no data (NaN). JSON has no NaN and
+    the web app parses the column with JSON.parse: it must arrive as null."""
+    run_id = _claimed_run(migrated_db)
+    gate = {"passed": False, "model": {"daily_mape_1_14": float("nan"), "week_acc_std": np.float64("inf"),
+                                       "hourly_mae_1_14": np.float64(3.5)},
+            "naive": {"daily_mape_1_14": 9.0, "week_acc_std": float("-inf")}}
+
+    store.finish_run(store.connect(migrated_db), run_id, status="rejected", message="m", gate_json=gate)
+
+    text = _raw(migrated_db).execute("SELECT gate_json FROM forecast_runs").fetchone()[0]
+    assert "NaN" not in text and "Infinity" not in text
+    assert json.loads(text) == {"passed": False,
+                                "model": {"daily_mape_1_14": None, "week_acc_std": None, "hourly_mae_1_14": 3.5},
+                                "naive": {"daily_mape_1_14": 9.0, "week_acc_std": None}}
+
+
 def test_a_run_column_outside_the_list_is_refused(migrated_db):
-    run_id = _node_run(migrated_db)
+    run_id = _claimed_run(migrated_db)
     with pytest.raises(ValueError, match="trigger"):
         store.finish_run(store.connect(migrated_db), run_id, status="failed", message="x", trigger="cli")
 
@@ -225,7 +281,7 @@ def test_a_run_column_outside_the_list_is_refused(migrated_db):
 # ---- the forecast swap ---------------------------------------------------------------
 
 def test_write_forecast_fills_every_table_and_points_the_state_at_the_model(migrated_db):
-    run_id = _node_run(migrated_db)
+    run_id = _claimed_run(migrated_db)
 
     model_id = _write(migrated_db, run_id, 5.0)
 
@@ -242,8 +298,8 @@ def test_write_forecast_fills_every_table_and_points_the_state_at_the_model(migr
 
 
 def test_without_a_new_model_the_given_model_keeps_serving(migrated_db):
-    first = _write(migrated_db, _node_run(migrated_db), 1.0)
-    second_run = _node_run(migrated_db)
+    first = _write(migrated_db, _claimed_run(migrated_db), 1.0)
+    second_run = _claimed_run(migrated_db)
 
     model_id = _write(migrated_db, second_run, 2.0, new_model=False, model_id=first)
 
@@ -254,7 +310,7 @@ def test_without_a_new_model_the_given_model_keeps_serving(migrated_db):
 
 
 def test_a_failure_half_way_through_changes_nothing(migrated_db):
-    run_id = _node_run(migrated_db)
+    run_id = _claimed_run(migrated_db)
     _write(migrated_db, run_id, 1.0)
     before = {table: _raw(migrated_db).execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall()
               for table in ("forecast_hours", "forecast_cells", "forecast_state", "forecast_runs", "model_artifacts")}
@@ -263,7 +319,7 @@ def test_a_failure_half_way_through_changes_nothing(migrated_db):
 
     conn = store.connect(migrated_db)
     with pytest.raises(store.DatabaseError):
-        store.write_forecast(conn, run_id=_node_run(migrated_db), new_model=_model("broken"), hours=broken_hours,
+        store.write_forecast(conn, run_id=_claimed_run(migrated_db), new_model=_model("broken"), hours=broken_hours,
                              cells=_cells(9.0), state=_state(), run={"status": "succeeded"})
 
     after = {table: _raw(migrated_db).execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall()
@@ -276,26 +332,26 @@ def test_a_failure_half_way_through_changes_nothing(migrated_db):
 
 
 def test_old_artifacts_are_pruned_except_the_newest_five_and_the_serving_one(migrated_db):
-    first = _write(migrated_db, _node_run(migrated_db), 0.0)
+    first = _write(migrated_db, _claimed_run(migrated_db), 0.0)
     # Make the first model the serving one while six newer artifacts arrive behind it.
     for value in range(1, 7):
         with _raw(migrated_db) as conn:
             conn.execute("INSERT INTO model_artifacts (run_id, created_at, model_sha256, model_text, metadata_json, "
                          "train_start, train_end, train_rows) VALUES (0, 0, ?, 't', '{}', 'a', 'b', 1)",
                          (f"newer-{value}",))
-    _write(migrated_db, _node_run(migrated_db), 9.0, new_model=False, model_id=first)
+    _write(migrated_db, _claimed_run(migrated_db), 9.0, new_model=False, model_id=first)
 
     ids = [row[0] for row in _raw(migrated_db).execute("SELECT id FROM model_artifacts ORDER BY id")]
     assert ids == [first, 3, 4, 5, 6, 7]
 
-    newest = _write(migrated_db, _node_run(migrated_db), 10.0)
+    newest = _write(migrated_db, _claimed_run(migrated_db), 10.0)
     ids = [row[0] for row in _raw(migrated_db).execute("SELECT id FROM model_artifacts ORDER BY id")]
     assert ids == [4, 5, 6, 7, newest]
 
 
 def test_a_reader_sees_the_old_or_the_new_forecast_never_a_mix(migrated_db):
-    _write(migrated_db, _node_run(migrated_db), 0.0, calls_count=0)
-    run_ids = [_node_run(migrated_db) for _ in range(12)]
+    _write(migrated_db, _claimed_run(migrated_db), 0.0, calls_count=0)
+    run_ids = [_claimed_run(migrated_db) for _ in range(12)]
     seen, problems = set(), []
     done = threading.Event()
 

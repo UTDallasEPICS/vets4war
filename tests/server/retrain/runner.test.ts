@@ -1,6 +1,7 @@
 // The retrain runner with an injected spawn (no real process) and fake timers: the exact
 // command, single flight, the queued re-run, every way a run can end, the timeout,
-// shutdown, start-up recovery and every branch of the scheduled tick.
+// shutdown, start-up recovery, runs of a shell and every branch of the scheduled tick.
+// process.test.ts runs the same paths with real process trees.
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import type { spawn } from 'node:child_process'
@@ -10,28 +11,29 @@ import { createTestDb } from '../../helpers/db'
 import * as schema from '../../../server/db/schema'
 import type { AppDb } from '../../../server/utils/db'
 import {
+  DRAIN_MS,
   KILL_GRACE_MS,
   LOG_TAIL_BYTES,
+  SHUTDOWN_GRACE_MS,
+  WATCH_MS,
   createRetrainRunner,
   getRun,
   runsOverview,
   type RetrainConfig,
+  type ProcessInfo,
   type RetrainDeps,
-  type RunRow,
+  type RetrainRun,
 } from '../../../server/utils/retrain/runner'
 
 class FakeChild extends EventEmitter {
   stdout = new PassThrough()
   stderr = new PassThrough()
-  signals: string[] = []
   constructor(public pid: number | undefined) {
     super()
   }
-  kill(signal: string) {
-    this.signals.push(signal)
-    return true
-  }
+  // The process exits and its pipes close (no leftover holds them).
   exit(code: number | null, signal: string | null = null) {
+    this.emit('exit', code, signal)
     this.emit('close', code, signal)
   }
 }
@@ -51,8 +53,7 @@ let children: FakeChild[]
 let spawned: { command: string; args: string[]; options: Record<string, unknown> }[]
 let nextPid: number | undefined
 let killed: [number, string][]
-let alive: Set<number>
-let commandLines: Map<number, string>
+let table: ProcessInfo[]
 
 function runner(config: Partial<RetrainConfig> = {}, deps: RetrainDeps = {}) {
   const fakeSpawn = ((command: string, args: string[], options: Record<string, unknown>) => {
@@ -68,11 +69,10 @@ function runner(config: Partial<RetrainConfig> = {}, deps: RetrainDeps = {}) {
     {
       spawn: fakeSpawn,
       now: () => NOW,
-      isAlive: (pid) => alive.has(pid),
       kill: (pid, signal) => {
         killed.push([pid, signal])
       },
-      commandLine: (pid) => commandLines.get(pid) ?? null,
+      processes: () => table,
       ...deps,
     }
   )
@@ -139,7 +139,7 @@ function setForecast(revision: number, generatedAt: Date) {
     .run()
 }
 
-function addRun(values: Partial<typeof schema.forecastRuns.$inferInsert>): RunRow {
+function addRun(values: Partial<typeof schema.forecastRuns.$inferInsert>): RetrainRun {
   return db
     .insert(schema.forecastRuns)
     .values({ trigger: 'manual', mode: 'full', status: 'succeeded', createdAt: NOW, ...values })
@@ -148,7 +148,7 @@ function addRun(values: Partial<typeof schema.forecastRuns.$inferInsert>): RunRo
 }
 
 // What db.retrain does to its row (section 7.2), done by hand.
-function pythonWrites(id: number, status: RunRow['status'], fields: Partial<RunRow> = {}) {
+function pythonWrites(id: number, status: RetrainRun['status'], fields: Partial<RetrainRun> = {}) {
   db.update(schema.forecastRuns)
     .set({ status, finishedAt: NOW, callsRevision: 1, message: `python says ${status}`, ...fields })
     .where(eq(schema.forecastRuns.id, id))
@@ -164,9 +164,20 @@ beforeEach(() => {
   spawned = []
   nextPid = 5000
   killed = []
-  alive = new Set()
-  commandLines = new Map()
+  table = []
 })
+
+// The script as the runner starts it, for the process table.
+const script = (runId: number | null, db = '/data/v4w.db') => [
+  '/opt/forecast/.venv/bin/python',
+  '-m',
+  'db.retrain',
+  '--db',
+  db,
+  ...(runId === null ? [] : ['--run-id', String(runId)]),
+  '--mode',
+  'full',
+]
 
 afterEach(() => {
   vi.useRealTimers()
@@ -211,6 +222,8 @@ describe('request', () => {
     ])
     expect(options.cwd).toBe('/opt/forecast')
     expect(options.stdio).toEqual(['ignore', 'pipe', 'pipe'])
+    // Its own process group, so a stop reaches the gate workers.
+    expect(options.detached).toBe(true)
     expect((options.env as Record<string, string>).PYTHONUNBUFFERED).toBe('1')
     expect((options.env as Record<string, string>).PATH).toBe(process.env.PATH)
     expect(getRun(db, run.id).pid).toBe(5000)
@@ -248,6 +261,27 @@ describe('request', () => {
     await r.idle()
     expect(spawned).toHaveLength(2)
     expect(runs()).toHaveLength(2)
+  })
+})
+
+describe('a run that has reported but not yet exited', () => {
+  it('still counts as active: a request queues behind it, its exit code and output are kept', () => {
+    seedCalls()
+    const r = runner()
+    const { run } = r.request({ trigger: 'manual', requestedBy: 'a@example.org' })
+    children[0]!.stdout.write('V4W_RESULT {}\n')
+    pythonWrites(run.id, 'succeeded') // committed; the process is still exiting
+    const again = r.request({ trigger: 'manual', requestedBy: 'b@example.org' })
+    expect(again).toEqual({
+      run: expect.objectContaining({ id: run.id, status: 'succeeded' }),
+      queued: true,
+    })
+    expect(r.tick()).toMatchObject({ action: 'none', reason: 'A run is in progress.' })
+    expect(spawned).toHaveLength(1)
+
+    children[0]!.exit(0)
+    expect(getRun(db, run.id)).toMatchObject({ exitCode: 0, logTail: 'V4W_RESULT {}\n' })
+    expect(spawned).toHaveLength(2) // the queued one
   })
 })
 
@@ -297,8 +331,11 @@ describe('how a run ends', () => {
     expect(getRun(db, run.id)).toMatchObject({
       status: 'failed',
       exitCode: null,
-      message: 'The retrain script stopped without reporting a result (signal SIGKILL).',
+      message:
+        'The retrain script was stopped by SIGKILL before it reported a result. The forecast in use did not change.',
     })
+    // Whatever the script left in its process group is killed with it.
+    expect(killed).toEqual([[-5000, 'SIGKILL']])
   })
 
   it('fails a run whose interpreter could not be started', () => {
@@ -330,20 +367,24 @@ describe('how a run ends', () => {
     expect(tail.endsWith('the last line\n')).toBe(true)
   })
 
-  it('stops a run after the timeout: SIGTERM, then SIGKILL', () => {
+  it('stops a run after the timeout: SIGTERM, then SIGKILL, to the whole group', () => {
     vi.useFakeTimers()
     seedCalls()
     const { run } = runner().request({ trigger: 'manual', requestedBy: 'a@example.org' })
     vi.advanceTimersByTime(CONFIG.timeoutMs - 1)
-    expect(children[0]!.signals).toEqual([])
+    expect(killed).toEqual([])
     vi.advanceTimersByTime(1)
-    expect(children[0]!.signals).toEqual(['SIGTERM'])
+    expect(killed).toEqual([[-5000, 'SIGTERM']])
     vi.advanceTimersByTime(KILL_GRACE_MS)
-    expect(children[0]!.signals).toEqual(['SIGTERM', 'SIGKILL'])
+    expect(killed).toEqual([
+      [-5000, 'SIGTERM'],
+      [-5000, 'SIGKILL'],
+    ])
     children[0]!.exit(null, 'SIGKILL')
     expect(getRun(db, run.id)).toMatchObject({
       status: 'failed',
-      message: 'Stopped after 1 minutes (V4W_RETRAIN_TIMEOUT_MIN).',
+      message:
+        'Stopped after 1 minutes (V4W_RETRAIN_TIMEOUT_MIN). The forecast in use did not change.',
     })
   })
 
@@ -353,8 +394,26 @@ describe('how a run ends', () => {
     const { run } = runner().request({ trigger: 'manual', requestedBy: 'a@example.org' })
     pythonWrites(run.id, 'succeeded')
     children[0]!.exit(0)
+    killed = []
     vi.advanceTimersByTime(CONFIG.timeoutMs + KILL_GRACE_MS)
-    expect(children[0]!.signals).toEqual([])
+    expect(killed).toEqual([])
+  })
+
+  it('ends the run when the script exits, even while something still holds its pipes', async () => {
+    vi.useFakeTimers()
+    seedCalls()
+    const r = runner()
+    const { run } = r.request({ trigger: 'manual', requestedBy: 'a@example.org' })
+    children[0]!.stdout.write('gate table\n')
+    children[0]!.emit('exit', null, 'SIGKILL') // no 'close': a worker holds the pipes
+    expect(killed).toEqual([[-5000, 'SIGKILL']])
+    expect(getRun(db, run.id).status).toBe('queued')
+    vi.advanceTimersByTime(DRAIN_MS)
+    expect(getRun(db, run.id)).toMatchObject({ status: 'failed', logTail: 'gate table\n' })
+    await r.idle()
+    // The next request starts a fresh run.
+    expect(r.request({ trigger: 'manual', requestedBy: 'a@example.org' }).queued).toBe(false)
+    expect(spawned).toHaveLength(2)
   })
 })
 
@@ -365,7 +424,7 @@ describe('shutdown', () => {
     const { run } = r.request({ trigger: 'manual', requestedBy: 'a@example.org' })
     r.request({ trigger: 'import', requestedBy: 'b@example.org' }) // sets the re-run flag
     const done = r.shutdown()
-    expect(children[0]!.signals).toEqual(['SIGTERM'])
+    expect(killed).toEqual([[-5000, 'SIGTERM']])
     children[0]!.exit(null, 'SIGTERM')
     await done
     expect(getRun(db, run.id)).toMatchObject({
@@ -374,6 +433,30 @@ describe('shutdown', () => {
     })
     expect(spawned).toHaveLength(1)
     expect(r.tick().action).toBe('none')
+    expect(() => r.request({ trigger: 'manual', requestedBy: 'a@example.org' })).toThrow(
+      'The server is stopping. Ask again once it is back.'
+    )
+    expect(runs()).toHaveLength(1)
+  })
+
+  it('a run that does not stop is killed after a short grace and recorded anyway', async () => {
+    vi.useFakeTimers()
+    seedCalls()
+    const r = runner()
+    const { run } = r.request({ trigger: 'manual', requestedBy: 'a@example.org' })
+    const done = r.shutdown()
+    vi.advanceTimersByTime(SHUTDOWN_GRACE_MS)
+    expect(killed).toEqual([
+      [-5000, 'SIGTERM'],
+      [-5000, 'SIGKILL'],
+    ])
+    // Not even an exit event: the run is still closed and the server can go.
+    vi.advanceTimersByTime(2 * DRAIN_MS)
+    await done
+    expect(getRun(db, run.id)).toMatchObject({
+      status: 'interrupted',
+      message: 'The server stopped during this run.',
+    })
   })
 
   it('resolves at once when nothing runs', async () => {
@@ -382,22 +465,35 @@ describe('shutdown', () => {
 })
 
 describe('recover (start-up)', () => {
-  it('interrupts what was left running, stops our orphan only, clears the flag, starts a run', () => {
-    vi.useFakeTimers()
+  it('interrupts what was left running, kills its process tree only, clears the flag, starts a run', () => {
     seedCalls(3)
     setRevision(3, true)
     const orphan = addRun({ status: 'running', pid: 4242 })
     const reused = addRun({ status: 'running', pid: 4343 })
     const queued = addRun({ status: 'queued' })
-    alive = new Set([4242, 4343])
-    commandLines = new Map([
-      [4242, '/opt/forecast/.venv/bin/python -m db.retrain --db /data/v4w.db --run-id 1'],
-      [4343, '/usr/bin/vim notes.txt'],
-    ])
+    table = [
+      // the left-over script and its gate workers (same command line, same group)
+      { pid: 4242, pgid: 4242, args: script(orphan.id) },
+      { pid: 4250, pgid: 4242, args: script(orphan.id) },
+      { pid: 4251, pgid: 4242, args: script(orphan.id) },
+      // a worker whose parent already died: found by its command line alone
+      { pid: 4300, pgid: 4299, args: script(99) },
+      // a pid reused by something else, in a group of that number
+      { pid: 4343, pgid: 4343, args: ['/usr/bin/vim', 'notes.txt'] },
+      { pid: 4344, pgid: 4343, args: ['/bin/sh'] },
+      // another app's retrain on another database, and an admin's run from a shell
+      { pid: 4400, pgid: 4400, args: script(1, '/other/app.db') },
+      { pid: 4500, pgid: 4500, args: script(null) },
+    ]
 
     const result = runner().recover()
     expect(result.interrupted).toEqual([orphan.id, reused.id, queued.id])
-    expect(killed).toEqual([[4242, 'SIGTERM']])
+    expect(killed.sort()).toEqual([
+      [4242, 'SIGKILL'],
+      [4250, 'SIGKILL'],
+      [4251, 'SIGKILL'],
+      [4300, 'SIGKILL'],
+    ])
     for (const id of result.interrupted) {
       expect(getRun(db, id)).toMatchObject({
         status: 'interrupted',
@@ -412,12 +508,6 @@ describe('recover (start-up)', () => {
       requestedByLabel: 'startup',
     })
     expect(spawned).toHaveLength(1)
-
-    vi.advanceTimersByTime(KILL_GRACE_MS)
-    expect(killed).toEqual([
-      [4242, 'SIGTERM'],
-      [4242, 'SIGKILL'],
-    ])
   })
 
   it('starts nothing when a run already finished on this revision', () => {
@@ -444,6 +534,57 @@ describe('recover (start-up)', () => {
   })
 })
 
+describe('runs started from a shell', () => {
+  it('a request while one runs is queued, and starts once that run ends', () => {
+    vi.useFakeTimers()
+    seedCalls()
+    const shell = addRun({ trigger: 'cli', status: 'running', pid: 4500, requestedByLabel: 'cli' })
+    table = [{ pid: 4500, pgid: 4500, args: script(null) }]
+    const r = runner()
+    expect(r.request({ trigger: 'manual', requestedBy: 'a@example.org' })).toEqual({
+      run: expect.objectContaining({ id: shell.id }),
+      queued: true,
+    })
+    vi.advanceTimersByTime(WATCH_MS)
+    expect(spawned).toEqual([])
+
+    pythonWrites(shell.id, 'succeeded') // the shell's run reports and exits
+    table = []
+    vi.advanceTimersByTime(WATCH_MS)
+    expect(spawned).toHaveLength(1)
+    expect(runs().at(-1)).toMatchObject({ trigger: 'import', requestedByLabel: 'queued' })
+    expect(getRun(db, shell.id).status).toBe('succeeded')
+  })
+
+  it('a run whose process is gone without a word is closed, and does not block', () => {
+    seedCalls()
+    const shell = addRun({ trigger: 'cli', status: 'running', pid: 4500 })
+    table = [{ pid: 4500, pgid: 4500, args: ['/usr/bin/vim'] }] // the pid was reused
+    const r = runner()
+    const { run, queued } = r.request({ trigger: 'manual', requestedBy: 'a@example.org' })
+    expect(queued).toBe(false)
+    expect(run.id).not.toBe(shell.id)
+    expect(getRun(db, shell.id)).toMatchObject({
+      status: 'failed',
+      finishedAt: NOW,
+      message:
+        'The run started from a shell (process 4500) ended without reporting a result. The forecast in use did not change.',
+    })
+    expect(killed).toEqual([]) // never signalled: it is not ours
+  })
+
+  it('start-up leaves a live one alone and starts nothing beside it', () => {
+    seedCalls(2)
+    setRevision(2, true)
+    const shell = addRun({ trigger: 'cli', status: 'running', pid: 4500 })
+    table = [{ pid: 4500, pgid: 4500, args: script(null) }]
+    expect(runner().recover()).toEqual({ interrupted: [], started: null })
+    expect(killed).toEqual([])
+    expect(getRun(db, shell.id).status).toBe('running')
+    expect(rerunFlag()).toBe(true) // still owed once it ends
+  })
+})
+
 describe('tick', () => {
   const OLD = new Date(NOW.getTime() - 21 * 3600 * 1000)
   const FRESH = new Date(NOW.getTime() - 19 * 3600 * 1000)
@@ -460,7 +601,8 @@ describe('tick', () => {
       name: 'a run is active',
       setup: () => {
         seedCalls()
-        addRun({ status: 'running' })
+        addRun({ trigger: 'cli', status: 'running', pid: 4500 })
+        table = [{ pid: 4500, pgid: 4500, args: script(null) }]
       },
       action: 'none',
       reason: 'A run is in progress.',
@@ -483,14 +625,16 @@ describe('tick', () => {
       reason: 'The call data (revision 2) is newer than the forecast.',
     },
     {
-      name: 'data newer, a run on it was refused, forecast old',
+      // A refresh would mark the forecast current although no model saw the new data.
+      name: 'data newer, a run on it failed, forecast old',
       setup: () => {
         seedCalls(2)
         setForecast(1, OLD)
         addRun({ status: 'failed', callsRevision: 2 })
       },
-      action: 'forecast-only',
-      reason: 'The forecast is more than 20 hours old.',
+      action: 'none',
+      reason:
+        'The call data (revision 2) is newer than the forecast, and run 1 on it ended failed; an admin decides what next.',
     },
     {
       name: 'data newer, a run on it was rejected, forecast fresh',
@@ -500,7 +644,8 @@ describe('tick', () => {
         addRun({ status: 'rejected', callsRevision: 2 })
       },
       action: 'none',
-      reason: 'The forecast is up to date.',
+      reason:
+        'The call data (revision 2) is newer than the forecast, and run 1 on it ended rejected; an admin decides what next.',
     },
     {
       name: 'no forecast, a run on this revision failed',
@@ -510,7 +655,7 @@ describe('tick', () => {
       },
       action: 'none',
       reason:
-        'A retrain on the current call data already ended without a forecast; an admin decides what next.',
+        'The call data (revision 1) has no forecast yet, and run 1 on it ended failed; an admin decides what next.',
     },
     {
       name: 'forecast current and fresh',
