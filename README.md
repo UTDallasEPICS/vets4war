@@ -503,12 +503,17 @@ each point. Work through it before anyone schedules people from these numbers.
     header (`X-Forwarded-For`). Configure it and run the checks in
     [docs/deployment.md](docs/deployment.md#the-sign-in-rate-limit-and-the-client-address).
     Never let the app's port be reached directly.
-11. **The image on the real platform, and how much memory and CPU a retrain needs there.**
-    Start with the sizes in [docs/deployment.md](docs/deployment.md#how-big-a-task), which
-    were measured on synthetic data in a test sandbox, and watch the first real retrain.
-12. **The same model from the same data on a different kind of CPU.** Do not expect
-    identical fingerprints between an Intel laptop and an ARM server. Compare the check
-    table instead.
+11. **The image on the real platform.** It was built and run for amd64 only. For arm64,
+    which the pipeline deploys, the build has not completed anywhere yet: in the test
+    sandbox, under emulation, the step that builds the app hung. The first complete arm64
+    build is the pipeline's own. Watch it, and watch the first real retrain: how much memory
+    and CPU it needs there is not known. Start with the sizes in
+    [docs/deployment.md](docs/deployment.md#how-big-a-task), which were measured on
+    synthetic data in a test sandbox.
+12. **The same model from the same data on a different kind of CPU.** On synthetic data the
+    model came out identical on amd64 and on arm64 emulated on the same machine. Real ARM
+    hardware with the real data has not been tried. If `--verify-reference` answers
+    `DIFFERENT` there, that is not a fault by itself: compare the check table instead.
 13. **Two server instances on one database file**, even for a moment during a redeploy.
     Run one instance: the retrain runner assumes it is the only server on its database.
 14. **Time.** The daily schedule over real days, a session ending after 7 days and the

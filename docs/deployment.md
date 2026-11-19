@@ -45,7 +45,17 @@ variables are already set in the image: `NODE_ENV=production`,
 `V4W_FORECAST_DIR=/app/forecast`, `V4W_PYTHON=/app/forecast/.venv/bin/python`. Built for
 amd64 the image is about 870 MB.
 
-Three consequences:
+What has and has not been built. The image was built and run for amd64 in a test sandbox:
+the health check, sign-in by mail, an upload whose retrain the server started inside the
+container, and a retrain by hand, both as `root` and as the user `app`. For **arm64**, which
+is what the pipeline deploys, the `Dockerfile` has **not** been built from start to finish.
+The sandbox is an amd64 machine that emulates ARM; under that emulation every step of the
+`Dockerfile` ran except `pnpm run build`, which hung. What runs in the final image was
+checked on emulated arm64 separately: Node, the Python environment with its packages, and
+(in an image whose JavaScript was built on amd64) an upload with its retrain. So the first
+complete arm64 build is the one the pipeline does on its ARM runner. Watch that run.
+
+Four consequences of how the image is made:
 
 - **Build the image on the kind of CPU it will run on.** The build includes native binaries
   for the machine that builds it. The pipeline builds on an ARM runner for `linux/arm64`.
@@ -404,9 +414,11 @@ trained on, and this machine computes exactly as the machine that trained it.
    (`forecast/requirements-runtime.txt`) give the same model on the same kind of CPU. That
    was shown on synthetic data during the rebuild. Across CPU kinds (an Intel or AMD machine
    against an ARM server) identical results are not guaranteed, because floating-point
-   arithmetic in the numeric libraries can differ in the last digits. A different
-   fingerprint on a different CPU is therefore not a fault by itself. It has not been
-   measured how far such models differ, so look at what matters instead:
+   arithmetic in the numeric libraries can differ in the last digits. One data point exists:
+   the same synthetic history gave the identical fingerprint and identical check figures on
+   amd64 and on arm64, where arm64 was emulated on the same machine. That is encouraging; it
+   is not real ARM hardware and not the real data. A different fingerprint on a different
+   CPU is therefore not a fault by itself. Look at what matters instead:
    - make a copy of the database that ends on the reference model's last day, and retrain
      on the copy (never on the live file):
 
