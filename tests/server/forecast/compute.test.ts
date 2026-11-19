@@ -88,6 +88,39 @@ describe('resolvePatience', () => {
     })
   })
 
+  // Review finding N-5: the stored estimate is not a request field, so the parameter
+  // bounds never saw it; a tiny one made every default request cost seconds per day.
+  it.each([9.99, 2, 0.5, 0, -1, Number.NaN])(
+    'refuses to compute with a stored estimate of %s s, quickly and plainly',
+    (stored) => {
+      const error = caught(() =>
+        resolvePatience({ queueModel: 'erlang_a', patienceSec: null }, { ...state, patienceSec: stored })
+      )
+      expect(error.statusCode).toBe(503)
+      expect(error.data.code).toBe('implausible_patience')
+      expect(error.message).toContain('implausibly small')
+      expect(error.message).toContain('reload the call data and run a retrain')
+      expect(error.message).toContain('patience_sec')
+    }
+  )
+
+  it('still serves an override or Erlang C when the stored estimate is implausible', () => {
+    const broken = { ...state, patienceSec: 0.5 }
+    expect(resolvePatience({ queueModel: 'erlang_a', patienceSec: 60 }, broken).patienceSec).toBe(60)
+    expect(resolvePatience({ queueModel: 'erlang_c', patienceSec: null }, broken).patienceSec).toBe(
+      null
+    )
+  })
+
+  it('accepts a stored estimate at the minimum and a very patient line', () => {
+    for (const stored of [10, 3600, 86400]) {
+      expect(
+        resolvePatience({ queueModel: 'erlang_a', patienceSec: null }, { ...state, patienceSec: stored })
+          .patienceSec
+      ).toBe(stored)
+    }
+  })
+
   it('has no patience under Erlang C, override or not', () => {
     expect(resolvePatience({ queueModel: 'erlang_c', patienceSec: 60 }, state)).toEqual({
       patienceSec: null,
