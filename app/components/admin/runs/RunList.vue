@@ -14,6 +14,14 @@
   }
   const when = (iso: string) =>
     new Date(iso).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+  // How long a run took, or "running" while it has not finished.
+  function duration(start: string, end: string | null): string {
+    if (!end) return 'running'
+    const ms = new Date(end).getTime() - new Date(start).getTime()
+    const seconds = Math.max(0, Math.round(ms / 1000))
+    const minutes = Math.floor(seconds / 60)
+    return minutes ? `${minutes} min ${seconds % 60} s` : `${seconds} s`
+  }
 </script>
 
 <template>
@@ -31,7 +39,8 @@
             <th class="py-1 pr-4 font-medium">Started by</th>
             <th class="py-1 pr-4 font-medium">Kind</th>
             <th class="py-1 pr-4 font-medium">Status</th>
-            <th class="py-1 pr-4 font-medium">Message</th>
+            <th class="py-1 pr-4 font-medium">Took</th>
+            <th class="min-w-64 py-1 pr-4 font-medium">Message</th>
             <th class="py-1"><span class="sr-only">Details</span></th>
           </tr>
         </thead>
@@ -52,8 +61,13 @@
               >
             </td>
             <td class="py-1 pr-4">{{ run.mode === 'full' ? 'Retrain' : 'Forecast refresh' }}</td>
-            <td class="py-1 pr-4"><AdminRunsStatusBadge :status="run.status" /></td>
-            <td class="py-1 pr-4">{{ run.message }}</td>
+            <td class="py-1 pr-4">
+              <AdminRunsStatusBadge :status="run.status" :forecast-written="run.forecast_written" />
+            </td>
+            <td class="py-1 pr-4 whitespace-nowrap tabular-nums">
+              {{ duration(run.started_at ?? run.created_at, run.finished_at) }}
+            </td>
+            <td class="min-w-64 py-1 pr-4">{{ run.message }}</td>
             <td class="py-1 text-right">
               <UButton
                 size="xs"
