@@ -1,339 +1,365 @@
-# Testing guide (Vitest baseline)
+# Testing guide
 
-This guide teaches you how to run, read, write, review, and troubleshoot the automated
-tests in this template. **It assumes no prior testing experience.** If a word looks
-unfamiliar, check [Words you'll see](#words-youll-see) first.
+How to run, read, write and review the automated tests of this repository. The first half
+assumes no testing experience; if a word is unfamiliar, see
+[Words you will see](#words-you-will-see). The second half describes each layer of tests
+and what none of them can prove.
 
-The template ships with a small **Vitest** baseline: one real component test for the
-application shell. Vitest is the test runner (the program that finds and runs your tests).
+Every test runs on **generated (synthetic) data**. There is no real call data in this
+repository, in the tests or in CI, and a number a test prints says nothing about the real
+line.
 
-> **What this baseline needs:** nothing external. It runs with **no `.env` file, no
-> database, no real email, no browser installation, no dev server, and no customer data.**
-> You can clone the repo, install dependencies, and run the tests immediately.
+## The layers at a glance
 
-> **Playwright note:** browser/end-to-end testing with Playwright is intentionally **not**
-> part of this template. That work lives separately (NPTS). This guide is Vitest-only.
+| What is tested                                          | Tool                     | Where                          | Command                |
+| ------------------------------------------------------- | ------------------------ | ------------------------------ | ---------------------- |
+| Shared arithmetic, console logic, the server's services | Vitest, project `unit`   | `tests/unit/`, `tests/server/` | `pnpm test`            |
+| Pages and components                                    | Vitest, project `nuxt`   | `tests/nuxt/`                  | `pnpm test`            |
+| The Python pipeline                                     | pytest                   | `forecast/tests/`              | `pnpm forecast:test`   |
+| TypeScript against Python                               | Vitest, project `parity` | `tests/parity/`                | `pnpm test:parity`     |
+| The whole app, from an empty database to a forecast     | `scripts/e2e.mjs`        | (a script, not a test folder)  | `pnpm e2e`             |
+| Types of the tests and scripts                          | `vue-tsc`                | `tests/tsconfig.*.json`        | `pnpm typecheck:tests` |
 
----
+`pnpm test` needs nothing but `pnpm install`: no `.env` file, no database file, no mail, no
+browser, no Python. The other three need the Python environment (`pnpm forecast:setup`).
 
-## Words you'll see
+## Words you will see
 
-Read these once; refer back as needed.
-
-- **Repository (repo):** the project's folder of code, tracked by Git.
-- **Repository root:** the top folder of the repo — the one containing `package.json` and
-  `README.md`. All commands in this guide are run from here.
-- **Terminal:** the text window where you type commands (Terminal on macOS/Linux, or the
-  integrated terminal in VS Code on any OS).
-- **Command:** a line you type into the terminal and run by pressing Enter.
-- **Package / dependency:** a reusable piece of code the project installs. Test tools like
-  `vitest` are **dev dependencies** (needed to develop/test, not to run in production).
-- **Automated test:** code that checks other code behaves as expected, so a human doesn't
-  have to re-check by hand every time.
-- **Test file:** a file containing tests. Here they live in `tests/nuxt/` and end in
-  `.test.ts`.
-- **Test case:** one individual check, written with `it(...)` or `test(...)`.
-- **Suite:** a group of related test cases, written with `describe(...)`.
-- **Assertion:** the line that states what must be true, e.g. `expect(x).toBe(3)`. If it's
+- **Repository root:** the top folder of the project, the one with `package.json`. Every
+  command in this guide is run from there.
+- **Automated test:** code that checks other code, so that nobody has to re-check by hand.
+- **Test file:** a file of tests. Here they end in `.test.ts` (TypeScript) or start with
+  `test_` (Python).
+- **Test case:** one check, written with `it(...)`.
+- **Suite:** a group of related cases, written with `describe(...)`.
+- **Assertion:** the line that states what must be true, like `expect(x).toBe(3)`. If it is
   not true, the test fails.
-- **Expected value vs actual value:** _expected_ is what you told the test to require;
-  _actual_ is what the code really produced. A failure prints both so you can compare.
-- **Component test:** a test that renders a UI component (here, a Vue component) and checks
-  what it produces — without running the whole app.
-- **Mock / stub:** a stand-in for a real thing so a test stays isolated and fast. A **stub**
-  is a placeholder (e.g. we stub `<NuxtPage />` so no real page loads). A **mock** is a
-  fake whose calls you can inspect.
-- **Headless mode:** running without a visible window/browser. These tests run headless — no
-  UI pops up.
-- **Watch mode:** the runner stays open and re-runs tests automatically when you save a
-  file. Good while writing code.
-- **Exit code:** the number a command returns when it finishes. **0 means success**; any
-  other number means failure. Tools like CI read this to decide pass/fail.
-- **Merge request (MR) / pull request (PR):** a proposed set of changes submitted for review
-  before it's merged into the shared branch.
+- **Expected and received:** what you required, and what the code really produced. A
+  failure prints both.
+- **Mock, stub, test double:** a stand-in for a real thing (the mail server, the browser's
+  session, the retrain script), so that a test stays small and fast.
+- **Exit code:** the number a command returns when it ends. 0 means success. CI reads it.
+- **CI:** the checks GitHub runs on every pull request.
 
----
+## First green run
 
-## Prerequisites
-
-You need **Node.js** and **pnpm** installed. Check your versions:
-
-```bash
-node --version
-pnpm --version
-```
-
-- Node.js 20 or newer is recommended (Nuxt 4 requires a modern Node).
-- This project uses `pnpm`. If `pnpm --version` errors, install it: `npm install -g pnpm`.
-
-If a command "isn't found," the tool isn't installed or isn't on your PATH — install it and
-open a new terminal.
-
-## Open a terminal at the repository root
-
-1. Get the code and enter the folder:
-   ```bash
-   git clone <your-repo-url>
-   cd nuxt-template
-   ```
-2. Confirm you're at the root — you should see `package.json`:
-   ```bash
-   ls package.json
-   ```
-   (In VS Code: **Terminal → New Terminal** opens at the folder you have open.)
-
-## Install dependencies
-
-Run this once (and again whenever dependencies change):
+You need Node.js 22 and pnpm 10.
 
 ```bash
 pnpm install
-```
-
-This downloads Vitest and the other tools into `node_modules/`. No `.env`, database, or
-other setup is needed to run the tests.
-
-## Your first green run
-
-```bash
 pnpm test
 ```
 
-`pnpm test` runs every test **once** and then exits (this is one-shot mode). A successful run
-ends with a summary like:
+`pnpm test` runs every test of the `unit` and `nuxt` projects once and exits. A good run
+ends like this:
 
 ```
- Test Files  1 passed (1)
-      Tests  2 passed (2)
+ Test Files  43 passed (43)
+      Tests  619 passed (619)
 ```
 
-Exact counts, timings, and version numbers will differ over time — that's fine. **What
-matters:** it says _passed_, the number of tests is greater than zero, and the command
-returns to your prompt with **exit code 0**.
-
-### How do I know a command finished?
-
-The command stops printing and your prompt (e.g. `$` or your folder name) comes back. To see
-the exit code of the last command:
-
-```bash
-echo $?
-```
-
-`0` = success. Anything else = failure.
+The counts grow as tests are added, and a few tests skip themselves when the Python
+environment is missing. What matters: it says _passed_, nothing says _failed_, and
+`echo $?` right after prints `0`.
 
 ## Everyday commands
 
-| Command                                                       | What it does                                                                 |
-| ------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `pnpm test`                                                   | Run all tests once and exit (use this before opening an MR).                 |
-| `pnpm test:watch`                                             | Run tests and **keep watching** — re-runs on save. Press **Ctrl+C** to stop. |
-| `pnpm exec vitest run tests/nuxt/app-shell.test.ts`           | Run just **one file**.                                                       |
-| `pnpm exec vitest run -t "links the brand to the home route"` | Run just **one named test** (matches the text in `it(...)`).                 |
+| Command                                                            | What it does                                         |
+| ------------------------------------------------------------------ | ---------------------------------------------------- |
+| `pnpm test`                                                        | All unit and component tests, once.                  |
+| `pnpm test:watch`                                                  | The same, re-run on every save. Ctrl+C stops it.     |
+| `pnpm exec vitest run tests/unit/shared/format.test.ts`            | One file.                                            |
+| `pnpm exec vitest run --project unit -t "rounds a half minute up"` | One test, by the text of its `it(...)`.              |
+| `pnpm exec vitest run --project unit tests/server/retrain`         | One folder.                                          |
+| `pnpm forecast:test`                                               | The whole Python suite.                              |
+| `cd forecast && .venv/bin/python -m pytest tests/test_store.py -q` | One Python file.                                     |
+| `pnpm lint`, `pnpm typecheck`, `pnpm typecheck:tests`              | The checks that are not tests but that CI also runs. |
 
-> Tip: to filter by name, use `pnpm exec vitest run -t "..."` (not `pnpm test -- -t`). The
-> `pnpm exec` form passes the flag straight to Vitest.
+## Reading a test
 
----
-
-## Reading the included test
-
-The baseline test is [`tests/nuxt/app-shell.test.ts`](../tests/nuxt/app-shell.test.ts). It
-renders the real application shell (`app/app.vue`) and checks two things that are always
-present: the brand links home, and the theme toggle is reachable by screen readers.
-
-Every test follows **Arrange → Act → Assert**:
-
-- **Arrange:** set up the world the test needs.
-- **Act:** do the thing you're testing.
-- **Assert:** state what must be true.
+[`tests/unit/shared/format.test.ts`](../tests/unit/shared/format.test.ts) is a good first
+one. It checks the function that turns seconds into text like `42h 18m`:
 
 ```ts
-// @vitest-environment nuxt          // run this file in the Nuxt environment
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest' // the toolkit
-import { mountSuspended } from '@nuxt/test-utils/runtime' // renders Nuxt components
-import App from '../../app/app.vue' // the component under test
+import { describe, it, expect } from 'vitest' // the toolkit
+import { formatDuration } from '#shared/utils/format' // the code under test
 
-describe('application shell (app.vue)', () => {
-  // a SUITE: a group of related cases
-  let fetchSpy
-
-  beforeEach(() => {
-    // ARRANGE: watch the network so we can prove the shell renders offline.
-    fetchSpy = vi.spyOn(globalThis, 'fetch')
-  })
-  afterEach(() => {
-    fetchSpy.mockRestore()
+describe('formatDuration', () => {
+  // a SUITE: related cases
+  it('writes hours and minutes, or minutes alone under an hour', () => {
+    // a TEST CASE; its text is what -t matches
+    expect(formatDuration(152280)).toBe('42h 18m') // an ASSERTION
+    expect(formatDuration(18 * 60)).toBe('18m')
   })
 
-  it('links the brand to the home route', async () => {
-    // a TEST CASE
-    // ACT: render the shell; stub <NuxtPage/> so no page/route loads.
-    const wrapper = await mountSuspended(App, { global: { stubs: { NuxtPage: true } } })
-
-    // ASSERT: the brand link says "Nuxt Template" and points to "/".
-    const brandLink = wrapper.get('a')
-    expect(brandLink.text()).toContain('Nuxt Template') // matcher: text contains
-    expect(brandLink.attributes('href')).toBe('/') // matcher: exact equality
-    expect(fetchSpy).not.toHaveBeenCalled() // matcher: never called
+  it('rounds a half minute up', () => {
+    expect(formatDuration(90)).toBe('2m')
+    expect(formatDuration(89.9)).toBe('1m')
   })
 })
 ```
 
-The pieces:
+Every test follows the same three steps. **Arrange:** set up what the test needs. **Act:**
+do the thing. **Assert:** state what must be true. Here arranging and acting are one call.
 
-- **`import`** brings in the tools and the component you're testing.
-- **`describe(name, fn)`** groups related cases into a suite.
-- **`it(name, fn)`** (same as **`test`**) defines one test case; its `name` is what `-t`
-  matches.
-- **`expect(actual)`** starts an assertion about a value.
-- **Matchers** finish it: `.toBe(x)` (exact equality), `.toContain(x)` (includes),
-  `.not.toHaveBeenCalled()` (a spy/mock was never used). There are many more.
-- **`mountSuspended`** renders a Nuxt component with auto-imports and Nuxt UI available;
-  **stubbing** `NuxtPage` keeps the test to just the shell.
+Two more kinds are worth reading once:
 
----
+- **A server test with a database.**
+  [`tests/server/users/users.test.ts`](../tests/server/users/users.test.ts) tests the people
+  rules. It gets a real, migrated, in-memory database from `createTestDb()`
+  ([`tests/helpers/db.ts`](../tests/helpers/db.ts)), so it sees exactly the tables a real
+  database has, and it calls the service function directly. No server is started.
+- **A component test.** [`tests/nuxt/auth-page.test.ts`](../tests/nuxt/auth-page.test.ts)
+  renders the sign-in page with `mountSuspended` and replaces the auth client by a mock, so
+  nothing leaves the test: no database is opened, no mail is sent, no network request is
+  made. Tests in `tests/nuxt/` start with the line `// @vitest-environment nuxt`.
 
-## Learn by doing: a reversible red → green → green exercise
+## Learn by doing: red, then green
 
-This teaches you what a failure looks like. **You will undo every change — nothing here is
-permanent.**
+This shows what a failure looks like. You undo the change at the end.
 
-1. **Green.** Run `pnpm test`. Everything passes.
-2. **Make it red.** In `tests/nuxt/app-shell.test.ts`, change the expected href from `'/'` to
-   `'/wrong'`:
-   ```ts
-   expect(brandLink.attributes('href')).toBe('/wrong')
+1. Run `pnpm exec vitest run tests/unit/shared/format.test.ts`. It passes.
+2. In that file, change the expected text `'42h 18m'` to `'42h 19m'` and run it again. It
+   fails with something like
+
    ```
-   Run `pnpm test`. It **fails** with something like:
+   AssertionError: expected '42h 18m' to be '42h 19m'
+   - Expected: "42h 19m"
+   + Received: "42h 18m"
    ```
-   AssertionError: expected '/' to be '/wrong' // Object.is equality
-   - Expected: "/wrong"
-   + Received: "/"
-   ```
-   Read it as: _expected_ `/wrong`, but the code actually produced (_received_) `/`. The exact
-   wording varies by Vitest version — focus on the expected-vs-received pair.
-3. **Green again.** Change it back to `'/'` and run `pnpm test`. It passes.
 
-You just experienced the whole loop: a passing test, a failing test that explains itself, and
-a fix. Real test-driven work is the same loop.
+   Read it as: you required `42h 19m`, the code produced `42h 18m`.
 
----
+3. Change it back and run it again. It passes.
 
-## What passing and failing look like
+That is the whole loop: a passing test, a failing test that explains itself, a fix.
 
-**Passing** (numbers/timings vary):
+## When a test fails
 
-```
- Test Files  1 passed (1)
-      Tests  2 passed (2)
-```
+- **An assertion failed:** the code produced something else than expected. The message
+  shows expected and received. This is the useful kind.
+- **The test crashed before its assertions:** a wrong import path or a missing dependency.
+  You get a stack trace instead. Run `pnpm install` again; check the path.
+- **"No test files found":** the file is not under one of the test folders, or its name
+  does not end in `.test.ts`.
+- **A test hangs or fails only sometimes:** it reaches outside itself (a real timer, the
+  network, a file another test also uses). The tests here are built not to.
+- **A parity or Python test fails at once with a missing interpreter:** run
+  `pnpm forecast:setup`.
+- **Everything failed after `git pull`:** run `pnpm install`, then try again.
 
-**Failing** (numbers/wording vary):
+When you ask for help, paste the exact command, the full output including the summary line,
+`node --version`, `pnpm --version`, your operating system, and what you already tried.
 
-```
- FAIL  tests/nuxt/app-shell.test.ts > application shell (app.vue) > links the brand to the home route
-AssertionError: expected '/' to be '/wrong'
- Test Files  1 failed (1)
-      Tests  1 failed | 1 passed (2)
-```
+## The layers in detail
 
-Don't match this output character-for-character across versions. The signal is the word
-**FAIL**, the failing test's name, and the expected-vs-received values.
+### Unit and server tests (`tests/unit/`, `tests/server/`)
 
----
+They run in plain Node (`environment: 'node'` in `vitest.config.ts`).
 
-## Common failure categories
+- `tests/unit/shared/`: the Erlang and staffing arithmetic, dates, formatting.
+- `tests/unit/console/`: every number the staffing page derives, its export, its status
+  note, and that its stylesheet stays scoped to the page.
+- `tests/unit/shell/`: every icon the pages name is in the installed icon sets.
+- `tests/server/foundation/`: the access rules, the environment check, the error shape,
+  the schema, the first admins.
+- `tests/server/forecast/`: parameters, the arithmetic of the forecast answers, the routes'
+  services, and a frozen set of answers of the old API (below).
+- `tests/server/ingest/`: the workbook reader, hostile and damaged files, the per-day plan,
+  the import, locking, the upload route over real HTTP.
+- `tests/server/retrain/`: the runner. Most cases use a stand-in for the script
+  (`fixtures/fake-python.mjs`); seven start the real retrain script on a small generated
+  database and skip themselves when `forecast/.venv` does not exist.
+- `tests/server/users/`: the people rules.
 
-- **Assertion failure:** the code produced something other than what you expected. The most
-  common and most useful — it prints expected vs received.
-- **Setup/environment error:** the test crashes before assertions run (e.g. wrong import
-  path, missing dependency). Usually a stack trace, not an expected-vs-received message.
-- **No tests found:** the run fails on purpose (this project sets `passWithNoTests: false`).
-  It means your file isn't under `tests/nuxt/` or doesn't end in `.test.ts`.
-- **Flaky/timeout:** a test hangs or intermittently fails. The baseline is designed to be
-  deterministic; if you see this, suspect something reaching outside the test (a real timer,
-  network, or shared state).
+### Component tests (`tests/nuxt/`)
 
-## Troubleshooting
+They run in the Nuxt environment and render real pages and components: the sign-in page,
+the admin page and its panels, the default layout, the staffing console. Whatever would
+reach outside (the auth client, `apiFetch`) is mocked in the test.
 
-- **`pnpm: command not found`** → install pnpm (`npm install -g pnpm`) and open a new terminal.
-- **`Cannot find module` / import error** → check the import path in your test; run from the
-  repository root; try `pnpm install` again.
-- **"No test files found"** → your file must live in `tests/nuxt/` and end with `.test.ts`.
-- **Watch mode won't stop** → press **Ctrl+C** in that terminal.
-- **A test suddenly fails after `git pull`** → run `pnpm install` (dependencies may have
-  changed), then re-run `pnpm test`.
-- **Still stuck?** Use the help-request template below.
+### The Python suite (`forecast/tests/`)
 
-## Asking for help (copy this)
-
-```
-What I ran:
-  <the exact command>
-
-What I expected:
-  <e.g. all tests to pass>
-
-What happened:
-  <paste the FULL terminal output, including the summary line>
-
-Environment:
-  node --version -> <paste>
-  pnpm --version -> <paste>
-  OS -> <macOS / Windows / Linux>
-
-What I already tried:
-  <e.g. pnpm install, ran from repo root>
+```bash
+pnpm forecast:setup   # once: forecast/.venv with the pinned packages
+pnpm forecast:test
 ```
 
-Pasting the full output (not a screenshot of one line) gets you a faster answer.
+It covers the model code, the features, the backtest, the staffing arithmetic, the store
+(the only module that touches SQLite), and the retrain script itself: real runs on small
+generated databases, including what happens when the script is stopped or killed in the
+middle. The fixture `migrated_db` builds a database from the same `drizzle/` migrations the
+app uses, so Python is always tested against the real schema.
 
----
+A handful of tests are skipped on a normal machine: they compare with the old app and need
+material that is not in the repository (see [Parity](#parity-the-new-app-against-the-old)).
 
-## The testing expectation for merge requests
+### TypeScript against Python (`tests/parity/`)
 
-**Every merge request should include at least one meaningful test for the behavior it
-changes**, unless a mentor explicitly records a waiver on the MR.
+Two things are computed twice in this project, once in each language, and must agree:
 
-- **What a student provides:** for the behavior you added or changed, a test that would fail
-  _before_ your change and passes _after_ it — plus a green `pnpm test` locally.
-- **What a mentor verifies:** that the test actually exercises the changed behavior (not a
-  trivial always-true check), that `pnpm test` passes, and that isolation is preserved (no
-  real network/database/email). If tests are genuinely not applicable, the mentor records a
-  short waiver noting why.
+- the staffing arithmetic (the server and the page compute it in TypeScript; the model code
+  has the original in Python);
+- the workbook reader (the app reads uploads in TypeScript; the proven reader is Python).
 
-"Meaningful" means the test would catch a real regression — weakening assertions or isolation
-just to get green does not count.
+`pnpm test:parity` runs both sides on the same generated inputs and compares the results.
+It needs `forecast/.venv` and fails without it rather than skipping.
 
-## Checklists
+### End to end (`scripts/e2e.mjs`)
 
-**Student — before opening an MR:**
+```bash
+pnpm e2e                           # builds the app, then runs
+node scripts/e2e.mjs --no-build    # uses the .output/ that is already there
+node scripts/e2e.mjs --keep        # keeps its temp folder (database, workbooks, server log)
+```
 
-- [ ] `pnpm install` runs cleanly.
-- [ ] `pnpm test` passes locally (exit code 0, more than zero tests).
-- [ ] I added/updated at least one meaningful test for my change (or have a mentor waiver).
-- [ ] My test is isolated: no real network, database, email, or customer data.
-- [ ] I pasted my local `pnpm test` summary into the MR description.
+One script that drives the **production build** over HTTP only, the way a browser and an
+admin would, on synthetic data it generates on the spot:
 
-**Mentor — during review:**
+1. generates about two years of calls and writes a history workbook and a one-week workbook;
+2. migrates a fresh database in a temp folder;
+3. starts a local mail server that only keeps the mails;
+4. builds the app and starts the server with real environment variables;
+5. signs in with a mailed code (an unknown address gets no mail; a wrong code is refused);
+6. checks the empty state (no forecast, no model, no retrain without calls);
+7. uploads the history, checks the plan, imports, waits for the first retrain, reads the
+   forecast;
+8. uploads the week, retrains, and checks that the same file again has nothing to import;
+9. runs a forecast refresh;
+10. adds a viewer and checks what a viewer may and may not call;
+11. checks the pages and that a write from another site is refused;
+12. checks that no call's start time appears in the server's output;
+13. checks that the sign-in rate limit answers 429;
+14. stops the server and checks that it exits promptly and leaves no process behind.
 
-- [ ] `pnpm test` passes on the branch.
-- [ ] There is a meaningful test for the changed behavior (or a recorded waiver).
-- [ ] Assertions are real (would fail if the behavior broke); isolation isn't weakened.
-- [ ] Test files are in `tests/nuxt/` and named `*.test.ts`.
+It prints one `PASS` or `FAIL` line per step (`SKIP` after a failure) and exits 0 only when
+every step passed; 1 when a step failed; 2 when it could not start. It needs
+`forecast/.venv` and the ports 3121 and 2525 free. It never reads or writes `.env` or
+`dev.db`. On synthetic data in a test sandbox it took about 45 seconds with `--no-build`
+and about 75 seconds with the build.
 
----
+### Type checks
 
-## Limitations of this baseline
+`pnpm typecheck` checks the app and the server. `pnpm typecheck:tests` checks what that
+does not reach: the tests outside `tests/nuxt/`, the test helpers and the scripts. A type
+error in a test is a failed check in CI.
 
-This baseline **does not** cover:
+## What CI runs
 
-- Authentication flows, OTP, or email delivery
-- Database-backed sessions or protected routes
-- File uploads
-- Playwright / browser end-to-end journeys (intentionally separate — NPTS)
-- Deployment or production behavior
+`.github/workflows/test.yml` runs on every pull request and on pushes to `dev`, `stage` and
+`prod`. It has three jobs, so a failure says which side broke.
 
-Those need a separately provisioned, disposable test environment with explicit database and
-provider isolation. Start here, and grow coverage deliberately from this foundation.
+- **`test`** (Node only): install, `pnpm lint`, `pnpm typecheck`, `pnpm typecheck:tests`,
+  `pnpm test`, `pnpm build`.
+- **`python`** (Python only): `bash scripts/forecast-setup.sh`, then pytest in `forecast/`.
+- **`parity`** (both): install, `pnpm forecast:setup`, `pnpm test:parity`, the runner tests
+  that start the real retrain script (`pnpm exec vitest run --project unit
+tests/server/retrain`), `pnpm build`, and the end-to-end script with `--no-build`.
+
+Deployment is a different workflow: see [deployment.md](deployment.md#the-pipeline).
+
+## Parity: the new app against the old
+
+This app is a rebuild. The earlier version was a Python web service that read the calls
+from Postgres and served a static page; it is the branch `final-main`. During the rebuild
+the old app and the new one ran side by side on the same synthetic data, and six
+comparisons, called parity rungs, showed that the new app gives the same numbers. Tests,
+scripts and comments refer to them by number.
+
+- **P1. The TypeScript staffing arithmetic equals the Python one.** `tests/parity/staffing/`:
+  Python computes a grid of cases and Vitest compares every field. Runs in CI.
+- **P2. The new Python on SQLite equals the old Python on Postgres.**
+  `forecast/tests/test_legacy_parity.py`: the same calls give the same model fingerprint and
+  the same forecast tables. Not in CI.
+- **P3. The new API answers like the old API.** `scripts/parity/`: 44 recorded requests are
+  replayed against the new server and each answer is compared with the recorded one. A
+  frozen subset runs in `pnpm test`; the full set is not in CI.
+- **P4. The TypeScript workbook reader reads what the Python reader reads.**
+  `tests/parity/parser/`: generated workbooks in many shapes, read by both. Runs in CI.
+- **P5. The new staffing page shows what the old page showed.** Both pages in a real
+  browser on the same data, compared region by region, their exports byte by byte. Not in
+  CI.
+- **P6. The whole chain gives the old app's numbers.** An empty database, the workbooks
+  through the real upload route, the real retrain, then the comparison of P3. Not in CI;
+  `pnpm e2e` exercises the same chain without the old app to compare with.
+
+P1 and P4 need only this repository. The others need the old app running next to the new
+one with its database and its recorded answers. That material lived in the sandbox where
+the rebuild was done and is not part of the repository:
+
+- The tests for P2, and three extra cases of P4, read the folder named by the environment
+  variable `V4W_LEGACY_DIR` and skip themselves when it is not set. That is why
+  `pnpm forecast:test` reports a few skipped tests.
+- P3 has a permanent trace: nine of the 44 recorded answers are committed as
+  `tests/server/forecast/fixtures/SYNTHETIC-legacy-golden.json` and
+  `tests/server/forecast/golden.test.ts` replays them in every `pnpm test`. The file holds
+  answers computed from synthetic data and no call record. The tools that made and compared
+  the full set are in `scripts/parity/`.
+- P5 was done with a browser automation tool that is not a dependency of this project. Its
+  scripts are not in the repository.
+
+How the comparisons ended, at the close of the rebuild and on synthetic data only: the model
+fingerprints were identical for two states of the data (a history, and the history plus one
+more week); all 44 recorded answers matched for both states, with numbers equal to within a
+billionth; the two pages agreed in every compared region and their exports were
+byte-identical.
+
+To repeat P2, P3, P5 or P6 you would have to run the old app again: check out `final-main`,
+give it a Postgres database filled with calls from `forecast/tools/gen_synthetic.py`, and
+record its answers. That is a description of what was done, not a tested recipe. What
+protects the numbers from day to day is P1, P4, the frozen answers of P3, and the Python
+suite.
+
+## What the tests do not prove
+
+- Nothing here has run on real call data. The reader has never seen a file written by Excel
+  itself or by the partner's phone system; the copy from Postgres has never seen the real
+  database.
+- No test sends real mail, and none runs behind the real platform's proxy.
+- The pages were checked in Chromium during the rebuild, with scripts that are not part of
+  the repository. No test here drives a browser, and other browsers, phones and screen
+  readers were not tried.
+- Time was not waited for. The scheduled check was driven by hand and with a one-minute
+  schedule, the run timeout was tested with limits of seconds, and nobody waited 7 days to
+  see a session end.
+
+The README's "Before you rely on it" turns this list into things to do.
+
+## The expectation for a merge request
+
+Every merge request should include at least one meaningful test for the behaviour it
+changes, unless a mentor records a waiver on it.
+
+- **What you provide:** a test that would fail before your change and passes after it, and a
+  green `pnpm test` (plus `pnpm forecast:test` when you touched `forecast/`).
+- **What a mentor checks:** that the test exercises the changed behaviour, that nothing was
+  weakened to get it green, and that it stays inside itself (no real network, mail or data).
+
+"Meaningful" means the test would catch a real regression.
+
+**Before you open a merge request:**
+
+- [ ] `pnpm lint`, `pnpm typecheck` and `pnpm typecheck:tests` pass.
+- [ ] `pnpm test` passes.
+- [ ] If you changed anything under `forecast/`, or the workbook reader, or the staffing
+      arithmetic: `pnpm forecast:test` and `pnpm test:parity` pass.
+- [ ] If you changed uploads, retraining or sign-in: `pnpm e2e` passes.
+- [ ] You added or updated a test for your change.
+- [ ] No data file, database, `.env` or screenshot is in the commit.
+
+**During review:**
+
+- [ ] The checks are green on the branch.
+- [ ] There is a meaningful test for the changed behaviour, or a recorded waiver.
+- [ ] Assertions are real: they would fail if the behaviour broke.
+- [ ] Test data is generated in the test and labelled synthetic.
+
+## Where a new test goes
+
+| You changed                                             | Put the test in                               |
+| ------------------------------------------------------- | --------------------------------------------- |
+| A function in `shared/utils/` or `app/utils/console/`   | `tests/unit/`                                 |
+| A service in `server/utils/`                            | `tests/server/<area>/`, with `createTestDb()` |
+| A page or a component                                   | `tests/nuxt/`                                 |
+| Anything in `forecast/db/`                              | `forecast/tests/`                             |
+| Arithmetic that exists in both languages, or the reader | also `tests/parity/`                          |
