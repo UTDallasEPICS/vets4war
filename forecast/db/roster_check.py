@@ -1,6 +1,6 @@
 """Per-shift check of the queue model against what the partner's roster did.
 
-    python -m db.roster_check "data/client/<actuals>.xlsx" ["<more>.xlsx" ...]
+    python -m db.roster_check --db app.db "data/client/<actuals>.xlsx" ["<more>.xlsx" ...]
         [--roster 4,4,6] [--efficiency 0.65625]
 
 For each workbook: the calls it holds are split by shift (Overnight 00-08,
@@ -23,7 +23,7 @@ draw around that rate, and feeding the draws in makes busy hours look
 busier than they were (it read about 8 points too low on the three
 Oct 14 - Nov 3 2026 weeks).
 
-READ THE RESULT WITH THIS IN MIND: if the model in models/ was trained on
+READ THE RESULT WITH THIS IN MIND: if the serving model was trained on
 the weeks being checked, the call volumes are not a blind forecast. That is
 fine here; this check is about the queue arithmetic, not volume accuracy
 (db.score_week on a frozen db.snapshot CSV measures that).
@@ -42,9 +42,8 @@ import zipfile
 from pathlib import Path
 
 import pandas as pd
-import psycopg
-from dotenv import load_dotenv
 
+from db import store
 from db.client_files import read_call_records
 from db.features import SERVICE_LEVEL_SEC
 from db.snapshot import DEFAULT_ROSTER, at_roster, core_shift, parse_roster
@@ -55,7 +54,7 @@ EXPECTED_COLUMNS = ("date", "shift", "predicted_calls", "aht_sec", "sl_at_roster
 POINTS_PER_UNIT = 100
 DATE_FORMAT = "%Y-%m-%d"
 # What can go wrong reading one workbook or forecasting its dates.
-WORKBOOK_ERRORS = (ValueError, OSError, zipfile.BadZipFile, psycopg.Error)
+WORKBOOK_ERRORS = (ValueError, OSError, zipfile.BadZipFile, store.DatabaseError)
 
 
 def _actual(calls: pd.DataFrame) -> dict:
@@ -143,16 +142,16 @@ def check_workbook(conn, path: Path, roster: dict[str, int], efficiency: float, 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Per-shift check of the queue model at the partner's roster.")
     parser.add_argument("actuals", type=Path, nargs="+", help="partner call-records Excel file(s)")
+    parser.add_argument("--db", type=Path, default=store.path_from_env(os.environ),
+                        help="the SQLite file (default: $DATABASE_URL without its file: prefix)")
     parser.add_argument("--roster", default=DEFAULT_ROSTER, help="Overnight,Day,Evening (default 4,4,6)")
     parser.add_argument("--efficiency", type=float, default=DEFAULT_EFFICIENCY)
     args = parser.parse_args()
     for path in args.actuals:
         if not path.exists():
             sys.exit(f"file not found: {path}")
-    load_dotenv()
-    dsn = os.environ.get("V4W_DATABASE_URL")
-    if not dsn:
-        sys.exit("no connection string. set V4W_DATABASE_URL")
+    if args.db is None:
+        sys.exit("no database: pass --db PATH or set DATABASE_URL")
     if not 0 < args.efficiency <= 1:
         sys.exit(f"--efficiency must be above 0 and at most 1, got {args.efficiency}")
     try:
@@ -160,11 +159,15 @@ def main() -> int:
     except ValueError as error:
         sys.exit(str(error))
     try:
-        with psycopg.connect(dsn) as conn:
-            conn.read_only = True
-            return _report(conn, args.actuals, args.roster, roster, args.efficiency)
-    except psycopg.Error as error:
+        conn = store.connect(args.db, readonly=True)
+    except FileNotFoundError as error:
+        sys.exit(str(error))
+    try:
+        return _report(conn, args.actuals, args.roster, roster, args.efficiency)
+    except store.DatabaseError as error:
         sys.exit(f"database error: {error}")
+    finally:
+        conn.close()
 
 
 def _report(conn, paths: list[Path], roster_text: str, roster: dict[str, int], efficiency: float) -> int:

@@ -15,9 +15,11 @@ of db.load_week.REQUIRED_COLUMNS. Every such sheet is read; other sheets are
 ignored.
 
     read_call_records(path)   -> calls, same frame as db.load_week.parse_call_records
-    hourly_from_calls(calls)  -> hourly frame, same columns as db.features.HOURLY_SQL
+    hourly_from_calls(calls)  -> hourly frame: hour_start, offered, answered, abandoned,
+                                 answered_30s, talk_sec (the training grain)
 
-Nothing here writes anywhere. Row parsing and validation are
+Nothing here writes anywhere. db.features.load_hourly aggregates the
+database's calls with hourly_from_calls too. Row parsing and validation are
 db.load_week.parse_call_records, imported, never reimplemented.
 """
 
@@ -25,7 +27,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import openpyxl
 import pandas as pd
 
 from db.features import SERVICE_LEVEL_SEC
@@ -36,6 +37,9 @@ HOURLY_COLUMNS = ("hour_start", "offered", "answered", "abandoned", "answered_30
 
 def call_sheets(path: Path) -> list[str]:
     """Names of the sheets whose first row has every call-record column."""
+    # Imported here: the retrain script reads no workbook and runs without openpyxl.
+    import openpyxl
+
     book = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
         names = []
@@ -70,8 +74,9 @@ def read_call_records(path: Path | str) -> pd.DataFrame:
 
 
 def hourly_from_calls(calls: pd.DataFrame) -> pd.DataFrame:
-    """One row per hour that has at least one call, with the same columns
-    and meaning as db.features.HOURLY_SQL."""
+    """One row per hour that has at least one call, ordered by hour_start.
+    answered_30s = answered and waited at most SERVICE_LEVEL_SEC; talk_sec
+    sums agent_sec (a missing value counts as 0)."""
     answered = ~calls["abandoned"]
     per_call = pd.DataFrame({
         "hour_start": calls["start_ts"].dt.floor("h"),

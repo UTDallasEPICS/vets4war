@@ -1,6 +1,6 @@
 """Freeze a forecast to a timestamped CSV BEFORE the actuals exist.
 
-    python -m db.snapshot --start 2026-10-21 --end 2026-10-27
+    python -m db.snapshot --db app.db --start 2026-10-21 --end 2026-10-27
         [--roster 4,4,6] [--efficiency 0.65625] [--target-pct 0.80] [--target-sec 30]
 
 Writes forecasts/forecast_<start>_to_<end>_<UTC stamp>.csv, one row per hour:
@@ -15,22 +15,22 @@ numbers comparable with the partner's reported service level and
 abandonment. db.score_week scores this file against the actual Excel.
 
 The file is never overwritten (new timestamp each run), so the frozen
-forecast can be shown to predate the actual numbers.
+forecast can be shown to predate the actual numbers. The forecast comes from
+the model the database is serving; the database is only read.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
-import psycopg
-from dotenv import load_dotenv
 
+from db import store
 from db.staffing import (
     DEFAULT_EFFICIENCY,
     DEFAULT_TARGET_PCT,
@@ -42,9 +42,8 @@ from db.staffing import (
     service_level_at,
     staff_for_range,
 )
-from db.train import METADATA_PATH, REPO_ROOT
+from db.train import REPO_ROOT
 
-load_dotenv()
 
 FORECAST_DIR = REPO_ROOT / "forecasts"
 # What the partner staffed Oct 14-20 2026 (validation file, Staff By Shift).
@@ -85,14 +84,16 @@ def at_roster(hourly: pd.DataFrame, roster: dict[str, int], efficiency: float,
     })
 
 
-def model_label() -> str:
-    meta = json.loads(METADATA_PATH.read_text())
+def model_label(meta: dict) -> str:
+    """One line naming the model: its label, when it was trained, its data and level."""
     config = meta.get("config", {}).get("label", "2026-10-11 model (no config)")
     return f"{config}; trained {meta['created_at_utc']}; data to {meta['train_end'][:10]}; level x{meta.get('level_factor', 1.0):.4f}"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Freeze a forecast to CSV.")
+    parser.add_argument("--db", type=Path, default=store.path_from_env(os.environ),
+                        help="the SQLite file (default: $DATABASE_URL without its file: prefix)")
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", required=True)
     parser.add_argument("--roster", default=DEFAULT_ROSTER, help="Overnight,Day,Evening (default 4,4,6)")
@@ -101,15 +102,21 @@ def main() -> int:
     parser.add_argument("--target-sec", type=float, default=DEFAULT_TARGET_SEC)
     args = parser.parse_args()
 
-    dsn = os.environ.get("V4W_DATABASE_URL")
-    if not dsn:
-        sys.exit("no connection string. set V4W_DATABASE_URL")
+    if args.db is None:
+        sys.exit("no database: pass --db PATH or set DATABASE_URL")
     roster = parse_roster(args.roster)
-    with psycopg.connect(dsn) as conn:
+    conn = store.connect(args.db, readonly=True)
+    try:
+        serving = store.serving_model(conn)
+        if serving is None:
+            sys.exit("no model is serving yet: run python -m db.retrain first")
         patience = resolve_patience(conn, "erlang_a", None)
         hourly = staff_for_range(conn, args.start, args.end, args.efficiency, args.target_pct,
                                  args.target_sec, "erlang_a", patience)
-    frame = at_roster(hourly, roster, args.efficiency, args.target_sec, patience).assign(model_label=model_label())
+    finally:
+        conn.close()
+    frame = at_roster(hourly, roster, args.efficiency, args.target_sec, patience).assign(
+        model_label=model_label(serving.metadata))
 
     FORECAST_DIR.mkdir(exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

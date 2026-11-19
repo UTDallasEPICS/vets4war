@@ -1,23 +1,23 @@
-"""Assemble the training data: the shared database plus client files it lacks.
+"""Assemble the training data: the database plus client files it lacks.
 
-The database is the source of truth and is only READ here. The client also
-sends call-record workbooks for periods that are not loaded yet (in November
-2026: Sep 1 to Oct 13, Oct 21 to 27 and Oct 28 to Nov 3). Those are merged
-in memory so the model can learn from them without anyone writing to the
-shared tables.
+The database (the web app's SQLite file) is the source of truth and is only
+READ here. The client also sends call-record workbooks for periods that are
+not loaded yet (in November 2026: Sep 1 to Oct 13, Oct 21 to 27 and Oct 28
+to Nov 3). Those are merged in memory so the model can learn from them
+without anyone writing to the shared tables.
 
     merge_hourly(db_hourly, extra_hourly) -> hourly
         days the database lacks are added; a day present in both keeps the
         database rows; a day present in both with a different call total
         raises (two versions of the same day is a data problem to settle,
         never something to pick silently).
-    load_dataset(dsn, supplement)   -> Dataset(hourly, holidays, sources)
+    load_dataset(db_path, supplement) -> Dataset(hourly, holidays, sources)
     save_snapshot / load_snapshot   -> a frozen local copy under data/ (never
         committed), so a long tuning run scores every candidate on exactly
         the same rows even if a teammate loads data meanwhile.
 
 `sources` is the audit trail: what came from the database and what each
-file added. db.train writes it into models/metadata.json.
+file added. db.retrain writes it into the model's metadata.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from db import store
 from db.client_files import HOURLY_COLUMNS, hourly_from_calls, read_call_records
 from db.features import load_holidays, load_hourly
 
@@ -126,14 +127,15 @@ def _database_source(hourly: pd.DataFrame) -> dict:
             "days": int(len(days))}
 
 
-def load_dataset(dsn: str, supplement: list[Path] | tuple[Path, ...] = ()) -> Dataset:
+def load_dataset(db_path: str | Path, supplement: list[Path] | tuple[Path, ...] = ()) -> Dataset:
     """Database rows (read-only) merged with each supplemental workbook in
     the order given. A later file never overrides an earlier source."""
-    import psycopg  # local import: pure functions above need no driver
-
-    with psycopg.connect(dsn) as conn:
+    conn = store.connect(db_path, readonly=True)
+    try:
         hourly = load_hourly(conn)[list(HOURLY_COLUMNS)]
         holidays = load_holidays(conn)
+    finally:
+        conn.close()
 
     sources = [_database_source(hourly)]
     for path in supplement:
@@ -172,7 +174,7 @@ def load_snapshot(folder: Path) -> Dataset:
 
 
 # =============================================================================
-# CLI:  python -m db.dataset --supplement a.xlsx b.xlsx --snapshot data/cache/x
+# CLI:  python -m db.dataset --db app.db --supplement a.xlsx b.xlsx --snapshot data/cache/x
 # =============================================================================
 
 def main(argv: list[str] | None = None) -> int:
@@ -180,23 +182,21 @@ def main(argv: list[str] | None = None) -> int:
     import os
     import sys
 
-    from dotenv import load_dotenv
-
-    load_dotenv()
     parser = argparse.ArgumentParser(description="Build the training dataset and report what it holds.")
+    parser.add_argument("--db", type=Path, default=store.path_from_env(os.environ),
+                        help="the SQLite file (default: $DATABASE_URL without its file: prefix)")
     parser.add_argument("--supplement", nargs="*", type=Path, default=[],
                         help="client call-record workbooks for days the database lacks")
     parser.add_argument("--snapshot", type=Path, default=None, help="folder to freeze the dataset into")
     args = parser.parse_args(argv)
 
-    dsn = os.environ.get("V4W_DATABASE_URL")
-    if not dsn:
-        sys.exit("no connection string. set V4W_DATABASE_URL")
+    if args.db is None:
+        sys.exit("no database: pass --db PATH or set DATABASE_URL")
     absent = [str(path) for path in args.supplement if not path.exists()]
     if absent:
         sys.exit(f"file not found: {absent}")
 
-    dataset = load_dataset(dsn, args.supplement)
+    dataset = load_dataset(args.db, args.supplement)
     print(json.dumps(list(dataset.sources), indent=2))
     gaps = missing_days(dataset.hourly)
     days = dataset.hourly["hour_start"].dt.normalize()

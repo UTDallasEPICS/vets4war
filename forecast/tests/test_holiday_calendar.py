@@ -1,10 +1,8 @@
 """Holiday-type days: the holidays table plus the four days the client asked for.
 
 Hand-built frames, except the last test, which checks the calendar rule
-against the real holidays table (skipped when V4W_DATABASE_URL is not set).
+against the holidays table of a migrated database.
 """
-
-import os
 
 import pandas as pd
 import pytest
@@ -76,16 +74,11 @@ def test_holiday_type_days_does_not_change_the_table_it_is_given():
     pd.testing.assert_frame_equal(OFFICIAL_2026, before)
 
 
-def test_the_rule_matches_every_thanksgiving_in_the_real_table():
-    from db.features import load_holidays  # importing it loads .env
+def test_the_rule_matches_every_thanksgiving_in_the_database(seeded_db):
+    from db import store
+    from db.features import load_holidays
 
-    dsn = os.environ.get("V4W_DATABASE_URL")
-    if not dsn:
-        pytest.skip("V4W_DATABASE_URL is not set")
-    import psycopg
-
-    with psycopg.connect(dsn) as conn:
-        holidays = load_holidays(conn)
+    holidays = load_holidays(store.connect(seeded_db, readonly=True))
     table = holidays[holidays["holiday_name"] == "Thanksgiving"]
 
     assert len(table) > 0

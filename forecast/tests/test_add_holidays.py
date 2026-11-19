@@ -1,13 +1,10 @@
-"""Official holidays by calendar rule, and the multipliers the table keeps
-for dates not reached yet. Hand-built frames, except the last test (real
-table; skipped without V4W_DATABASE_URL)."""
-
-import os
+"""Official holidays by calendar rule. Hand-built frames, except the last
+test, which reads the holidays table of a migrated database."""
 
 import pandas as pd
 import pytest
 
-from db.add_holidays import future_multipliers, official_holidays, rule_mismatches
+from db.add_holidays import official_holidays, rule_mismatches
 
 DATES_2026 = {
     "New Year's Day": "2026-01-01", "MLK Day": "2026-01-19", "Presidents Day": "2026-02-16",
@@ -40,31 +37,15 @@ def test_a_table_row_on_a_different_date_than_the_rule_is_reported():
     assert rule_mismatches(moved) == ["Labor Day 2026: table 2026-09-08, rule 2026-09-07"]
 
 
-def test_future_multipliers_are_the_mean_of_the_years_already_measured():
-    table = pd.DataFrame({
-        "holiday_date": pd.to_datetime(["2024-12-25", "2025-12-25", "2026-12-25", "2025-07-04", "2026-07-04"]),
-        "holiday_name": ["Christmas", "Christmas", "Christmas", "Independence Day", "Independence Day"],
-        "volume_multiplier": [0.80, 0.90, 0.10, 1.00, 1.10],
-        "evening_multiplier": [0.70, 0.80, 0.10, 0.90, 1.00],
-    })
+def test_the_rules_reproduce_every_row_the_database_holds(migrated_db):
+    from db import store
+    from db.features import load_holidays
 
-    means = future_multipliers(table, last_data_day=pd.Timestamp("2026-11-03")).set_index("holiday_name")
+    conn = store.connect(migrated_db)
+    store.insert_missing_holidays(conn, [(day.strftime("%Y-%m-%d"), name) for year in (2021, 2026, 2027)
+                                         for day, name in official_holidays(year).itertuples(index=False)])
 
-    assert means.loc["Christmas", "volume_multiplier"] == pytest.approx(0.85)       # 2026-12-25 not reached: left out
-    assert means.loc["Christmas", "evening_multiplier"] == pytest.approx(0.75)
-    assert means.loc["Independence Day", "volume_multiplier"] == pytest.approx(1.05)
+    table = load_holidays(conn)
 
-
-def test_the_rules_reproduce_every_row_of_the_real_table():
-    from db.features import load_holidays  # importing it loads .env
-
-    dsn = os.environ.get("V4W_DATABASE_URL")
-    if not dsn:
-        pytest.skip("V4W_DATABASE_URL is not set")
-    import psycopg
-
-    with psycopg.connect(dsn) as conn:
-        table = load_holidays(conn)
-
-    assert len(table) >= 66
+    assert len(table) == 33
     assert rule_mismatches(table) == []

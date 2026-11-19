@@ -1,6 +1,8 @@
 """Mean caller patience, estimated from the calls table.
 
-    estimate_patience(conn) -> dict: patience_sec, n_abandoned, n_calls
+    patience_from_calls(calls) -> dict: patience_sec, n_abandoned, n_calls
+    estimate_patience(conn)    -> the same, from the database's calls
+    cached_patience(conn)      -> estimate_patience, once per data revision
 
 Patience is modelled as exponential (the Erlang A assumption). Every call
 gives one observation: an abandoned call waited exactly `abandon_sec`
@@ -10,57 +12,52 @@ mean under right censoring is
 
     total waiting time of all calls / number of abandoned calls
 
-No ML here. Connection comes from $V4W_DATABASE_URL.
+A missing waiting time is left out of the total (as SQL's SUM does); the
+call still counts in n_calls. No ML here.
 """
 
 from __future__ import annotations
 
-import sys
+import numpy as np
+import pandas as pd
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
-try:
-    import psycopg  # noqa: F401  (callers pass an open connection)
-except ImportError:
-    sys.exit("psycopg is required:  pip install 'psycopg[binary]'")
-
-PATIENCE_SQL = """
-    SELECT
-        SUM(CASE WHEN abandoned THEN abandon_sec ELSE in_queue_sec END)::float AS total_wait_sec,
-        SUM(abandoned::int)                                                AS n_abandoned,
-        COUNT(*)                                                           AS n_calls
-    FROM calls
-"""
+from db import store
 
 
-def estimate_patience(conn) -> dict:
+def patience_from_calls(calls: pd.DataFrame) -> dict:
     """Censored-exponential MLE of mean patience in seconds, with the counts
     it came from so the UI can say where the number comes from."""
-    with conn.cursor() as cur:
-        cur.execute(PATIENCE_SQL)
-        total_wait_sec, n_abandoned, n_calls = cur.fetchone()
+    n_calls = len(calls)
     if not n_calls:
         raise ValueError("no rows in `calls`; cannot estimate patience")
+    abandoned = calls["abandoned"].to_numpy(dtype=bool)
+    n_abandoned = int(abandoned.sum())
     if not n_abandoned:
         raise ValueError("no abandoned calls in `calls`; mean patience is unidentifiable")
-    if total_wait_sec is None or total_wait_sec <= 0:
+    waits = pd.Series(np.where(abandoned, calls["abandon_sec"], calls["in_queue_sec"]), dtype="float64")
+    total_wait_sec = waits.sum(min_count=1)          # NaN only when every wait is missing
+    if pd.isna(total_wait_sec) or total_wait_sec <= 0:
         raise ValueError("calls have no waiting time recorded; cannot estimate patience")
     return {
-        "patience_sec": float(total_wait_sec) / int(n_abandoned),
-        "n_abandoned": int(n_abandoned),
+        "patience_sec": float(total_wait_sec) / n_abandoned,
+        "n_abandoned": n_abandoned,
         "n_calls": int(n_calls),
     }
 
 
-# Process-wide cache, replaced wholesale on first use. The calls table only
-# changes on a reload, which also restarts the server.
-_cache: dict | None = None
+def estimate_patience(conn) -> dict:
+    """patience_from_calls over every call in the database."""
+    return patience_from_calls(store.read_snapshot(conn).calls)
+
+
+# Process-wide cache, replaced wholesale when the data revision changes
+# (every import that changes `calls` bumps it).
+_cache: dict = {"revision": None, "value": None}
 
 
 def cached_patience(conn) -> dict:
     global _cache
-    if _cache is None:
-        _cache = estimate_patience(conn)
-    return _cache
+    revision = store.calls_revision(conn)
+    if _cache["revision"] != revision or _cache["value"] is None:
+        _cache = {"revision": revision, "value": estimate_patience(conn)}
+    return _cache["value"]
