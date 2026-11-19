@@ -50,19 +50,18 @@ pnpm install
 pnpm test
 ```
 
-`pnpm test` runs every test of the `unit` and `nuxt` projects once and exits. In a fresh
-clone a good run ends like this:
+`pnpm test` runs every test of the `unit` and `nuxt` projects once and exits. A good run
+ends like this:
 
 ```
  Test Files  46 passed (46)
       Tests  620 passed | 7 skipped (627)
 ```
 
-The counts grow as tests are added. The skipped tests start the real retrain script, so
-they skip themselves until the Python environment exists. After `pnpm forecast:setup` they
-run too, except one that needs the Linux command `unshare` with root rights and stays
-skipped without them. What matters: it says _passed_, nothing says _failed_, and `echo $?`
-right after prints `0`.
+The counts grow as tests are added. The skipped ones start the real retrain script and
+skip themselves until the Python environment exists (`pnpm forecast:setup`); with it they
+run too. What matters: it says _passed_, nothing says _failed_, and `echo $?` right after
+prints `0`.
 
 ## Everyday commands
 
@@ -177,7 +176,8 @@ They run in plain Node (`environment: 'node'` in `vitest.config.ts`).
   (`fixtures/fake-python.mjs`); seven start the real retrain script on a small generated
   database and skip themselves when `forecast/.venv` does not exist. One of the seven puts
   the script into a process namespace of its own with `unshare`, the way a second container
-  on the same volume would see it, and needs root rights for that.
+  on the same volume would see it. That needs root rights, so for a normal user this one
+  stays skipped.
 - `tests/server/users/`: the people rules.
 
 ### Component tests (`tests/nuxt/`)
