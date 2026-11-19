@@ -583,3 +583,7 @@
 /* Tailwind generates a `.grid { display: grid }` utility from the grid's class name;
    the hour grid is a table. */
 :where(.v4w) table.grid { display: table; }
+
+/* ---- Additions of the rebuild (not in the old stylesheet) ---- */
+/* The status note's link to the forecast runs reads as a link in the banner's colour. */
+:where(.v4w) .banner a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }

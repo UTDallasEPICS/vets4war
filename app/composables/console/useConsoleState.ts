@@ -107,6 +107,10 @@ export const CURRENT_ROSTER: Roster = { Overnight: 4, Day: 4, Evening: 6 }
 // Staff-per-shift sliders go to this, above the shift caps, so what-ifs are not cut off.
 export const ROSTER_SLIDER_MAX = 10
 const TSEC_MAX = 3600
+// The read API's bounds (server/utils/forecast/params.ts): target_pct at most 0.999,
+// target_sec at most 300.
+const MAX_TARGET_PCT = 0.999
+const MAX_TARGET_SEC = 300
 const TSEC_DEFAULT = 30
 
 export interface Cache {
@@ -366,8 +370,10 @@ export function createConsoleState() {
     pageSub: 'Loading the forecast',
     badgeCls: 'badge src-unlabeled',
     badgeText: 'Checking data source',
+    badgeHidden: false,
     errorHidden: true,
     errorText: '',
+    controlProblem: '',
     noForecast: false,
     holidayNoteHidden: true,
     holidayNote: '',
@@ -409,13 +415,48 @@ export function createConsoleState() {
   function patienceSec(): number | null {
     return cache ? cache.params.patience_sec : null
   }
-  function controls(): Controls {
+  function rawControls(): Controls {
     return {
       efficiency: Number(ctl.effNum) / 100,
       targetPct: Number(ctl.slNum) / 100,
       targetSec: targetSec(),
       patienceSec: patienceSec(),
     }
+  }
+  // What the efficiency, service-level and answer-time fields hold is used as typed (as
+  // on the old page) while the arithmetic and the read API accept it. A value they
+  // refuse (the old page threw and silently stopped updating, or sent a value the API
+  // now refuses) leaves the page on the last valid setting, with a message, until the
+  // field is corrected or snaps back when it loses focus.
+  let lastValid: Controls | null = null
+  function controlProblem(c: Controls): string | null {
+    if (!(c.efficiency >= 0 && c.efficiency <= 1)) {
+      return 'Staff efficiency must be a number from 0 to 100%.'
+    }
+    // 1 to 99 whole or decimal percent: sent with two decimals that is 0.01 to 0.99,
+    // inside the read API's 0 < target_pct <= MAX_TARGET_PCT
+    const sent = Number(c.targetPct.toFixed(2))
+    if (!(c.targetPct >= 0.01 && c.targetPct <= 0.99 && sent <= MAX_TARGET_PCT)) {
+      return 'Calls answered in time must be a number from 1 to 99%.'
+    }
+    if (c.targetSec > MAX_TARGET_SEC) {
+      return `Answer time must be a number from 0 to ${MAX_TARGET_SEC} s.`
+    }
+    return null
+  }
+  function controls(): Controls {
+    const c = rawControls()
+    if (controlProblem(c) === null || lastValid === null) {
+      lastValid = c
+      return c
+    }
+    return { ...lastValid, patienceSec: c.patienceSec }
+  }
+  function checkControls() {
+    const problem = controlProblem(rawControls())
+    ui.controlProblem = problem
+      ? `${problem} The numbers below are for the last valid setting.`
+      : ''
   }
   const rangeKey = () => `${ctl.start}|${ctl.end}|${ctl.holidays}`
   function hourRange(): [number, number] {
@@ -500,6 +541,8 @@ export function createConsoleState() {
 
   // ---- fetch ----
   let inflight = 0
+  // whether a load has ever told the page its data source
+  let sourceShown = false
   async function refresh() {
     const k = rangeKey()
     if (cache && cache.key === k) {
@@ -567,6 +610,19 @@ export function createConsoleState() {
             ? String(failure.message)
             : `The forecast did not load (${failure.message}). Change a date to retry.`
       }
+      // The answer is in: the header stops saying it is loading. A data source shown by an
+      // earlier load stays (it does not depend on the dates); before any load there is
+      // none to show.
+      ui.pageSub =
+        failure.code === 'no_forecast'
+          ? 'No forecast yet'
+          : failure.code === 'outside_horizon'
+            ? 'No forecast for these dates'
+            : 'The forecast did not load'
+      if (!sourceShown) {
+        ui.badgeHidden = true
+        ui.badgeText = ''
+      }
       grid.value = { ...grid.value, rows: [] }
       dayChart.value = { ...dayChart.value, bars: [] }
     } finally {
@@ -578,6 +634,8 @@ export function createConsoleState() {
   }
   function renderSourceBadge(src: DataSource | null | undefined) {
     if (!src) return
+    sourceShown = true
+    ui.badgeHidden = false
     ui.badgeCls = `badge src-${src.kind}`
     ui.badgeText =
       src.kind === 'unlabeled'
@@ -629,6 +687,7 @@ export function createConsoleState() {
 
   // ---- recompute (no network) ----
   function recompute() {
+    checkControls()
     if (!cache) return
     const c = controls()
     const next = computeHours(cache.hours, c)
@@ -1522,6 +1581,12 @@ export function createConsoleState() {
     if (e.persisted) init()
   }
 
+  // Load the forecast again for the same dates (after a run has produced a new one).
+  function reloadForecast() {
+    if (cache) cache.key = ''
+    debounced(refresh)
+  }
+
   // ---- read access for the exports ----
   const snapshot = () => ({ cache, computedHours, judged, hourIndex, scale })
 
@@ -1553,6 +1618,7 @@ export function createConsoleState() {
     feedback,
     slMarks,
     init,
+    reloadForecast,
     onPageShow,
     targetSec,
     controls,

@@ -55,7 +55,7 @@
         <p class="sub" id="pageSub">{{ ui.pageSub }}</p>
       </div>
     </div>
-    <span :class="ui.badgeCls" id="sourceBadge">{{ ui.badgeText }}</span>
+    <span :class="ui.badgeCls" id="sourceBadge" :hidden="ui.badgeHidden">{{ ui.badgeText }}</span>
     <span class="spacer"></span>
     <div class="seg" role="group" aria-label="What to look at">
       <button type="button" id="modeRange" :aria-pressed="!oneDay" @click="onModeRange">
