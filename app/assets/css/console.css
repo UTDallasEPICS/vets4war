@@ -11,8 +11,9 @@
    the console layout loads (with its width axis). @nuxt/fonts would otherwise resolve
    the family itself, without the width axis, and rewrite --font with its fallback names;
    it leaves alone a family that already has an @font-face in the same file. This face
-   covers one code point no text uses, so it never renders. */
-@font-face { font-family: "Instrument Sans"; src: local("Instrument Sans"); unicode-range: U+10FFFF; }
+   covers one code point no text uses, and its width and weight are outside what the
+   page asks for, so the browser never picks it over the real faces. */
+@font-face { font-family: "Instrument Sans"; src: local("Instrument Sans"); font-stretch: 50%; font-weight: 1; unicode-range: U+10FFFF; }
 
 /* One system: a white sheet, black type, one pale grey step for tiles, one
    blue. Colour carries meaning and nothing else:
@@ -542,3 +543,43 @@
 .v4w.ready .card.ink.reveal { animation: rise 560ms var(--ease) both, glow-sweep 1600ms cubic-bezier(0.2, 0.7, 0.2, 1) 120ms both; }
 :where(.v4w) #rows.fresh tr { animation: fade 320ms ease-out both; animation-delay: calc(min(var(--r, 0), 16) * 18ms + 200ms); }
 @media (prefers-reduced-motion: reduce) { :where(.v4w) *, :where(.v4w) *::before, :where(.v4w) *::after { transition: none !important; animation: none !important; } }
+
+/* ---- Element defaults the old page relied on --------------------------------------
+   The old page ran on the browser's own defaults; the app's Tailwind preflight (and one
+   Tailwind utility) change them. Each rule below puts one back for the console only.
+   :where() keeps these at the lowest specificity, so every rule above still wins. */
+/* <html> defaults the console inherited: tab width, the grey tap flash on touch
+   screens, and no text inflation on phones' "text size adjust". */
+.v4w { tab-size: 8; -webkit-tap-highlight-color: rgba(0, 0, 0, 0.18); -webkit-text-size-adjust: auto; text-size-adjust: auto; }
+/* Preflight zeroes every margin, padding and border (buttons lose their 1px 6px
+   padding, table cells their 1px, inputs their native frame). */
+:where(.v4w) * { margin: revert; padding: revert; border: revert; }
+/* Table cells' 1px padding is the table's default cell padding, which "revert" does not
+   bring back. */
+:where(.v4w) :is(td, th) { padding: 1px; }
+/* Pseudo-elements were content-box (the old "* { box-sizing }" rule never reached
+   them): the notes chevron is 6px plus its 1.5px border, not 6px in all. */
+:where(.v4w) *::before, :where(.v4w) *::after { box-sizing: content-box; border: revert; }
+/* Headings keep the browser's size and weight where no rule above sets them. */
+:where(.v4w) :is(h1, h2, h3) { font-size: revert; font-weight: revert; }
+/* Lists keep their markers unless a rule above removes them. */
+:where(.v4w) :is(ul, ol) { list-style: revert; }
+/* Tables: the browser's own text indent and border colour. */
+:where(.v4w) table { text-indent: revert; border-color: revert; border-collapse: revert; }
+/* Icons are inline and sit on the baseline. */
+:where(.v4w) svg { display: revert; vertical-align: revert; }
+/* Buttons and fields: native appearance, letter spacing, corner radius, background
+   and opacity (each rule above that styles a control still sets its own). */
+:where(.v4w) :is(button, input) { appearance: revert; letter-spacing: revert; font-feature-settings: revert; font-variation-settings: revert; border-radius: revert; background-color: revert; opacity: revert; }
+/* Date fields lay out their day, month and year parts as the browser does. */
+:where(.v4w) ::-webkit-date-and-time-value { min-height: revert; text-align: revert; }
+:where(.v4w) ::-webkit-datetime-edit { display: revert; padding-block: revert; }
+:where(.v4w) ::-webkit-datetime-edit-fields-wrapper { padding: revert; }
+:where(.v4w) ::-webkit-datetime-edit-year-field { padding-block: revert; }
+:where(.v4w) ::-webkit-datetime-edit-month-field { padding-block: revert; }
+:where(.v4w) ::-webkit-datetime-edit-day-field { padding-block: revert; }
+:where(.v4w) ::-webkit-calendar-picker-indicator { line-height: revert; }
+:where(.v4w) ::placeholder { color: revert; opacity: revert; }
+/* Tailwind generates a `.grid { display: grid }` utility from the grid's class name;
+   the hour grid is a table. */
+:where(.v4w) table.grid { display: table; }
