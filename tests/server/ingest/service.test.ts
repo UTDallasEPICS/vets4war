@@ -18,8 +18,8 @@ import {
   recoverUploads,
   uploadDetail,
   type IngestDeps,
-  type RunRow,
 } from '../../../server/utils/ingest/service'
+import type { RunRow } from '../../../server/utils/retrain/runner'
 import {
   HEADER,
   call,

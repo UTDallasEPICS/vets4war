@@ -10,11 +10,12 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm'
 import { z } from 'zod'
-import { dataState, uploadRows, uploads, type forecastRuns } from '../../db/schema'
+import { dataState, uploadRows, uploads } from '../../db/schema'
 import { addDays, isIsoDate } from '../../../shared/utils/dates'
 import type { DayPlan, ImportRequest, ImportResult, UploadReport } from '../../../shared/types/api'
 import type Database from 'better-sqlite3'
 import type { AppDb } from '../db'
+import type { RunRow } from '../retrain/runner'
 import { apiError } from '../http'
 import { toUploadDetail } from '../mappers'
 import {
@@ -35,7 +36,6 @@ import { STAGED_DAYS } from './limits'
 import { parseWorkbook, type ParsedCall, type ParseResult } from './parser'
 
 export type UploadRow = typeof uploads.$inferSelect
-export type RunRow = typeof forecastRuns.$inferSelect
 
 export interface IngestDeps {
   maxBytes: number

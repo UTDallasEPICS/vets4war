@@ -7,6 +7,7 @@ import { getRouterParam, type H3Event } from 'h3'
 import { easternToday } from '../../../shared/utils/dates'
 import { env } from '../env'
 import { apiError } from '../http'
+import { useRetrainRunner } from '../retrain'
 import { UPLOAD_FOLDER_PREFIX, type IngestDeps } from './service'
 
 const MB = 1024 * 1024
@@ -16,6 +17,15 @@ export function useIngestDeps(): IngestDeps {
     maxBytes: env.V4W_UPLOAD_MAX_MB * MB,
     maxRows: env.V4W_UPLOAD_MAX_ROWS,
     today: () => easternToday(),
+    onImported: env.V4W_RETRAIN_ON_IMPORT
+      ? ({ uploadId, userLabel }) =>
+          useRetrainRunner().request({
+            trigger: 'import',
+            mode: 'full',
+            requestedBy: userLabel,
+            uploadId,
+          })
+      : undefined,
   }
 }
 
