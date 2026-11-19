@@ -68,7 +68,12 @@
 
 <template>
   <div class="space-y-4" data-testid="upload-report">
-    <dl class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
+    <!-- A file refused while it was read has no days to count: zeros would mislead. -->
+    <dl
+      v-if="report.days.length"
+      class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4"
+      data-testid="report-summary"
+    >
       <div>
         <dt class="text-gray-500 dark:text-gray-400">First day</dt>
         <dd class="font-medium">{{ report.summary.first_day ?? '–' }}</dd>

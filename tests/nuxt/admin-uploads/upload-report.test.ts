@@ -75,3 +75,34 @@ describe('UploadReport', () => {
     expect(wrapper.find('[data-testid="show-all-days"]').exists()).toBe(false)
   })
 })
+
+describe('UploadReport of a file refused while it was read', () => {
+  it('shows the problem, not counts of zero calls and zero days', async () => {
+    const refused = upload({
+      status: 'invalid',
+      report: {
+        ok: false,
+        nothing_to_import: false,
+        summary: {
+          total_rows: 0,
+          first_day: null,
+          last_day: null,
+          days: 0,
+          new_days: 0,
+          identical_days: 0,
+          conflict_days: 0,
+        },
+        days: [],
+        days_without_calls: [],
+        file_errors: [
+          { code: 'bad_rows', message: 'Sheet "Sheet": Abandon is not Y or N on Excel row 9.' },
+        ],
+        warnings: [],
+      },
+    })
+    const wrapper = await mountSuspended(UploadReport, { props: { upload: refused } })
+    expect(wrapper.find('[data-testid="report-summary"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Calls in the file')
+    expect(wrapper.find('[data-testid="file-error"]').text()).toContain('Excel row 9')
+  })
+})
