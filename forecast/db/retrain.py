@@ -100,6 +100,11 @@ RESULT_PREFIX = "V4W_RESULT"
 GATE_METRIC = "daily_mape_1_14"
 DAYS_PER_WEEK = 7
 MAX_MISMATCHES_SHOWN = 3
+# Lowest caller-patience estimate a forecast may be written with, in seconds. Every
+# call waits through routing, so a smaller mean patience cannot come from sane queue
+# and abandon times; the read API also bounds a requested patience_sec from here up
+# (a tiny value makes its Erlang A computation extremely slow).
+MIN_PATIENCE_SEC = 10.0
 
 
 class Refusal(Exception):
@@ -222,9 +227,17 @@ def _derived(calls: pd.DataFrame, refuse: str) -> tuple[list[tuple], dict, dict]
             aht = aht_from_calls(calls, halflife)
             share = real_share_table(counts, halflife)
             cells += [(recency, dow, hour, aht[(dow, hour)], share[(dow, hour)]) for dow, hour in sorted(aht)]
-        return cells, patience_from_calls(calls), quick_hangups_from_calls(calls)
+        patience = patience_from_calls(calls)
+        quick = quick_hangups_from_calls(calls)
     except ValueError as error:
         raise Refusal(f"{refuse}{error}. Check the loaded call data.") from error
+    if not patience["patience_sec"] >= MIN_PATIENCE_SEC:
+        raise Refusal(f"{refuse}the caller patience measured from the calls is {patience['patience_sec']:.2f} s "
+                      f"({patience['n_abandoned']:,} hang-ups over {patience['n_calls']:,} calls), below the floor "
+                      f"of {MIN_PATIENCE_SEC:g} s. Every call waits through routing, so the queue and abandon times "
+                      f"(InQueue, Abandon_Time) of the loaded calls are probably wrong: check the units and columns "
+                      f"of the call-records files, then run again.")
+    return cells, patience, quick
 
 
 def _hour_rows(frame: pd.DataFrame) -> list[tuple]:
