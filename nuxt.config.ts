@@ -14,6 +14,17 @@ export default defineNuxtConfig({
   // Light unless the person chose dark, as on the old console; same storage key, so the
   // old choice carries over.
   colorMode: { preference: 'light', fallback: 'light', storageKey: 'v4w-theme' },
+  // Icons come only from the installed collections (@iconify-json/heroicons for ours,
+  // @iconify-json/lucide for Nuxt UI's), served by our own server: never from the
+  // Iconify API, so the app works without outbound access. The endpoint lives outside
+  // /api/ so the auth gate does not refuse it on the sign-in page; icons named in the
+  // app's source are also bundled into the client and need no request at all.
+  icon: {
+    serverBundle: { collections: ['heroicons', 'lucide'] },
+    clientBundle: { scan: true },
+    fallbackToApi: false,
+    localApiEndpoint: '/_nuxt_icon',
+  },
   // Prettier owns formatting; ESLint handles logic only (no stylistic rules).
   eslint: { config: { stylistic: false } },
   // Type errors in the terminal during `nuxt dev` only; CI runs `pnpm typecheck`.
