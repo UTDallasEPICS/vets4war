@@ -1,0 +1,322 @@
+// @vitest-environment nuxt
+//
+// The console in the Nuxt environment: apiFetch and useSessionUser are mocked, so no
+// server, database or network is involved. The forecast is a SYNTHETIC two-day fixture
+// built here with the shared staffForHour (today and tomorrow, as the page asks for the
+// browser's today).
+
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { computed } from 'vue'
+import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
+import type { ForecastResponse, HourRow, ForecastDay } from '#shared/types/api'
+import { capForHour, staffForHour } from '#shared/utils/staffing'
+import ConsoleApp from '../../../app/components/console/ConsoleApp.vue'
+import { computeHours, summarize } from '../../../app/utils/console/logic'
+import { isoDate, shortDate } from '../../../app/utils/console/format'
+
+const mocks = vi.hoisted(() => ({
+  apiFetch: vi.fn(),
+  role: 'admin' as 'admin' | 'viewer',
+}))
+
+mockNuxtImport('apiFetch', () => mocks.apiFetch)
+mockNuxtImport('useSessionUser', () => {
+  return async () => ({
+    user: computed(() => ({ id: 'u1', email: 'a@example.org', name: 'a', role: mocks.role })),
+    isAdmin: computed(() => mocks.role === 'admin'),
+    signOut: () => Promise.resolve(),
+  })
+})
+
+const PATIENCE = 251
+const EFF = 0.656
+// Calls per hour: quiet nights, a busier day, a heavy evening (over the cap of 6).
+const callsAt = (hour: number) => (hour < 8 ? 3 : hour < 16 ? 10 : 22)
+
+function fixture(): ForecastResponse {
+  const today = new Date()
+  const tomorrow = new Date(today)
+  tomorrow.setDate(tomorrow.getDate() + 1)
+  const dates = [isoDate(today), isoDate(tomorrow)]
+  const hours: HourRow[] = dates.flatMap((date) =>
+    Array.from({ length: 24 }, (_, hour) => {
+      const calls = callsAt(hour)
+      const s = staffForHour(calls, 650, EFF, 0.8, 30, PATIENCE, capForHour(hour))
+      return {
+        date,
+        hour,
+        predicted_calls: calls,
+        predicted_real_calls: calls * 0.7,
+        aht_sec: 650,
+        load_erlangs: s.load_erlangs,
+        agents_required: s.agents_required,
+        staff_to_schedule: s.staff_to_schedule,
+        effective_agents: s.effective_agents,
+        service_level_delivered: s.service_level_delivered,
+        over_cap: s.over_cap,
+        implausible: s.implausible,
+        reason: s.reason,
+        expected_talk_sec: s.load_erlangs * 3600,
+        expected_talk: '',
+        abandon_share: s.abandon_share,
+      }
+    })
+  )
+  const days: ForecastDay[] = dates.map((date) => ({
+    date,
+    predicted_calls: 0,
+    shifts: { Overnight: null, Day: null, Evening: null },
+    is_weekend: false,
+    holiday: null,
+    expected_talk_sec: 0,
+    expected_talk: '',
+  }))
+  return {
+    params: {
+      start: dates[0]!,
+      end: dates[1]!,
+      efficiency: EFF,
+      target_pct: 0.8,
+      target_sec: 30,
+      queue_model: 'erlang_a',
+      patience_sec: PATIENCE,
+      patience_source: { kind: 'estimated', n_abandoned: 1234, n_calls: 5678 },
+      recency: 'weighted',
+      include_holidays: true,
+    },
+    data_source: {
+      kind: 'synthetic',
+      label: 'Synthetic data',
+      start: '2021-01-01',
+      end: '2026-11-15',
+    },
+    holiday_coverage: { last_known_holiday: '2027-12-25', covered: true, message: null },
+    hours,
+    days,
+    window: {
+      start: dates[0]!,
+      end: dates[1]!,
+      expected_calls: 0,
+      expected_talk_sec: 0,
+      expected_talk: '',
+      mean_aht_sec: 650,
+      expected_abandoned_calls: null,
+      abandon_share: null,
+      expected_abandoned_one_fewer: null,
+      recency: 'weighted',
+      recency_effect_pct: 0,
+      caveat: 'Caveat text.',
+    },
+    quick_hangups: {
+      threshold_sec: 10,
+      window_days: 90,
+      first_day: '2026-08-18',
+      last_day: '2026-11-15',
+      n_calls: 100,
+      n_abandoned: 10,
+      n_quick: 5,
+      quick_share_of_abandoned: 0.5,
+      quick_share_of_calls: 0.05,
+    },
+  }
+}
+
+const controls = (efficiency: number) => ({
+  efficiency,
+  targetPct: 0.8,
+  targetSec: 30,
+  patienceSec: PATIENCE,
+})
+const until = (fn: () => void) => vi.waitFor(fn, { timeout: 5000, interval: 20 })
+function setInput(el: Element, value: string, event = 'input') {
+  ;(el as HTMLInputElement).value = value
+  el.dispatchEvent(new Event(event, { bubbles: true }))
+}
+function apiError(status: number, code: string, message: string) {
+  return Object.assign(new Error(message), { status, code, data: { code } })
+}
+
+describe('console', () => {
+  beforeEach(() => {
+    mocks.apiFetch.mockReset()
+    mocks.role = 'admin'
+    localStorage.clear()
+  })
+
+  it('draws 48 hour cells with the cap state of every hour, from one request', async () => {
+    const data = fixture()
+    mocks.apiFetch.mockResolvedValue(data)
+    const wrapper = await mountSuspended(ConsoleApp)
+    await until(() => expect(wrapper.findAll('td.h[data-k]')).toHaveLength(48))
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(1)
+    const [url, options] = mocks.apiFetch.mock.calls[0]!
+    expect(url).toBe('/api/forecast')
+    expect(options.query).toEqual({
+      start: data.params.start,
+      end: isoDate(new Date(Date.now() + 29 * 86_400_000)),
+      queue_model: 'erlang_a',
+      recency: 'weighted',
+      include_holidays: 'true',
+      efficiency: '0.66',
+      target_pct: '0.80',
+      target_sec: '30',
+    })
+    const expected = computeHours(data.hours, controls(EFF))
+    const states = new Set<string>()
+    for (const h of expected) {
+      const td = wrapper.get(`td.h[data-k="${h.date}:${h.hour}"]`)
+      expect(td.classes()).toContain(`cap-${h.cap_state}`)
+      expect(td.find('.n').text()).toBe(String(h.staff_to_schedule))
+      states.add(h.cap_state)
+    }
+    expect([...states].sort()).toEqual(['at', 'over', 'under'])
+    // the six roster cells, one per tour and day
+    expect(wrapper.findAll('td.roster[data-plan]')).toHaveLength(6)
+  })
+
+  it('shows the fixture in the badge, the sub-title and the tiles', async () => {
+    const data = fixture()
+    mocks.apiFetch.mockResolvedValue(data)
+    const wrapper = await mountSuspended(ConsoleApp)
+    await until(() => expect(wrapper.findAll('#summary .stat')).toHaveLength(4))
+    expect(wrapper.get('#sourceBadge').text()).toBe(
+      `Synthetic data, ${shortDate('2021-01-01')} 2021 to ${shortDate('2026-11-15')} 2026`
+    )
+    expect(wrapper.get('#sourceBadge').classes()).toContain('src-synthetic')
+    expect(wrapper.get('#pageSub').text()).toContain('2 days')
+    const s = summarize(computeHours(data.hours, controls(EFF)))
+    const tiles = wrapper
+      .findAll('#summary .stat')
+      .map((t) => [t.get('.k').text(), t.get('.v').text()])
+    expect(tiles[0]).toEqual(['Predicted calls', Math.round(s.calls).toLocaleString()])
+    // Real calls sit right beside the total.
+    expect(tiles[1]).toEqual(['Real calls', Math.round(s.realCalls).toLocaleString()])
+    expect(tiles[3]).toEqual(['Person-hours to schedule', s.personHours!.toLocaleString()])
+    expect(wrapper.get('#caveat').text()).toContain('measured from 1,234 past hang-ups')
+  })
+
+  it('recomputes in the browser when efficiency moves, without a second request', async () => {
+    const data = fixture()
+    mocks.apiFetch.mockResolvedValue(data)
+    const wrapper = await mountSuspended(ConsoleApp)
+    await until(() => expect(wrapper.findAll('td.h[data-k]')).toHaveLength(48))
+    setInput(wrapper.get('#effNum').element, '50')
+    const at50 = computeHours(data.hours, controls(0.5))
+    await until(() => {
+      for (const h of at50) {
+        expect(wrapper.get(`td.h[data-k="${h.date}:${h.hour}"] .n`).text()).toBe(
+          String(h.staff_to_schedule)
+        )
+      }
+    })
+    expect(wrapper.get('#changed').text()).toMatch(/hours? changed/)
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('makes one request when a date changes', async () => {
+    mocks.apiFetch.mockResolvedValue(fixture())
+    const wrapper = await mountSuspended(ConsoleApp)
+    await until(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(1))
+    await until(() => expect(wrapper.findAll('td.h[data-k]')).toHaveLength(48))
+    setInput(wrapper.get('#end').element, '2027-01-31', 'change')
+    await until(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(2))
+    expect(mocks.apiFetch.mock.calls[1]![1].query.end).toBe('2027-01-31')
+    await new Promise((r) => setTimeout(r, 200))
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows the verdict of a planned number and keeps it across a remount', async () => {
+    const data = fixture()
+    mocks.apiFetch.mockResolvedValue(data)
+    const first = await mountSuspended(ConsoleApp)
+    await until(() => expect(first.findAll('td.roster[data-plan]')).toHaveLength(6))
+    const cell = `td.roster[data-plan="${data.params.start}|Day"]`
+    setInput(first.get(`${cell} input`).element, '1')
+    await until(() => expect(first.get(cell).classes()).toContain('own'))
+    expect(first.get(`${cell} .verdict`).text()).toMatch(/^Under -\d/)
+    expect(first.get(`${cell} .verdict .lost`).text()).toMatch(/^\d+ lost · \d+%$/)
+    expect(first.get(`${cell} .verdict`).classes()).toContain('v-understaffed')
+    first.unmount()
+
+    const second = await mountSuspended(ConsoleApp)
+    await until(() => expect(second.find(cell).exists()).toBe(true))
+    await until(() => expect(second.get(cell).classes()).toContain('own'))
+    expect((second.get(`${cell} input`).element as HTMLInputElement).value).toBe('1')
+    expect(localStorage.getItem('v4w.planned.v1')).toBe(
+      JSON.stringify({ [`${data.params.start}|Day`]: 1 })
+    )
+  })
+
+  it('one-day mode asks for one day and shows the hour-by-hour board', async () => {
+    const data = fixture()
+    mocks.apiFetch.mockResolvedValue(data)
+    const wrapper = await mountSuspended(ConsoleApp)
+    await until(() => expect(wrapper.findAll('td.h[data-k]')).toHaveLength(48))
+    await wrapper.get('#modeDay').trigger('click')
+    await until(() => expect(mocks.apiFetch).toHaveBeenCalledTimes(2))
+    const q = mocks.apiFetch.mock.calls[1]![1].query
+    expect(q.start).toBe(data.params.start)
+    expect(q.end).toBe(data.params.start)
+    await until(() => expect(wrapper.find('#dayFocus table.focus').exists()).toBe(true))
+    expect(wrapper.get('#modeDay').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('#datesLabel').text()).toBe('Day')
+    // 24 hours of the first date: the board's hour row
+    expect(wrapper.findAll('#dayFocus tr.f-hours td')).toHaveLength(24)
+    expect(wrapper.findAll('#dayFocusList button.hrow')).toHaveLength(24)
+  })
+
+  it('shows the no-forecast state, with the admin link for admins only', async () => {
+    mocks.apiFetch.mockRejectedValue(
+      apiError(
+        503,
+        'no_forecast',
+        'No forecast yet. An admin needs to load call data and run a retrain.'
+      )
+    )
+    const admin = await mountSuspended(ConsoleApp)
+    await until(() => expect(admin.find('#noForecast').exists()).toBe(true))
+    expect(admin.get('#noForecast').text()).toContain(
+      'No forecast yet. An admin needs to load call data and run a retrain.'
+    )
+    await until(() => expect(admin.find('#noForecast a[href="/admin"]').exists()).toBe(true))
+    expect(admin.find('#gridScroll').exists()).toBe(false)
+    expect(admin.get('#error').attributes('hidden')).toBeDefined()
+    admin.unmount()
+
+    mocks.role = 'viewer'
+    const viewer = await mountSuspended(ConsoleApp)
+    await until(() => expect(viewer.find('#noForecast').exists()).toBe(true))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(viewer.find('#noForecast a').exists()).toBe(false)
+    expect(viewer.find('#adminLink').exists()).toBe(false)
+  })
+
+  it('shows an error banner when the forecast does not load', async () => {
+    mocks.apiFetch.mockRejectedValue(apiError(500, 'error', 'boom'))
+    const wrapper = await mountSuspended(ConsoleApp)
+    await until(() => expect(wrapper.get('#error').attributes('hidden')).toBeUndefined())
+    expect(wrapper.get('#error').text()).toBe(
+      'The forecast did not load (boom). Change a date to retry.'
+    )
+    expect(wrapper.findAll('td.h')).toHaveLength(0)
+  })
+
+  it('shows the server sentence for dates outside the forecast', async () => {
+    mocks.apiFetch.mockRejectedValue(
+      apiError(400, 'outside_horizon', 'The forecast covers 2026-11-16 to 2029-01-24.')
+    )
+    const wrapper = await mountSuspended(ConsoleApp)
+    await until(() => expect(wrapper.get('#error').attributes('hidden')).toBeUndefined())
+    expect(wrapper.get('#error').text()).toBe('The forecast covers 2026-11-16 to 2029-01-24.')
+  })
+
+  it('has Sign out always and Admin for admins', async () => {
+    mocks.apiFetch.mockResolvedValue(fixture())
+    const wrapper = await mountSuspended(ConsoleApp)
+    await until(() => expect(wrapper.find('#adminLink').exists()).toBe(true))
+    expect(wrapper.get('#adminLink').attributes('href')).toBe('/admin')
+    expect(wrapper.get('#signOut').text()).toBe('Sign out')
+    const actions = wrapper.findAll('.actions > *').map((e) => e.attributes('id'))
+    expect(actions.slice(-2)).toEqual(['adminLink', 'signOut'])
+  })
+})
