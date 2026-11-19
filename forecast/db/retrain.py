@@ -39,7 +39,9 @@ Stopping (db/lifetime.py): SIGTERM, SIGINT or SIGHUP kill the gate workers
 at once, roll back any open write and end the process by that same signal,
 so nothing of the run is left running. A run the web app started
 (--run-id) also ends when the web app's process ends; the web app records
-how such a run ended. A run started from a shell records `failed` itself.
+how such a run ended. A run started from a shell records `failed` itself,
+and holds a lock next to the database while it lives (store.cli_lock_path)
+by which the web app tells it is still running.
 
 The last line printed is `V4W_RESULT {...}` (run id, status, model id and
 fingerprint). Nothing printed holds a call record: aggregates only.
@@ -482,6 +484,8 @@ def _main(argv: list[str] | None) -> int:
     finally:
         if conn is not None:
             conn.close()
+        if settings.run_id is None and run_id is not None:
+            store.release_cli_lock(run_id)  # the row says how it ended by now
     _print_result(run_id, outcome.status, outcome.model_id, outcome.model_sha256)
     return outcome.exit_code
 

@@ -5,6 +5,7 @@
     load_holidays(conn)                  -> holiday_date, holiday_name, by date
     insert_missing_holidays(conn, rows)  -> how many rows were new
     start_run(conn, run_id, ...)         -> claim the queued run row Node created, or insert a 'cli' one
+                                            and hold its lock until release_cli_lock(run_id)
     serving_model(conn)                  -> the model forecast_state points at, or None
     write_forecast(conn, ...)            -> model, forecast, derived numbers and run row in ONE transaction
     finish_run(conn, run_id, ...)        -> close a run that writes no forecast
@@ -282,12 +283,46 @@ def _update_run(conn: sqlite3.Connection, run_id: int, columns: dict, current: s
         raise _not_open(conn, run_id, current)
 
 
+# A run started from a shell holds a lock while it lives, so the web app can tell a
+# running one from one that died without a word, whatever its command line or pid
+# namespace: a lock is on the file, which every process that shares the database sees.
+# The lock is SQLite's own (BEGIN IMMEDIATE on an empty side file next to the
+# database); the kernel drops it the moment the process ends, however it ends.
+CLI_LOCK_NAME = "{db}-cli-run-{run_id}.lock"
+_CLI_LOCKS: dict[int, tuple[sqlite3.Connection, Path]] = {}
+
+
+def cli_lock_path(db_path: str | Path, run_id: int) -> Path:
+    """The lock file of shell run `run_id`: next to the database file, symlinks
+    resolved, so another spelling of the same file finds the same lock."""
+    db = Path(db_path).resolve()
+    return db.with_name(CLI_LOCK_NAME.format(db=db.name, run_id=run_id))
+
+
+def _hold_cli_lock(conn: sqlite3.Connection, run_id: int) -> None:
+    path = cli_lock_path(conn.execute("PRAGMA database_list").fetchone()[2], run_id)
+    lock = sqlite3.connect(str(path), timeout=0, isolation_level=None)
+    lock.execute("BEGIN IMMEDIATE")
+    _CLI_LOCKS[run_id] = (lock, path)
+
+
+def release_cli_lock(run_id: int) -> None:
+    """Drop the lock of a shell run once its row says how it ended, and remove the file."""
+    held = _CLI_LOCKS.pop(run_id, None)
+    if held is None:
+        return
+    lock, path = held
+    lock.close()
+    path.unlink(missing_ok=True)
+
+
 def start_run(conn: sqlite3.Connection, run_id: int | None, *, mode: str, pid: int, calls_revision: int,
               calls_count: int, data_start: str | None, data_end: str | None) -> int:
     """Mark the run as running with what it read. With run_id, claim the row
     Node created (its trigger, creator and created_at stay), only while it is
     still queued: a row is run once (RunNotOpen otherwise); without, insert a
-    row of a person at a shell (trigger 'cli'). Returns the run id."""
+    row of a person at a shell (trigger 'cli') and hold its lock (release_cli_lock).
+    Returns the run id."""
     now = now_seconds()
     read = (calls_revision, calls_count, data_start, data_end)
     with _transaction(conn, write=True):
@@ -298,7 +333,10 @@ def start_run(conn: sqlite3.Connection, run_id: int | None, *, mode: str, pid: i
                 "VALUES ('cli', ?, 'running', 'cli', ?, ?, ?, ?, ?, ?, ?)",
                 (mode, now, now, pid, *read),
             )
-            return int(cursor.lastrowid)
+            run_id = int(cursor.lastrowid)
+            # Before the row becomes visible (COMMIT): the web app never sees it unlocked.
+            _hold_cli_lock(conn, run_id)
+            return run_id
         cursor = conn.execute(
             "UPDATE forecast_runs SET status = 'running', started_at = COALESCE(started_at, ?), pid = ?, "
             "calls_revision = ?, calls_count = ?, data_start = ?, data_end = ? WHERE id = ? AND status = 'queued'",

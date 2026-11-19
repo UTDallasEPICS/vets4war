@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from conftest import apply_migrations, insert_calls, synthetic_calls
+from db import store
 from db.lifetime import _children
 
 FORECAST_DIR = Path(__file__).resolve().parents[1]
@@ -52,6 +53,33 @@ def _rows(path: Path, sql: str, *params) -> list[tuple]:
         return conn.execute(sql, params).fetchall()
     finally:
         conn.close()
+
+
+def _locked(path: Path) -> bool:
+    """What the web app asks of a shell run's lock: is it held right now?"""
+    probe = sqlite3.connect(path, timeout=0, isolation_level=None)
+    try:
+        probe.execute("BEGIN IMMEDIATE")
+        probe.execute("ROLLBACK")
+        return False
+    except sqlite3.OperationalError:
+        return True
+    finally:
+        probe.close()
+
+
+def test_a_shell_run_holds_its_lock_while_it_works_and_removes_it_at_the_end(db):
+    process = _start(db)
+    try:
+        _wait_for_workers(process.pid)
+        assert _locked(store.cli_lock_path(db, 1))
+        process.communicate(timeout=600)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+    assert process.returncode == 0
+    assert not store.cli_lock_path(db, 1).exists()
 
 
 def _alive(pid: int) -> bool:
@@ -101,16 +129,19 @@ def test_a_run_stopped_mid_gate_leaves_no_process_and_closes_its_output(db, sign
     assert _wait_gone(workers) == []
     assert "V4W_RESULT" not in out
     status, message = _rows(db, "SELECT status, message FROM forecast_runs")[0]
+    lock = store.cli_lock_path(db, 1)
     if signum == signal.SIGKILL:
-        # Nothing runs in a killed process: the row stays as it was (the web app
-        # records the end of its own runs; see the next test for a shell's run).
+        # Nothing runs in a killed process: the row stays as it was. Its lock is
+        # gone with it (the file stays), which is how the web app knows it ended.
         assert status == "running"
+        assert lock.is_file() and not _locked(lock)
     else:
         name = signal.Signals(signum).name
         assert f"Stopped by {name}" in err
         assert status == "failed"
         assert message == (f"Stopped by {name} before it finished. Nothing new was written; "
                            f"the previous forecast is still in use.")
+        assert not lock.exists()
     assert _rows(db, "SELECT count(*) FROM forecast_state")[0][0] == 0
 
 
