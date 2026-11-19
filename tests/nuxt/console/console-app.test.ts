@@ -5,7 +5,8 @@
 // built here with the shared staffForHour (today and tomorrow, as the page asks for the
 // browser's today).
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { enableAutoUnmount } from '@vue/test-utils'
 import { computed } from 'vue'
 import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
 import type {
@@ -27,6 +28,10 @@ const mocks = vi.hoisted(() => ({
   status: vi.fn(),
   role: 'admin' as 'admin' | 'viewer',
 }))
+
+// every mounted console is unmounted after its test, so no document listener of an
+// earlier test answers a later one
+enableAutoUnmount(afterEach)
 
 mockNuxtImport('apiFetch', () => {
   return (url: string, options?: unknown) =>
@@ -528,15 +533,38 @@ describe('console', () => {
       expect(viewer.find('#statusNote a').exists()).toBe(false)
     })
 
-    it('asks again when the tab becomes visible, and reloads the forecast when the run is done', async () => {
+    it('running, a failed answer, then succeeded: keeps the note, then reloads the forecast once', async () => {
       const wrapper = await mountWith(status('running', true))
       await until(() => expect(wrapper.find('#statusNote').exists()).toBe(true))
       const forecastCalls = mocks.apiFetch.mock.calls.length
+      const visible = () => document.dispatchEvent(new Event('visibilitychange'))
+
+      for (const failure of [
+        apiError(500, 'error', 'boom'),
+        { forecast: { data_end: 20261115, stale: 'x' }, run: { status: 'running' } },
+      ]) {
+        const statusCalls = mocks.status.mock.calls.length
+        if (failure instanceof Error) mocks.status.mockRejectedValue(failure)
+        else mocks.status.mockResolvedValue(failure)
+        visible()
+        await until(() => expect(mocks.status.mock.calls.length).toBe(statusCalls + 1))
+        await new Promise((r) => setTimeout(r, 100))
+        // a failed or malformed answer changes nothing the page shows
+        expect(wrapper.get('#statusNote').text()).toBe(
+          `New call data is being processed. ${through}`
+        )
+        expect(mocks.apiFetch.mock.calls.length).toBe(forecastCalls)
+      }
+
       mocks.status.mockResolvedValue(status('succeeded', false))
-      document.dispatchEvent(new Event('visibilitychange'))
+      visible()
       await until(() => expect(wrapper.find('#statusNote').exists()).toBe(false))
       await until(() => expect(mocks.apiFetch.mock.calls.length).toBe(forecastCalls + 1))
-    })
+      // asking again later reloads nothing more
+      visible()
+      await new Promise((r) => setTimeout(r, 300))
+      expect(mocks.apiFetch.mock.calls.length).toBe(forecastCalls + 1)
+    }, 30_000)
   })
 
   it('has Sign out always and Admin for admins', async () => {
