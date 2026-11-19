@@ -255,6 +255,23 @@ def test_finish_run_records_status_message_and_json(migrated_db):
     assert row["finished_at"] > 0
 
 
+def test_a_gate_metric_with_no_data_is_stored_as_null(migrated_db):
+    """A gate over few origins has metrics with no data (NaN). JSON has no NaN and
+    the web app parses the column with JSON.parse: it must arrive as null."""
+    run_id = _claimed_run(migrated_db)
+    gate = {"passed": False, "model": {"daily_mape_1_14": float("nan"), "week_acc_std": np.float64("inf"),
+                                       "hourly_mae_1_14": np.float64(3.5)},
+            "naive": {"daily_mape_1_14": 9.0, "week_acc_std": float("-inf")}}
+
+    store.finish_run(store.connect(migrated_db), run_id, status="rejected", message="m", gate_json=gate)
+
+    text = _raw(migrated_db).execute("SELECT gate_json FROM forecast_runs").fetchone()[0]
+    assert "NaN" not in text and "Infinity" not in text
+    assert json.loads(text) == {"passed": False,
+                                "model": {"daily_mape_1_14": None, "week_acc_std": None, "hourly_mae_1_14": 3.5},
+                                "naive": {"daily_mape_1_14": 9.0, "week_acc_std": None}}
+
+
 def test_a_run_column_outside_the_list_is_refused(migrated_db):
     run_id = _claimed_run(migrated_db)
     with pytest.raises(ValueError, match="trigger"):

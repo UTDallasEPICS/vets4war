@@ -155,15 +155,16 @@ export interface PlannedResponse {
   shifts: PlannedShiftResult[]
 }
 
+// null when the backtest could not measure it (Python stores NaN as null).
 export interface GateMetrics {
-  daily_mape_1_14: number
-  daily_mape_15_28: number
-  hourly_mae_1_14: number
-  block_wape_1_14: number
-  week_acc_mean: number
-  week_acc_std: number
-  week_acc_min: number
-  week_total_ape: number
+  daily_mape_1_14: number | null
+  daily_mape_15_28: number | null
+  hourly_mae_1_14: number | null
+  block_wape_1_14: number | null
+  week_acc_mean: number | null
+  week_acc_std: number | null
+  week_acc_min: number | null
+  week_total_ape: number | null
 }
 export interface GateResult {
   origins: number
