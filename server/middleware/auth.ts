@@ -1,29 +1,24 @@
-import { auth } from '~~/server/utils/auth'
-
-// API paths that must stay reachable without a session. Better Auth's own
-// endpoints (sign-in, email OTP, get-session, etc.) live under /api/auth.
-const PUBLIC_PREFIXES = ['/api/auth', '/api/health']
+import { defineEventHandler, getRequestHeader } from 'h3'
+import { auth } from '../utils/auth'
+import { checkAccess, isPublicPath } from '../utils/access'
+import { env } from '../utils/env'
+import { apiError } from '../utils/http'
+import type { SessionUser } from '../utils/session'
 
 // Make the resolved session available to every downstream handler so routes
 // can read event.context.user / event.context.session instead of calling
 // auth.api.getSession() themselves.
 declare module 'h3' {
   interface H3EventContext {
-    user?: typeof auth.$Infer.Session.user
+    user?: SessionUser
     session?: typeof auth.$Infer.Session.session
   }
 }
 
+// API gateway (PLAN.md section 5): public prefixes, session, admin prefix, origin of
+// writes. Page navigation and assets are handled by app/middleware/auth.global.ts.
 export default defineEventHandler(async (event) => {
-  // Only guard server API routes. Page navigation and assets are handled by
-  // the client route middleware (app/middleware/auth.global.ts).
-  if (!event.path.startsWith('/api/')) {
-    return
-  }
-
-  const pathname = event.path.split('?')[0] ?? event.path
-
-  if (PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + '/'))) {
+  if (isPublicPath(event.path)) {
     return
   }
 
@@ -31,10 +26,22 @@ export default defineEventHandler(async (event) => {
     headers: event.headers,
   })
 
-  if (!session) {
-    throw createError({ statusCode: 401, statusMessage: 'Unauthorized' })
+  const user: SessionUser | null = session
+    ? { ...session.user, role: session.user.role === 'admin' ? 'admin' : 'viewer' }
+    : null
+
+  const access = checkAccess({
+    path: event.path,
+    method: event.method,
+    origin: getRequestHeader(event, 'origin') ?? null,
+    authOrigin: env.BETTER_AUTH_URL,
+    user,
+  })
+
+  if (!access.ok) {
+    throw apiError(access.status, access.code, access.message)
   }
 
-  event.context.user = session.user
-  event.context.session = session.session
+  event.context.user = user ?? undefined
+  event.context.session = session?.session
 })
