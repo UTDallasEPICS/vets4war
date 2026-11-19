@@ -1,14 +1,9 @@
 <script setup lang="ts">
   const colorMode = useColorMode()
 
-  const isDark = computed({
-    get() {
-      return colorMode.value === 'dark'
-    },
-    set() {
-      colorMode.preference = colorMode.value === 'dark' ? 'light' : 'dark'
-    },
-  })
+  function toggleTheme() {
+    colorMode.preference = colorMode.value === 'dark' ? 'light' : 'dark'
+  }
 
   const { user, isAdmin, signOut } = await useSessionUser()
 </script>
@@ -34,13 +29,23 @@
             {{ user.email }}
           </span>
           <UButton v-if="user" color="neutral" variant="ghost" label="Sign out" @click="signOut" />
+          <!-- Both icons, chosen by the `dark` class: the server cannot know the stored
+               theme, and markup that depends on it would mismatch at hydration (a
+               production build keeps the server's icon). -->
           <UButton
-            :icon="isDark ? 'i-heroicons-moon-20-solid' : 'i-heroicons-sun-20-solid'"
             color="neutral"
             variant="ghost"
-            @click="isDark = !isDark"
+            square
+            @click="toggleTheme"
             aria-label="Toggle Theme"
-          />
+          >
+            <span class="flex dark:hidden">
+              <UIcon name="i-heroicons-sun-20-solid" class="size-5" />
+            </span>
+            <span class="hidden dark:flex">
+              <UIcon name="i-heroicons-moon-20-solid" class="size-5" />
+            </span>
+          </UButton>
         </div>
       </UContainer>
     </header>
