@@ -5,6 +5,7 @@ call build_features(), so the two can never drift apart.
 
     build_features(df, holidays) -> df with feature columns added
     load_hourly(conn)            -> hourly counts aggregated from `calls`
+                                    (db.client_files.hourly_from_calls)
     load_holidays(conn)          -> the holidays table
 
 Deliberate omissions:
@@ -15,9 +16,8 @@ Deliberate omissions:
   * No holiday multipliers. The holidays table has none measured (all NULL),
     so the model learns each holiday's effect from the data instead.
 
-The database is shared with teammates and is read as-is: no views, generated
-columns or constraints are added. Weekday and hour are derived here in pandas.
-Connection comes from $V4W_DATABASE_URL.
+The database belongs to the web app and is only read here (db.store).
+Weekday and hour are derived here in pandas.
 """
 
 from __future__ import annotations
@@ -25,7 +25,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from db.holiday_calendar import (  # noqa: E402
+from db import store
+from db.holiday_calendar import (
     ADJACENT,
     MAJOR_HOLIDAYS,
     NO_HOLIDAY,
@@ -55,55 +56,27 @@ SERVICE_LEVEL_SEC = 30
 # The column every volume model predicts: calls offered in the hour.
 TARGET = "offered"
 
-# Hourly grain, aggregated straight from `calls`. Hours with no calls have no
-# row here; db.train.complete_hourly_grid zero-fills them.
-HOURLY_SQL = f"""
-    SELECT
-        date_trunc('hour', start_ts)                                             AS hour_start,
-        count(*)::int                                                            AS offered,
-        count(*) FILTER (WHERE NOT abandoned)::int                               AS answered,
-        count(*) FILTER (WHERE abandoned)::int                                   AS abandoned,
-        count(*) FILTER (WHERE NOT abandoned
-                           AND in_queue_sec <= {SERVICE_LEVEL_SEC})::int         AS answered_30s,
-        coalesce(sum(agent_sec), 0)::float                                       AS talk_sec
-    FROM calls
-    GROUP BY 1
-    ORDER BY 1
-"""
-
 
 # =============================================================================
 # Loading
 # =============================================================================
 
-def _read_table(conn, sql: str) -> pd.DataFrame:
-    """Run one SELECT and return a DataFrame with the cursor's column names.
-
-    Uses a plain cursor rather than pd.read_sql so psycopg3 connections
-    work without SQLAlchemy.
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql)
-        columns = [d.name for d in cur.description]
-        rows = cur.fetchall()
-    return pd.DataFrame(rows, columns=columns)
-
-
 def load_hourly(conn) -> pd.DataFrame:
     """One row per hour that had at least one call: hour_start, offered,
-    answered, abandoned, answered_30s, talk_sec. Ordered by hour_start."""
-    df = _read_table(conn, HOURLY_SQL)
-    if df.empty:
+    answered, abandoned, answered_30s, talk_sec. Ordered by hour_start.
+    Hours with no calls have no row; db.train.complete_hourly_grid zero-fills them."""
+    # Imported here: db.client_files imports this module's constants.
+    from db.client_files import hourly_from_calls
+
+    calls = store.read_snapshot(conn).calls
+    if calls.empty:
         raise ValueError("`calls` is empty; nothing to aggregate")
-    df["hour_start"] = pd.to_datetime(df["hour_start"])
-    return df
+    return hourly_from_calls(calls)
 
 
 def load_holidays(conn) -> pd.DataFrame:
     """Every row of the holidays table, ordered by date."""
-    df = _read_table(conn, "SELECT * FROM holidays ORDER BY holiday_date")
-    df["holiday_date"] = pd.to_datetime(df["holiday_date"])
-    return df
+    return store.load_holidays(conn)
 
 
 # =============================================================================

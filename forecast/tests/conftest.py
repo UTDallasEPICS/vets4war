@@ -94,3 +94,27 @@ def insert_calls(path: Path, calls: pd.DataFrame, label: str = "SYNTHETIC test c
     finally:
         conn.close()
     return int(upload_id)
+
+
+# The seeded database most read-only tests share: 120 days of SYNTHETIC
+# calls from a Monday, and the official holidays of their year.
+SEEDED_FIRST_DAY = "2026-01-05"
+SEEDED_DAYS = 120
+
+
+@pytest.fixture(scope="session")
+def seeded_db(tmp_path_factory) -> Path:
+    """A migrated database holding SYNTHETIC calls and the 2026 holidays.
+    Shared by the whole session: tests must only read it."""
+    from db.add_holidays import official_holidays
+
+    path = apply_migrations(tmp_path_factory.mktemp("seeded") / "app.db")
+    insert_calls(path, synthetic_calls(SEEDED_FIRST_DAY, SEEDED_DAYS))
+    holidays = official_holidays(2026)
+    conn = sqlite3.connect(path)
+    conn.executemany("INSERT INTO holidays (holiday_date, holiday_name) VALUES (?, ?)",
+                     [(day.strftime("%Y-%m-%d"), name) for day, name in zip(holidays["holiday_date"],
+                                                                             holidays["holiday_name"])])
+    conn.commit()
+    conn.close()
+    return path

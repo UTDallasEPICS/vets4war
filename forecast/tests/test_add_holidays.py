@@ -1,8 +1,5 @@
-"""Official holidays by calendar rule, and the multipliers the table keeps
-for dates not reached yet. Hand-built frames, except the last test (real
-table; skipped without V4W_DATABASE_URL)."""
-
-import os
+"""Official holidays by calendar rule. Hand-built frames, except the last
+test, which reads the holidays table of a migrated database."""
 
 import pandas as pd
 import pytest
@@ -40,16 +37,15 @@ def test_a_table_row_on_a_different_date_than_the_rule_is_reported():
     assert rule_mismatches(moved) == ["Labor Day 2026: table 2026-09-08, rule 2026-09-07"]
 
 
-def test_the_rules_reproduce_every_row_of_the_real_table():
-    from db.features import load_holidays  # importing it loads .env
+def test_the_rules_reproduce_every_row_the_database_holds(migrated_db):
+    from db import store
+    from db.features import load_holidays
 
-    dsn = os.environ.get("V4W_DATABASE_URL")
-    if not dsn:
-        pytest.skip("V4W_DATABASE_URL is not set")
-    import psycopg
+    conn = store.connect(migrated_db)
+    store.insert_missing_holidays(conn, [(day.strftime("%Y-%m-%d"), name) for year in (2021, 2026, 2027)
+                                         for day, name in official_holidays(year).itertuples(index=False)])
 
-    with psycopg.connect(dsn) as conn:
-        table = load_holidays(conn)
+    table = load_holidays(conn)
 
-    assert len(table) >= 66
+    assert len(table) == 33
     assert rule_mismatches(table) == []

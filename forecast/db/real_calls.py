@@ -5,9 +5,12 @@ peer, measured by agent_sec. Time waiting in queue does not count, and
 abandoned calls are never real. The share is taken over ALL offered calls, so
 share x predicted calls gives predicted real calls.
 
-    estimate_real_share(conn, halflife_days) -> {(dow, hour): share}
+    real_counts(calls)                        -> n_calls, n_real per (call_date, dow, call_hour)
+    real_share_table(counts, halflife_days)   -> {(dow, hour): share}
+    estimate_real_share(conn, halflife_days)  -> the same, from the database's calls
 
-Weighted the same way as db.aht: a call `age` days before the newest call gets
+Weighted the same way as db.aht: a call `age` days before the newest call (of
+ALL calls, abandoned ones included) gets
 weight 0.5 ** (age / halflife_days). Cells with too few calls fall back to the
 overall weighted share. No ML here, and staffing does not use this number.
 
@@ -19,23 +22,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from db import store
 from db.aht import DOWS, HOURS, MIN_CELL_CALLS
 
 REAL_CALL_MIN_TALK_SEC = 120
-
-# dow (1=Mon..7=Sun) and call_hour are derived in the query: the shared
-# database has no generated columns and none are added.
-REAL_COUNTS_SQL = """
-    SELECT
-        start_ts::date                      AS call_date,
-        extract(isodow FROM start_ts)::int  AS dow,
-        extract(hour FROM start_ts)::int    AS call_hour,
-        count(*)::float                     AS n_calls,
-        count(*) FILTER (WHERE NOT abandoned AND agent_sec > %(min_talk_sec)s)::float AS n_real
-    FROM calls
-    GROUP BY 1, 2, 3
-"""
-
 
 def _age_weights(call_date: pd.Series, halflife_days: float | None) -> np.ndarray:
     if halflife_days is None:
@@ -62,13 +52,23 @@ def real_share_table(counts: pd.DataFrame, halflife_days: float | None) -> dict[
     return {(dow, hour): share((dow, hour)) for dow in DOWS for hour in HOURS}
 
 
+def real_counts(calls: pd.DataFrame) -> pd.DataFrame:
+    """call_date, dow (ISO), call_hour, n_calls, n_real (floats): one row per
+    date and hour that has calls. Real = answered with agent_sec over
+    REAL_CALL_MIN_TALK_SEC (a missing agent_sec is not real)."""
+    start = calls["start_ts"]
+    per_call = pd.DataFrame({
+        "call_date": start.dt.normalize(),
+        "dow": start.dt.isocalendar().day.astype("int64"),
+        "call_hour": start.dt.hour.astype("int64"),
+        "n_calls": 1.0,
+        "n_real": (~calls["abandoned"] & (calls["agent_sec"] > REAL_CALL_MIN_TALK_SEC)).astype("float64"),
+    })
+    return per_call.groupby(["call_date", "dow", "call_hour"], as_index=False)[["n_calls", "n_real"]].sum()
+
+
 def estimate_real_share(conn, halflife_days: float | None) -> dict[tuple[int, int], float]:
-    """Read the daily counts from `calls` (read-only) and build the share table."""
+    """real_share_table over every call in the database (read-only)."""
     if halflife_days is not None and halflife_days <= 0:
         raise ValueError(f"halflife_days must be > 0 or None, got {halflife_days}")
-    with conn.cursor() as cur:
-        cur.execute(REAL_COUNTS_SQL, {"min_talk_sec": REAL_CALL_MIN_TALK_SEC})
-        columns = [d.name for d in cur.description]
-        rows = cur.fetchall()
-    counts = pd.DataFrame(rows, columns=columns)
-    return real_share_table(counts.assign(call_date=pd.to_datetime(counts["call_date"])), halflife_days)
+    return real_share_table(real_counts(store.read_snapshot(conn).calls), halflife_days)

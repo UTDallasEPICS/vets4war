@@ -1,22 +1,17 @@
 """Tests for db/real_calls.py: the share of calls with over 2 minutes of talk time.
 
 The arithmetic is tested on small hand-made frames with no database. One test
-reads the shared database (read-only) to check the SQL's definition of a real
-call against a direct count.
-
-Run from the repo root:  python -m pytest tests/test_real_calls.py -v
+reads a migrated database of SYNTHETIC calls (tests/conftest.py, seeded_db)
+to check the definition of a real call against a direct count in SQL.
 """
 
-import os
+import sqlite3
 
 import pandas as pd
-import psycopg
 import pytest
-from dotenv import load_dotenv
 
+from db import store
 from db.real_calls import MIN_CELL_CALLS, REAL_CALL_MIN_TALK_SEC, estimate_real_share, real_share_table
-
-load_dotenv()
 
 
 def _rows(*rows):
@@ -73,16 +68,15 @@ def test_no_calls_raises_instead_of_inventing_a_share():
         real_share_table(_rows(), halflife_days=None)
 
 
-@pytest.mark.skipif(not os.environ.get("V4W_DATABASE_URL"), reason="V4W_DATABASE_URL is not set")
-def test_unweighted_shares_match_a_direct_count_in_the_database():
-    # Arrange
-    sql = """SELECT count(*)::float, count(*) FILTER (WHERE NOT abandoned AND agent_sec > 120)::float
-             FROM calls WHERE extract(isodow FROM start_ts) = 1 AND extract(hour FROM start_ts) = 20"""
+def test_unweighted_shares_match_a_direct_count_in_the_database(seeded_db):
+    # Arrange: Monday (ISO dow 1, SQLite %w 1) at 20:00.
+    sql = """SELECT count(*), sum(NOT abandoned AND agent_sec > 120) FROM calls
+             WHERE strftime('%w', start_ts) = '1' AND strftime('%H', start_ts) = '20'"""
 
     # Act
-    with psycopg.connect(os.environ["V4W_DATABASE_URL"]) as conn:
-        table = estimate_real_share(conn, None)
-        total, real = conn.execute(sql).fetchone()
+    table = estimate_real_share(store.connect(seeded_db, readonly=True), None)
+    total, real = sqlite3.connect(seeded_db).execute(sql).fetchone()
 
     # Assert
+    assert total >= MIN_CELL_CALLS
     assert table[(1, 20)] == pytest.approx(real / total)

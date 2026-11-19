@@ -1,8 +1,6 @@
-"""Train the hourly call-volume model and save it.
+"""Fit, gate and describe the hourly call-volume model.
 
-    python -m db.train                                 database only
-    python -m db.train --supplement a.xlsx b.xlsx      plus client call-record files
-                                                       for days the database lacks
+    python -m db.train ...   another name for python -m db.retrain (same flags)
 
 Target    : `offered` per hour, on an hourly grid of every day that has data
             (quiet hours inside such a day are zero calls; days with no calls
@@ -11,29 +9,22 @@ Procedure : db.procedure.PRODUCTION, the configuration the 2026-11 final run
             ended on (docs/final-run/REPORT.md): a LightGBM base profile on
             calendar features, then a level and an hour-of-day shape measured
             on the most recent weeks (db.calibration).
-Data      : db.dataset.load_dataset. The database is only read.
 
-Gate      : before anything is saved, the procedure is backtested on the last
+Gate      : before a model is used, the procedure is backtested on the last
             GATE_ORIGINS weekly origins (db.backtest: train up to a day,
             forecast the next 28 with no access to them) next to the seasonal
-            naive baseline. If the model does not beat the baseline on daily
-            error at 1 to 14 days, the script prints STOP and exits 1 without
-            saving.
+            naive baseline. It must beat the baseline on daily error at 1 to
+            14 days (passes_gate).
 
-Output    : models/volume_lgbm.txt and models/metadata.json (features, the
-            procedure, the calibration factors db.forecast applies, where the
-            data came from, the gate result).
-
-Connection comes from $V4W_DATABASE_URL.
+db.retrain runs these steps on the web app's database and stores the model
+there. save_model and the models/ paths remain for the tests and the
+research tools (db.tune).
 """
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
-import os
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,13 +32,13 @@ from pathlib import Path
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from db.atomic import atomic_write  # noqa: E402
-from db.backtest import DAYS_PER_WEEK, HORIZON_DAYS, run_origins, score, weekly_origins  # noqa: E402
-from db.calibration import CalibrationFactors, fit_calibration  # noqa: E402
-from db.dataset import load_dataset, missing_days  # noqa: E402
-from db.diagnostics import SeasonalNaive  # noqa: E402
-from db.features import HOURS_PER_DAY, TARGET, build_features  # noqa: E402
-from db.procedure import (  # noqa: E402
+from db.atomic import atomic_write
+from db.backtest import DAYS_PER_WEEK, HORIZON_DAYS, run_origins, score, weekly_origins
+from db.calibration import CalibrationFactors, fit_calibration
+from db.dataset import missing_days
+from db.diagnostics import SeasonalNaive
+from db.features import HOURS_PER_DAY, TARGET, build_features
+from db.procedure import (
     PRODUCTION,
     RECENT_DAYS,
     ForecastProcedure,
@@ -223,42 +214,9 @@ def _print_gate(result: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Train, gate and save the hourly volume model.")
-    parser.add_argument("--supplement", nargs="*", type=Path, default=[],
-                        help="client call-record workbooks for days the database lacks")
-    args = parser.parse_args(argv)
-
-    dsn = os.environ.get("V4W_DATABASE_URL")
-    if not dsn:
-        sys.exit("no connection string. set V4W_DATABASE_URL")
-    absent = [str(path) for path in args.supplement if not path.exists()]
-    if absent:
-        sys.exit(f"file not found: {absent}")
-
-    dataset = load_dataset(dsn, args.supplement)
-    print(json.dumps(list(dataset.sources), indent=2))
-    gaps = recent_gaps(dataset.hourly, GATE_SPAN_DAYS)
-    if len(gaps):
-        sys.exit(f"{len(gaps)} recent day(s) have no calls at all ({gaps[0].date()} to {gaps[-1].date()}): "
-                 f"that is unreported data, and the backtest gate cannot run across it. Load those days "
-                 f"into the database, or pass the client's files with --supplement.")
-    featured = featured_frame(dataset.hourly, dataset.holidays)
-    print(f"grid rows {len(featured):,}  days {len(featured) // HOURS_PER_DAY:,}  "
-          f"{featured['hour_start'].min().date()} to {featured['hour_start'].max().date()}")
-
-    result = gate(featured, dataset.holidays, PRODUCTION)
-    _print_gate(result)
-    if not result["passed"]:
-        print("\nSTOP: the model did not beat seasonal naive on daily error. Nothing saved.")
-        return 1
-
-    model = fit_model(featured, dataset.holidays, PRODUCTION)
-    save_model(model, build_metadata(model, PRODUCTION, dataset.sources, result))
-    print(f"\nlevel factor {model.factors.level:.4f}")
-    print("hour-of-day factors:", " ".join(f"{value:.2f}" for value in model.factors.hour))
-    print(f"saved {MODEL_PATH} and {METADATA_PATH}")
-    return 0
+    from db.retrain import main as retrain_main  # db.retrain imports this module
+    return retrain_main(argv)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

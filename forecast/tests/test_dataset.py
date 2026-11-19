@@ -1,10 +1,10 @@
 """DB hourly + supplemental client files -> one training frame.
 
-Hand-built frames only, except the last test, which reads the real database
-(skipped when V4W_DATABASE_URL is not set).
+Hand-built frames, and one test that reads a migrated database holding
+SYNTHETIC calls (tests/conftest.py, seeded_db).
 """
 
-import os
+import sqlite3
 
 import pandas as pd
 import pytest
@@ -132,19 +132,12 @@ def test_loading_a_missing_snapshot_raises(tmp_path):
         load_snapshot(tmp_path / "nothing-here")
 
 
-# ---- real database ------------------------------------------------------------------
+# ---- the database ---------------------------------------------------------------------
 
-def test_database_only_dataset_counts_every_call():
-    dsn = os.environ.get("V4W_DATABASE_URL")
-    if not dsn:
-        pytest.skip("V4W_DATABASE_URL is not set")
-    import psycopg
+def test_database_only_dataset_counts_every_call(seeded_db):
+    total_calls = sqlite3.connect(seeded_db).execute("SELECT count(*) FROM calls").fetchone()[0]
 
-    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM calls")
-        total_calls = cur.fetchone()[0]
-
-    dataset = load_dataset(dsn, supplement=[])
+    dataset = load_dataset(seeded_db, supplement=[])
 
     assert dataset.hourly["offered"].sum() == total_calls
     assert dataset.sources[0]["file"] == "database"

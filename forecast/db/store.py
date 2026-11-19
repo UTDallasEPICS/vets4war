@@ -66,6 +66,16 @@ HOUR_COLUMNS = ("date", "hour", "predicted_calls", "predicted_calls_no_holidays"
 CELL_COLUMNS = ("recency", "dow", "hour", "aht_sec", "real_share")
 
 
+def path_from_env(environ) -> Path | None:
+    """The database file named by DATABASE_URL (the web app's variable,
+    'file:' prefix stripped), or None when it is not set. A relative path is
+    relative to the current directory."""
+    url = (environ.get("DATABASE_URL") or "").strip()
+    if not url:
+        return None
+    return Path(url.removeprefix("file:"))
+
+
 def now_seconds() -> int:
     """The schema's timestamp: whole unix seconds."""
     return int(time.time())
