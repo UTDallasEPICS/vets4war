@@ -141,6 +141,71 @@ describe('forecast service on a stored forecast', () => {
     expect(order).toEqual(['other work', 'forecast done'])
   })
 
+  // Review finding N-5, end to end: a hand-edited or badly estimated stored patience.
+  it('answers 503 implausible_patience at once on the default path, and serves the rest', async () => {
+    const db = seeded()
+    db.update(schema.forecastState).set({ patienceSec: 0.5 }).run()
+    const year = { start: '2026-11-01', end: '2026-12-31' }
+    const started = performance.now()
+    for (const call of [
+      () => getForecast(db, RUNTIME, year),
+      () => getStaffing(db, RUNTIME, year),
+      () => postPlanned(db, RUNTIME, { ...year, planned: [] }),
+    ]) {
+      const error = await rejected(call)
+      expect(error.statusCode).toBe(503)
+      expect(error.data).toEqual({ code: 'implausible_patience', patience_sec: 0.5 })
+    }
+    expect(performance.now() - started).toBeLessThan(1000)
+    const override = await getForecast(db, RUNTIME, { ...THREE_DAYS, patience_sec: '60' })
+    expect(override.params.patience_source).toEqual({ kind: 'override' })
+    const c = await getForecast(db, RUNTIME, { ...THREE_DAYS, queue_model: 'erlang_c' })
+    expect(c.params.queue_model).toBe('erlang_c')
+  })
+
+  // Review round 2: 1,098 roster items were judged in one synchronous piece (1.8 s).
+  it('gives the event loop back while judging a long roster', async () => {
+    const db = seeded()
+    const shifts = ['Overnight', 'Day', 'Evening'] as const
+    const planned = Array.from({ length: 1098 }, (_, i) => ({
+      date: '2026-12-01',
+      shift: shifts[i % 3]!,
+      planned: (i % 9) + 1,
+    }))
+    let ticks = 0
+    let running = true
+    const tick = () => {
+      ticks += 1
+      if (running) setImmediate(tick)
+    }
+    setImmediate(tick)
+    const body = await postPlanned(db, RUNTIME, {
+      start: '2026-12-01',
+      end: '2026-12-01',
+      planned,
+    })
+    running = false
+    expect(body.shifts).toHaveLength(1098)
+    expect(ticks).toBeGreaterThan(40) // one slice of 24 items between two ticks
+  })
+
+  it('still refuses the first item outside the window when it is in a later slice', async () => {
+    const db = seeded()
+    const ok = Array.from({ length: 30 }, () => ({ date: '2026-12-01', shift: 'Day', planned: 4 }))
+    const error = await rejected(() =>
+      postPlanned(db, RUNTIME, {
+        ...THREE_DAYS,
+        planned: [
+          ...ok,
+          { date: '2026-12-09', shift: 'Day', planned: 4 },
+          { date: '2026-12-10', shift: 'Day', planned: 4 },
+        ],
+      })
+    )
+    expect(error.data.code).toBe('outside_window')
+    expect(error.message).toBe('2026-12-09 Day is not inside the forecast window')
+  })
+
   it('refuses dates outside the horizon with the horizon in data', async () => {
     const db = seeded()
     const error = await rejected(() => getForecast(db, RUNTIME, { start: '2026-12-30', end: '2027-01-02' }))

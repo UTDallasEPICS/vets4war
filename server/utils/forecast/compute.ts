@@ -28,7 +28,12 @@ import type {
   WindowSummary,
 } from '#shared/types/api'
 import { apiError } from '../http'
-import type { ForecastInput, PlannedInput } from './params'
+import {
+  ACCEPTED_PATIENCE_SEC_MAX,
+  ACCEPTED_PATIENCE_SEC_MIN,
+  type ForecastInput,
+  type PlannedInput,
+} from './params'
 import { cellIndex, type ForecastSnapshot, type ForecastStateRow } from './store'
 
 // ISO weekday of Saturday: is_weekend = weekday >= 6.
@@ -55,6 +60,23 @@ export function resolvePatience(
   if (input.queueModel === 'erlang_c') return { patienceSec: null, source: null }
   if (input.patienceSec !== null) {
     return { patienceSec: input.patienceSec, source: { kind: 'override' } }
+  }
+  // The stored estimate never passed the request bounds. Below the accepted minimum the
+  // Erlang A chain costs seconds per day of range (it froze the server), and the number
+  // itself means the waiting times in the call data are wrong: refuse, rather than
+  // compute with it or replace it by a number that was never measured.
+  const stored = state.patienceSec
+  if (!(stored >= ACCEPTED_PATIENCE_SEC_MIN)) {
+    throw apiError(
+      503,
+      'implausible_patience',
+      `The stored caller-patience estimate (${stored} s) is implausibly small: the waiting ` +
+        `times in the call data look wrong. An admin should fix them, reload the call ` +
+        `data and run a retrain. Until then, send patience_sec ` +
+        `(${ACCEPTED_PATIENCE_SEC_MIN} to ${ACCEPTED_PATIENCE_SEC_MAX} s) or use ` +
+        `queue_model=erlang_c.`,
+      { patience_sec: Number.isFinite(stored) ? stored : null }
+    )
   }
   return {
     patienceSec: state.patienceSec,
