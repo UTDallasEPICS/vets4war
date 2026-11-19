@@ -119,7 +119,10 @@ How a code reaches a person is set by `EMAIL_TRANSPORT`.
 - `smtp` (the default) sends it through the mail server named by `EMAIL_HOST`,
   `EMAIL_PORT`, `EMAIL_SECURE`, `EMAIL_USER`, `EMAIL_PASS`, from the address `EMAIL_FROM`.
   Any SMTP service works. Only a local test mail server has been used so far; real delivery
-  is on the list in the README under "Before you rely on it".
+  is on the list in the README under "Before you rely on it". A mail that cannot be sent
+  does not change the answer: the page says that a code is on its way even when the mail
+  server cannot be reached. If no mail arrives, read the server log: a failed delivery is
+  there as `[Better Auth]: Failed to run background task: ...`, followed by the reason.
 - `console` prints the code in the server log instead:
 
   ```

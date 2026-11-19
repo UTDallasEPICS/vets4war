@@ -47,13 +47,19 @@ amd64 the image is about 870 MB.
 
 What has and has not been built. The image was built and run for amd64 in a test sandbox:
 the health check, sign-in by mail, an upload whose retrain the server started inside the
-container, and a retrain by hand, both as `root` and as the user `app`. For **arm64**, which
-is what the pipeline deploys, the `Dockerfile` has **not** been built from start to finish.
-The sandbox is an amd64 machine that emulates ARM; under that emulation every step of the
-`Dockerfile` ran except `pnpm run build`, which hung. What runs in the final image was
-checked on emulated arm64 separately: Node, the Python environment with its packages, and
-(in an image whose JavaScript was built on amd64) an upload with its retrain. So the first
-complete arm64 build is the one the pipeline does on its ARM runner. Watch that run.
+container and a retrain by hand, both as `root` and as the user `app`; and, as `root`, a
+backup and its restore. One reservation: that sandbox reaches the internet only through a
+proxy with its own certificate, so the builds there used the `Dockerfile` plus a few lines
+after each `FROM` that make the build tools trust that proxy. Nothing else differed, but
+the `Dockerfile` exactly as committed has not been built by anyone yet.
+
+For **arm64**, which is what the pipeline deploys, the `Dockerfile` has **not** been built
+from start to finish. The sandbox is an amd64 machine that emulates ARM; under that
+emulation every step of the `Dockerfile` ran except `pnpm run build`, which hung. What runs
+in the final image was checked on emulated arm64 separately: Node, the Python environment
+with its packages, and (in an image whose JavaScript was built on amd64) an upload with its
+retrain. So the first complete arm64 build is the one the pipeline does on its ARM runner.
+Watch that run.
 
 Four consequences of how the image is made:
 
@@ -83,10 +89,19 @@ build with
 docker build --build-arg RUN_AS=app -t v4w-staffing .
 ```
 
-Use it where the folder that holds the database file is writable by user id 10001. If it is
-not, the app cannot open its database and every request that needs it fails. Running as an
-unprivileged user is the better default wherever the platform allows it: ask the platform
-owner who owns the volume.
+Use it only where the database file **and the folder that holds it** can be written by user
+id 10001. If they cannot, what happens depends on what is missing, and the first case is
+easy to overlook (both were tried with the amd64 image):
+
+- The file can be read, but the file or its folder cannot be written. The server starts and
+  **the health check answers 200**, yet nothing can be saved: asking for a sign-in code
+  fails with status 500, and the log says
+  `SqliteError: attempt to write a readonly database`.
+- The file cannot be read. The server stops at once with
+  `SqliteError: unable to open database file`.
+
+Running as an unprivileged user is the better default wherever the platform allows it: ask
+the platform owner who owns the volume.
 
 ### Trying the image on your own machine
 
@@ -94,13 +109,34 @@ owner who owns the volume.
 mkdir -p local-data
 DATABASE_URL=file:./local-data/app.db pnpm db:migrate
 docker build -t v4w-staffing .
-docker run --rm -p 3000:3000 -v "$PWD/local-data:/data" --env-file deploy.env v4w-staffing
+docker run --rm -d --name v4w-staffing -p 3000:3000 -v "$PWD/local-data:/data" --env-file .env.deploy v4w-staffing
 ```
 
-`deploy.env` holds the settings of the next section, one `NAME=value` per line, without
-quotes and without comments after a value. It must not be committed. `EMAIL_TRANSPORT`
-cannot be `console` here: a production build needs a real mail server, or a local test mail
-server.
+A few seconds later:
+
+```bash
+docker logs v4w-staffing
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/api/health
+```
+
+The log shows `[admins] created admin ...` on the first start and then
+`Listening on http://0.0.0.0:3000`; the `curl` line prints `200`. `docker stop v4w-staffing`
+stops the container and, because of `--rm`, removes it. The database stays in the folder
+you made in the first line.
+
+`.env.deploy` holds the settings of the next section, one `NAME=value` per line, without
+quotes and without comments after a value, with `DATABASE_URL=file:/data/app.db`. Give the
+file a name that starts with `.env.`: git and the image build both leave such files out
+(`.gitignore`, `.dockerignore`), so its secrets cannot be committed or copied into an image
+by accident. A name like `deploy.env` has neither protection.
+
+`EMAIL_TRANSPORT` cannot be `console` here: a production build needs a real mail server, or
+a test mail server. Mind where a test mail server on your own machine is. Inside the
+container `127.0.0.1` is the container itself, so that mail server is not reached, and you
+only see it in the log (`connect ECONNREFUSED 127.0.0.1:...`), because the page still says
+that a code is on its way. On Linux the simple way around it is to let the container use
+your machine's network: replace `-p 3000:3000` with `--network host`. The app then listens
+on your machine's port 3000, or on the one named by `PORT`.
 
 To run the retrain script by hand inside a running container, use the environment's Python
 and the script's folder:
@@ -108,6 +144,9 @@ and the script's folder:
 ```bash
 docker exec -w /app/forecast <container> /app/forecast/.venv/bin/python -m db.retrain --db /data/app.db --mode forecast-only
 ```
+
+With the plain `python`, or without `-w /app/forecast`, the command fails with
+`ModuleNotFoundError`.
 
 ## Settings
 
@@ -443,17 +482,23 @@ Delete the copy afterwards: it holds call data.
 
 ## Starting, stopping, health
 
-- **Health check.** `GET /api/health` answers 200 without a session. It answers even when
-  the database has not been migrated yet, so a new deployment can be checked before its
-  first migration; the log then says "database is not migrated: run pnpm db:migrate".
+- **Health check.** `GET /api/health` answers 200 without a session. It does not look at the
+  database. It answers even when the database has not been migrated yet, so a new deployment
+  can be checked before its first migration; the log then says "database is not migrated:
+  run pnpm db:migrate". It also answers when the database file cannot be written. A green
+  health check therefore shows that the server is up, not that people can sign in: after a
+  deploy, sign in once.
 - **Start.** The server makes the `V4W_ADMIN_EMAILS` addresses admins, marks uploads and
   runs that an earlier server left unfinished, and starts a retrain if call data is waiting
   for one.
 - **Stop.** On `SIGTERM` (what `docker stop` and the platform send) the server stops a
   running retrain, records it as Interrupted, and exits within a few seconds; with no run
   in progress it exits at once. The next start picks the work up again.
-- **Logs.** Lines start with `[admins]`, `[uploads]` or `[retrain]` and say what happened in
-  plain words. They never contain a call record or a sign-in code.
+- **Logs.** The app's own lines start with `[admins]`, `[uploads]` or `[retrain]` and say
+  what happened in plain words. They never contain a call record or a sign-in code. Lines
+  marked `[Better Auth]` come from the sign-in library: the rate-limit warning quoted above,
+  and a sign-in mail that could not be sent (`Failed to run background task: ...`). The log
+  is the only place where a failed mail shows, because the page answers the same either way.
 
 ## First-deploy checklist
 
@@ -465,7 +510,7 @@ Delete the copy afterwards: it holds call data.
 3. Set the service's environment: the table under [Settings](#settings).
 4. Configure the client address for the rate limit and push to `stage`.
 5. Check `GET /api/health`, then sign in as an address from `V4W_ADMIN_EMAILS` with a code
-   that arrives by real mail.
+   that arrives by real mail. If no mail arrives, read the server log.
 6. Run the four rate-limit checks.
 7. Upload a synthetic workbook (see
    [call-data.md](call-data.md#trying-it-with-generated-data)), import it, and watch the
