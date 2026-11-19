@@ -1,19 +1,72 @@
 <script setup lang="ts">
-  // What an import did, and the retrain it started (or queued behind the one running).
-  import type { RunSummary, UploadDetail } from '#shared/types/api'
+  // What an import did, and the retrain that reads it: started by this import, or queued
+  // behind the one in progress. The run is followed here until it ends, so the admin
+  // learns that it failed (and why) without switching to the runs tab.
+  import type { RunDetail, RunStatus, RunSummary, UploadDetail } from '#shared/types/api'
 
-  const props = defineProps<{ upload: UploadDetail; run: RunSummary | null }>()
+  const props = defineProps<{ upload: UploadDetail; run: RunSummary | null; queued: boolean }>()
   defineEmits<{ close: [] }>()
 
+  const POLL_MS = 3000
+  const ACTIVE: RunStatus[] = ['queued', 'running']
+  const WORDS: Record<RunStatus, string> = {
+    queued: 'Running',
+    running: 'Running',
+    succeeded: 'Done',
+    rejected: 'Kept the previous model',
+    failed: 'Failed',
+    interrupted: 'Interrupted',
+  }
+
   const result = computed(() => props.upload.result)
-  // The runner answers with the run already in progress when it only queued one more.
-  const queued = computed(() => props.run !== null && props.run.upload_id !== props.upload.id)
+  // The run that reads this file: once known (the upload answers with it), else the one
+  // this import started. A queued import has none until the re-run begins.
+  const followed = ref<RunDetail | RunSummary | null>(props.queued ? null : props.run)
+  // The import itself succeeded; a retrain that then failed must not read as success.
+  const color = computed(() =>
+    followed.value && ['failed', 'interrupted'].includes(followed.value.status)
+      ? 'warning'
+      : 'success'
+  )
+  const elapsed = ref(0)
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let stopped = false
+
   const days = (list: string[]) => (list.length > 6 ? `${list.length} days` : list.join(', '))
+  const seconds = (run: RunSummary) =>
+    run.started_at ? Math.max(0, Math.round((Date.now() - Date.parse(run.started_at)) / 1000)) : 0
+  const duration = (s: number) => (s < 120 ? `${s} s` : `${Math.round(s / 60)} min`)
+
+  async function follow() {
+    if (stopped) return
+    try {
+      const { upload } = await apiFetch<{ upload: UploadDetail }>(
+        `/api/admin/uploads/${props.upload.id}`
+      )
+      const id = upload.run_id ?? followed.value?.id ?? null
+      if (id !== null && (upload.run_id !== null || !props.queued)) {
+        followed.value = (await apiFetch<{ run: RunDetail }>(`/api/admin/runs/${id}`)).run
+        elapsed.value = seconds(followed.value)
+      }
+      if (followed.value && !ACTIVE.includes(followed.value.status)) return
+    } catch {
+      // A failed poll is tried again; the runs tab has the same information.
+    }
+    if (!stopped) timer = setTimeout(follow, POLL_MS)
+  }
+
+  onMounted(() => {
+    if (props.run) void follow()
+  })
+  onBeforeUnmount(() => {
+    stopped = true
+    if (timer) clearTimeout(timer)
+  })
 </script>
 
 <template>
   <UAlert
-    color="success"
+    :color="color"
     variant="subtle"
     title="Imported"
     close
@@ -33,15 +86,26 @@
         <li v-if="result.skipped_days.length">
           Already loaded, skipped: {{ days(result.skipped_days) }}.
         </li>
-        <li v-if="run && !queued" data-testid="retrain-started">
-          Retraining started.
-          <NuxtLink to="/admin?tab=runs" class="underline">Follow it under Forecast runs</NuxtLink>.
-        </li>
-        <li v-else-if="run" data-testid="retrain-queued">
-          A retrain is already running; another one is queued behind it and starts when it ends.
+        <li v-if="!run">No retrain was started automatically (V4W_RETRAIN_ON_IMPORT is off).</li>
+        <li v-else-if="!followed" data-testid="retrain-queued">
+          A retrain was already running (run {{ run.id }}); another one starts when it ends and
+          reads this file.
           <NuxtLink to="/admin?tab=runs" class="underline">Forecast runs</NuxtLink>
         </li>
-        <li v-else>No retrain was started automatically (V4W_RETRAIN_ON_IMPORT is off).</li>
+        <li
+          v-else
+          :data-testid="ACTIVE.includes(followed.status) ? 'retrain-started' : 'retrain-ended'"
+        >
+          <template v-if="ACTIVE.includes(followed.status)">
+            Retraining (run {{ followed.id }}): {{ duration(elapsed) }} so far.
+          </template>
+          <template v-else>
+            Retrain (run {{ followed.id }}): <strong>{{ WORDS[followed.status] }}</strong
+            >. <span v-if="followed.message"> {{ followed.message }}</span
+            >{{ ' ' }}
+          </template>
+          <NuxtLink to="/admin?tab=runs" class="underline">Follow it under Forecast runs</NuxtLink>.
+        </li>
       </ul>
     </template>
   </UAlert>

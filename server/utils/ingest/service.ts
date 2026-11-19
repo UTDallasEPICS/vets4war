@@ -5,13 +5,12 @@
 // No function here returns, stores in a message, or logs a call record: reports carry
 // counts, days and messages; errors are logged by type only.
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, rm, rmdir, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { rm, rmdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt, sql } from 'drizzle-orm'
 import { z } from 'zod'
-import { dataState, uploadRows, uploads } from '../../db/schema'
-import { addDays, isIsoDate } from '../../../shared/utils/dates'
+import { dataState, forecastRuns, uploadRows, uploads } from '../../db/schema'
+import { addDays, dateRange, isIsoDate } from '../../../shared/utils/dates'
 import type { DayPlan, ImportRequest, ImportResult, UploadReport } from '../../../shared/types/api'
 import type Database from 'better-sqlite3'
 import type { AppDb } from '../db'
@@ -32,8 +31,9 @@ import {
   type DaySummary,
 } from './days'
 import { NOT_A_WORKBOOK } from './archive'
-import { STAGED_DAYS } from './limits'
+import { EARLIEST_CALL_DAY, RECENT_GAP_DAYS, STAGED_DAYS } from './limits'
 import { parseWorkbook, type ParsedCall, type ParseResult } from './parser'
+import { makeUploadFolder } from './tempfiles'
 
 export type UploadRow = typeof uploads.$inferSelect
 
@@ -50,7 +50,12 @@ export interface IngestDeps {
 
 // What the import compares against: the fingerprint each file day had in `calls` when
 // the file was checked (null: no calls that day). Stored with the report, never sent.
-export type StoredReport = UploadReport & { stored_days?: Record<string, string | null> }
+// calls_revision: data_state.calls_revision when the plan was made, so a ready upload
+// whose plan the stored calls have since outdated is planned again before it is shown.
+export type StoredReport = UploadReport & {
+  stored_days?: Record<string, string | null>
+  calls_revision?: number
+}
 
 export interface StagedBatch {
   sheet: string
@@ -63,12 +68,13 @@ export const UNREADABLE =
   'This file could not be read as call records. Check it is the call-records export and try again.'
 const BUSY = 'Another file is being read right now. Try again in a few seconds.'
 const SERVER_RESTARTED = 'The server restarted while this file was being read. Upload it again.'
-export const UPLOAD_FOLDER_PREFIX = 'v4w-upload-'
 const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04])
 const MAX_FILENAME = 200
 const DAY_SECONDS = 86_400
 
 const CALL_COLUMNS = 'start_ts, in_queue_sec, agent_sec, abandon_sec, routing_sec, abandoned'
+const IMMEDIATE = { behavior: 'immediate' } as const
+const COMBINED_SHEETS = 'more than one sheet and were combined'
 
 interface RawCall {
   id?: number
@@ -117,13 +123,35 @@ function cleanFilename(name: string): string {
 
 export function publicReport(report: StoredReport | null): UploadReport | null {
   if (!report) return null
-  const { stored_days: _hidden, ...rest } = report
+  const { stored_days: _hidden, calls_revision: _revision, ...rest } = report
   return rest
 }
 
+// The run that read this upload's calls: the first run whose snapshot includes the
+// import's revision (the script writes forecast_runs.calls_revision when it claims a
+// run). Until one has, the run this import started itself, if it started one. An
+// import queued behind a running retrain is read by the run that follows it, not by
+// the one that was running (review X-6).
+function runThatReadIt(db: AppDb, row: UploadRow): number | null {
+  const revision = row.status === 'imported' ? row.result?.calls_revision : undefined
+  if (revision === undefined) return row.runId
+  const run = db
+    .select({ id: forecastRuns.id })
+    .from(forecastRuns)
+    .where(and(isNotNull(forecastRuns.callsRevision), gte(forecastRuns.callsRevision, revision)))
+    .orderBy(asc(forecastRuns.id))
+    .get()
+  return run?.id ?? row.runId
+}
+
+export function withRunThatReadIt(db: AppDb, row: UploadRow): UploadRow {
+  return { ...row, runId: runThatReadIt(db, row) }
+}
+
 // The API shape of an upload, without the comparison data the import keeps for itself.
-export function uploadDetail(row: UploadRow) {
-  return toUploadDetail({ ...row, report: publicReport(row.report) })
+export function uploadDetail(db: AppDb, row: UploadRow) {
+  const shown = withRunThatReadIt(db, row)
+  return toUploadDetail({ ...shown, report: publicReport(shown.report) })
 }
 
 export function getUpload(db: AppDb, uploadId: number): UploadRow {
@@ -132,6 +160,7 @@ export function getUpload(db: AppDb, uploadId: number): UploadRow {
   return row
 }
 
+// Newest first, max 50, each with the run that read its calls (runThatReadIt).
 export function listUploads(db: AppDb): UploadRow[] {
   return db
     .select()
@@ -139,6 +168,7 @@ export function listUploads(db: AppDb): UploadRow[] {
     .orderBy(desc(uploads.createdAt), desc(uploads.id))
     .limit(50)
     .all()
+    .map((row) => withRunThatReadIt(db, row))
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +193,9 @@ export async function receiveUpload(
   const sha = createHash('sha256').update(input.data).digest('hex')
   const now = new Date()
 
+  // Every transaction here reads, then writes. IMMEDIATE takes the write lock first, so
+  // while the retrain script holds it SQLite waits (busy timeout) instead of failing
+  // at once with SQLITE_BUSY, which a deferred read-then-write transaction does.
   const received = db.transaction((tx) => {
     const same = tx
       .select()
@@ -210,14 +243,14 @@ export async function receiveUpload(
       .returning()
       .get()
     return { upload, existing: false }
-  })
+  }, IMMEDIATE)
   if (received.existing) return received
 
   // A private folder per upload; the file name is random, never the client's.
   let folder: string | null = null
   let path: string
   try {
-    folder = await mkdtemp(join(deps.tmpDir ?? tmpdir(), UPLOAD_FOLDER_PREFIX))
+    folder = await makeUploadFolder(deps.tmpDir)
     path = join(folder, `${randomUUID()}.xlsx`)
     await writeFile(path, input.data, { mode: 0o600, flag: 'wx' })
   } catch (error) {
@@ -272,7 +305,7 @@ export async function parseUpload(
     const parse = await parseWorkbook(path, {
       maxRows: deps.maxRows,
       onRows(sheet, rows) {
-        const [firstId, lastId] = stage(rows)
+        const [firstId, lastId] = stage.immediate(rows)
         batches.push({ sheet, firstId, lastId })
       },
     })
@@ -292,7 +325,7 @@ export async function parseUpload(
         })
         .where(and(eq(uploads.id, uploadId), eq(uploads.status, 'parsing')))
         .run()
-    })
+    }, IMMEDIATE)
   } catch (error) {
     console.error(`[uploads] upload ${uploadId} could not be read: ${errorType(error)}`)
     try {
@@ -302,7 +335,7 @@ export async function parseUpload(
           .set({ status: 'failed', error: UNREADABLE, parsedAt: new Date() })
           .where(and(eq(uploads.id, uploadId), eq(uploads.status, 'parsing')))
           .run()
-      })
+      }, IMMEDIATE)
     } catch (inner) {
       console.error(`[uploads] upload ${uploadId} could not be marked failed: ${errorType(inner)}`)
     }
@@ -423,7 +456,11 @@ async function planAgainstStoredInTurns(
   return { days: planDays(fileDays, stored), storedDays }
 }
 
-function withPlan(report: StoredReport, plan: StoredPlan): StoredReport {
+function callsRevision(db: AppDb): number {
+  return db.select().from(dataState).get()?.callsRevision ?? 0
+}
+
+function withPlan(report: StoredReport, plan: StoredPlan, revision: number): StoredReport {
   const count = (status: DayPlan['status']) => plan.days.filter((d) => d.status === status).length
   return {
     ...report,
@@ -438,6 +475,7 @@ function withPlan(report: StoredReport, plan: StoredPlan): StoredReport {
     },
     days: plan.days,
     stored_days: plan.storedDays,
+    calls_revision: revision,
   }
 }
 
@@ -510,6 +548,16 @@ export async function buildReport(
 
   const days = [...fileDays.keys()]
   const errors = [...parse.errors]
+  const tooOld = days.filter((day) => day < EARLIEST_CALL_DAY)
+  if (tooOld.length) {
+    errors.push({
+      code: 'day_out_of_range',
+      message:
+        `The file has calls dated before ${EARLIEST_CALL_DAY} (${listDays(tooOld)}). This line has ` +
+        'no calls that old, so the dates were not read as they were meant. Open the file in ' +
+        'Excel, check that the Start_Date column shows the real call dates, and export it again.',
+    })
+  }
   const unfinished = days.filter((day) => day >= today)
   if (unfinished.length) {
     errors.push({
@@ -535,17 +583,11 @@ export async function buildReport(
     })
   }
   const gaps = daysWithoutCalls(days)
-  const warnings: string[] = []
-  if (gaps.length) {
-    warnings.push(
-      `${gaps.length} date(s) have no calls recorded in this workbook: ${listDays(gaps)}. They are left untouched.`
-    )
-  }
+  const warnings = errors.length ? [] : gapWarnings(db, days, gaps)
   if (split.length) {
-    warnings.push(
-      `${split.length} day(s) have calls on more than one sheet and were combined: ${listDays(split)}.`
-    )
+    warnings.push(`${split.length} day(s) have calls on ${COMBINED_SHEETS}: ${listDays(split)}.`)
   }
+  const revision = callsRevision(db)
 
   const base: StoredReport = {
     ok: errors.length === 0,
@@ -564,7 +606,93 @@ export async function buildReport(
     file_errors: errors,
     warnings,
   }
-  return withPlan(base, await planAgainstStoredInTurns(db, fileDays))
+  return withPlan(base, await planAgainstStoredInTurns(db, fileDays), revision)
+}
+
+// Unreported days: those the retrain would refuse once the file is in, and the other
+// dates inside the file that have no call.
+function gapWarnings(db: AppDb, days: string[], gaps: string[]): string[] {
+  const warnings: string[] = []
+  const unreported = recentDaysWithoutCalls(db, days)
+  if (unreported.length) {
+    warnings.push(
+      `After this import, ${unreported.length} day(s) would have no calls at all: ` +
+        `${listDays(unreported)}. The forecast cannot be retrained while a day in the last ` +
+        `${RECENT_GAP_DAYS} days of call data has no calls. Load the calls of these days too ` +
+        '(in this file or another one); until then the forecast in use stays as it is.'
+    )
+  }
+  const otherGaps = gaps.filter((day) => !unreported.includes(day))
+  if (otherGaps.length) {
+    warnings.push(
+      `${otherGaps.length} date(s) have no calls recorded in this workbook: ${listDays(otherGaps)}. They are left untouched.`
+    )
+  }
+  return warnings
+}
+
+// An upload as the page should see it. A ready upload whose plan was made before the
+// stored calls last changed (another import since) is planned again first, so the page
+// never shows an outdated plan, such as "nothing to import" for a day that now differs.
+export async function currentUpload(db: AppDb, uploadId: number): Promise<UploadRow> {
+  const row = getUpload(db, uploadId)
+  const report = row.report as StoredReport | null
+  if (row.status !== 'ready' || !report || report.calls_revision === callsRevision(db)) return row
+  const revision = callsRevision(db)
+  const lines = new Map<string, string[]>()
+  for await (const rows of rowsInChunks(db, 'upload_rows', 'upload_id = ?', [uploadId])) {
+    for (const call of rows) {
+      const day = dayOf(call.start_ts)
+      const dayLines = lines.get(day)
+      if (dayLines) dayLines.push(callLine(toCall(call)))
+      else lines.set(day, [callLine(toCall(call))])
+    }
+  }
+  const fileDays = await summarizeLines(lines)
+  const plan = await planAgainstStoredInTurns(db, fileDays)
+  const days = [...fileDays.keys()]
+  const refreshed = withPlan(
+    {
+      ...report,
+      warnings: [
+        ...gapWarnings(db, days, daysWithoutCalls(days)),
+        ...report.warnings.filter((w) => w.includes(COMBINED_SHEETS)),
+      ],
+    },
+    plan,
+    revision
+  )
+  db.update(uploads)
+    .set({ report: refreshed })
+    .where(and(eq(uploads.id, uploadId), eq(uploads.status, 'ready')))
+    .run()
+  return getUpload(db, uploadId)
+}
+
+// Days that would have no call at all once this file is in, among those the retrain
+// checks: from the first call day to the last (stored or in the file), only the last
+// RECENT_GAP_DAYS days before the last one (see limits.ts).
+function recentDaysWithoutCalls(db: AppDb, fileDays: string[]): string[] {
+  if (fileDays.length === 0) return []
+  const client = sqliteOf(db)
+  const span = client
+    .prepare('SELECT min(start_ts) AS first, max(start_ts) AS last FROM calls')
+    .get() as { first: string | null; last: string | null }
+  const first = [fileDays[0]!, span.first ? dayOf(span.first) : null]
+    .filter((d): d is string => d !== null)
+    .sort()[0]!
+  const last = [fileDays[fileDays.length - 1]!, span.last ? dayOf(span.last) : null]
+    .filter((d): d is string => d !== null)
+    .sort()
+    .pop()!
+  const windowStart = addDays(last, -(RECENT_GAP_DAYS - 1))
+  const from = first > windowStart ? first : windowStart
+  const present = new Set(fileDays)
+  const stored = client
+    .prepare('SELECT DISTINCT substr(start_ts, 1, 10) AS day FROM calls WHERE start_ts >= ?')
+    .all(from) as { day: string }[]
+  for (const { day } of stored) present.add(day)
+  return dateRange(from, last).filter((day) => !present.has(day))
 }
 
 // ---------------------------------------------------------------------------
@@ -602,7 +730,7 @@ export function importUpload(
   uploadId: number,
   body: ImportRequest,
   user: { email: string }
-): { upload: UploadRow; run: RunRow | null } {
+): { upload: UploadRow; run: RunRow | null; queued: boolean } {
   const replace = new Set(body.replace_days)
   // Everything below runs in one transaction. A refusal that also stores a refreshed
   // report must commit that report, so refusals are returned, then thrown after it.
@@ -630,7 +758,7 @@ export function importUpload(
     const report = upload.report as StoredReport
     if (!sameSnapshot(report.stored_days, plan.storedDays)) {
       tx.update(uploads)
-        .set({ report: withPlan(report, plan) })
+        .set({ report: withPlan(report, plan, callsRevision(db)) })
         .where(eq(uploads.id, uploadId))
         .run()
       return new Refusal(
@@ -692,17 +820,23 @@ export function importUpload(
       .where(eq(uploads.id, uploadId))
       .run()
     return result
-  })
+  }, IMMEDIATE)
   if (outcome instanceof Refusal) throw apiError(409, 'conflict', outcome.message)
 
   let run: RunRow | null = null
+  let queued = false
   if (deps.onImported) {
     // The calls are in; a retrain that cannot start must not undo or hide the import.
     try {
       const started = deps.onImported({ uploadId, userLabel: user.email })
       if (started) {
         run = started.run
-        db.update(uploads).set({ runId: started.run.id }).where(eq(uploads.id, uploadId)).run()
+        queued = started.queued
+        // uploads.run_id is the run this import started. When the runner only queued
+        // a re-run behind the active one, that active run never reads this file.
+        if (!started.queued) {
+          db.update(uploads).set({ runId: started.run.id }).where(eq(uploads.id, uploadId)).run()
+        }
       }
     } catch (error) {
       console.error(
@@ -710,7 +844,7 @@ export function importUpload(
       )
     }
   }
-  return { upload: getUpload(db, uploadId), run }
+  return { upload: getUpload(db, uploadId), run, queued }
 }
 
 // ---------------------------------------------------------------------------
@@ -734,7 +868,7 @@ export function discardUpload(db: AppDb, uploadId: number): UploadRow {
       .where(eq(uploads.id, uploadId))
       .returning()
       .get()
-  })
+  }, IMMEDIATE)
 }
 
 // Start-up: nothing is reading or importing in a process that just started.
@@ -753,7 +887,7 @@ export function recoverUploads(db: AppDb): number {
       .where(inArray(uploads.id, stuck))
       .run()
     return stuck.length
-  })
+  }, IMMEDIATE)
 }
 
 export const importRequestSchema = z.object({

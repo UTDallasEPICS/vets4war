@@ -9,9 +9,10 @@
 import ExcelJS from 'exceljs'
 import { REQUIRED_CALL_COLUMNS } from '../../../shared/utils/constants'
 import type { UploadIssue } from '../../../shared/types/api'
-import type { Readable } from 'node:stream'
+import { pipeline, type Readable } from 'node:stream'
 import { ArchiveError, inspectArchive, openPart, type ArchiveInfo } from './archive'
 import { MAX_LISTED, ROW_BATCH } from './limits'
+import { createPartNormalizer, type PartKind } from './xml'
 
 export type RequiredColumn = (typeof REQUIRED_CALL_COLUMNS)[number]
 
@@ -48,7 +49,9 @@ const DURATION_COLUMNS = [
 // a call sheet with columns missing, and the message names them.
 const NEAR_MISS_COLUMNS = 4
 const SECONDS_PER_DAY = 86_400
-const EXCEL_TIME_EPOCH = Date.UTC(1899, 11, 30)
+// A time cell is a fraction of a day counted from the workbook's date origin.
+const EXCEL_EPOCH = Date.UTC(1899, 11, 30)
+const EXCEL_EPOCH_1904 = Date.UTC(1904, 0, 1)
 const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/
 const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?$/
 const US_DAY = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/
@@ -67,13 +70,13 @@ const READER_OPTIONS = {
 // One cell as a plain value: formula cells give their cached result, rich text its text,
 // hyperlink cells their text; error cells and empty cells are null.
 export function readCell(value: unknown): string | number | Date | null {
+  if (isErrorCell(value)) return null
   if (value === null || value === undefined) return null
   if (typeof value === 'string' || typeof value === 'number') return value
   if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE'
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value
   if (typeof value === 'object') {
     const cell = value as Record<string, unknown>
-    if ('error' in cell) return null
     if (Array.isArray(cell.richText)) {
       return cell.richText.map((part) => String((part as { text?: unknown }).text ?? '')).join('')
     }
@@ -81,6 +84,10 @@ export function readCell(value: unknown): string | number | Date | null {
     if ('text' in cell) return readCell(cell.text)
   }
   return UNREADABLE
+}
+
+function isErrorCell(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && 'error' in value
 }
 
 function isEmpty(value: string | number | Date | null): boolean {
@@ -109,11 +116,10 @@ function readDay(value: string | number | Date | null): string | null {
   return null
 }
 
-function readClock(value: string | number | Date | null): string | null {
+function readClock(value: string | number | Date | null, epoch: number): string | null {
   let seconds: number
   if (value instanceof Date) {
-    // A time cell is a fraction of a day counted from 1899-12-30.
-    seconds = Math.round((value.getTime() - EXCEL_TIME_EPOCH) / 1000)
+    seconds = Math.round((value.getTime() - epoch) / 1000)
   } else if (typeof value === 'string') {
     const clock = CLOCK.exec(value.trim())
     if (!clock) return null
@@ -136,12 +142,21 @@ function readSeconds(column: string, value: string | number | Date | null): numb
   return n + 0 // -0 becomes 0
 }
 
-// One call row, the seven required cells already unwrapped by readCell. Pure.
-export function parseRow(cells: Record<RequiredColumn, unknown>): ParsedCall | { problem: string } {
+// One call row: the seven required cells as the reader gave them. Pure. date1904: the
+// workbook counts dates (and so time cells) from 1904-01-01.
+export function parseRow(
+  cells: Record<RequiredColumn, unknown>,
+  options: { date1904?: boolean } = {}
+): ParsedCall | { problem: string } {
+  for (const column of REQUIRED_CALL_COLUMNS) {
+    if (isErrorCell(cells[column])) {
+      return { problem: `${column} holds an Excel error value (such as #N/A)` }
+    }
+  }
   const value = (column: RequiredColumn) => readCell(cells[column])
   const day = readDay(value('Start_Date'))
   if (!day) return { problem: 'Start_Date is not a date' }
-  const clock = readClock(value('start_time'))
+  const clock = readClock(value('start_time'), options.date1904 ? EXCEL_EPOCH_1904 : EXCEL_EPOCH)
   if (!clock) return { problem: 'start_time is not a time of day (H:MM:SS)' }
   const seconds: Partial<Record<(typeof DURATION_COLUMNS)[number][1], number>> = {}
   for (const [column, key] of DURATION_COLUMNS) {
@@ -187,7 +202,9 @@ type WorksheetRows = AsyncIterable<ExcelJS.Row>
 // steps ourselves gives a fixed order (relationships, workbook, styles, strings, then
 // each sheet in workbook order), no temp files, and parts capped at their declared size.
 // exceljs is pinned (4.4.0); tests/parity/parser checks this path against Python.
+// Every part goes through createPartNormalizer first (xml.ts says why).
 interface ReaderSteps {
+  properties?: { model?: { date1904?: boolean } }
   _parseRels(stream: Readable): Promise<void>
   _parseWorkbook(stream: Readable): Promise<void>
   _parseStyles(stream: Readable): Promise<void>
@@ -203,12 +220,24 @@ async function* worksheets(path: string, archive: ArchiveInfo) {
     path,
     READER_OPTIONS
   ) as unknown as ReaderSteps
-  const open = (part: string) => openPart(path, archive.parts.get(part)!)
+  const open = (part: string, kind: PartKind = 'other') => {
+    const normalized = createPartNormalizer(kind)
+    // pipeline hands a failure of either stage to the last one, so the reader sees it.
+    pipeline(openPart(path, archive.parts.get(part)!), normalized, () => {})
+    return normalized
+  }
   await reader._parseRels(open(archive.workbookRels))
-  await reader._parseWorkbook(open(archive.workbook))
+  await reader._parseWorkbook(open(archive.workbook, 'workbook'))
+  // Dates read in the wrong date system are four years off without any error: the
+  // reader's own reading of the setting must agree with the archive's.
+  if (Boolean(reader.properties?.model?.date1904) !== archive.date1904) {
+    throw new Error('the workbook date system was not read consistently')
+  }
   if (archive.styles) await reader._parseStyles(open(archive.styles))
   if (archive.sharedStrings) {
-    for await (const _ of reader._parseSharedStrings(open(archive.sharedStrings))) {
+    for await (const _ of reader._parseSharedStrings(
+      open(archive.sharedStrings, 'sharedStrings')
+    )) {
       // 'cache' keeps the strings on the reader; nothing is emitted per string.
     }
   }
@@ -216,7 +245,7 @@ async function* worksheets(path: string, archive: ArchiveInfo) {
   for (const sheet of archive.sheets) {
     if (!sheet.part) continue
     index++
-    for (const event of reader._parseWorksheet(open(sheet.part), String(index))) {
+    for (const event of reader._parseWorksheet(open(sheet.part, 'worksheet'), String(index))) {
       if (event.eventType === 'worksheet') yield { name: sheet.name, rows: event.value }
     }
   }
@@ -269,16 +298,16 @@ export async function parseWorkbook(path: string, options: ParseOptions): Promis
         continue
       }
       const values = row.values as unknown[]
-      const cells = {} as Record<RequiredColumn, string | number | Date | null>
+      const cells = {} as Record<RequiredColumn, unknown>
       let filled = false
       for (const [column, index] of columns) {
-        cells[column] = readCell(values[index])
-        if (!isEmpty(cells[column])) filled = true
+        cells[column] = values[index]
+        if (isErrorCell(values[index]) || !isEmpty(readCell(values[index]))) filled = true
       }
       // Excel leaves fully blank rows after the last call; a row with SOME call fields
       // filled is parsed, so it fails loudly instead of being dropped.
       if (!filled) continue
-      const parsed = parseRow(cells)
+      const parsed = parseRow(cells, { date1904: archive.date1904 })
       if ('problem' in parsed) {
         const key = `${name}\u0000${parsed.problem}`
         const group = badRows.get(key) ?? {

@@ -1,6 +1,7 @@
 """Parity rung P4: SYNTHETIC call-records workbooks for the TypeScript reader.
 
-Writes one workbook per case with openpyxl into the folder given as the only
+Writes one workbook per case with openpyxl (and, through excel_like.py, by hand
+in the markup Excel and other export tools write) into the folder given as the only
 argument, reads each with the proven Python parser
 (db.client_files.read_call_records) and prints one JSON document:
 
@@ -23,10 +24,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "forecast"))
+# Run with -I, which leaves the script's own folder off sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from openpyxl import Workbook  # noqa: E402
 
 from db.client_files import read_call_records  # noqa: E402
+from excel_like import CASES as EXCEL_LIKE_CASES  # noqa: E402
 
 HEADER = ["Skill_Name", "Start_Date", "start_time", "InQueue", "Agent_Time",
           "Abandon_Time", "Routing_Time", "Abandon"]
@@ -134,6 +138,8 @@ def no_call_sheet(path: Path) -> None:
 
 CASES["missing_column.xlsx"] = missing_column
 CASES["no_call_sheet.xlsx"] = no_call_sheet
+# Workbooks shaped the way Excel and other export tools write them (excel_like.py).
+CASES.update(EXCEL_LIKE_CASES)
 
 
 def _read(path: Path) -> dict:

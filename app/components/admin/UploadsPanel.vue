@@ -8,7 +8,9 @@
 
   const uploads = ref<UploadSummary[]>([])
   const current = ref<UploadDetail | null>(null)
-  const outcome = ref<{ upload: UploadDetail; run: RunSummary | null } | null>(null)
+  const outcome = ref<{ upload: UploadDetail; run: RunSummary | null; queued: boolean } | null>(
+    null
+  )
   const sending = ref(false)
   const problem = ref<string | null>(null)
   const notice = ref<string | null>(null)
@@ -70,7 +72,11 @@
     }
   }
 
-  async function onImported(result: { upload: UploadDetail; run: RunSummary | null }) {
+  async function onImported(result: {
+    upload: UploadDetail
+    run: RunSummary | null
+    queued: boolean
+  }) {
     outcome.value = result
     current.value = null
     await loadHistory()
@@ -204,6 +210,7 @@
       v-if="outcome"
       :upload="outcome.upload"
       :run="outcome.run"
+      :queued="outcome.queued"
       @close="outcome = null"
     />
 

@@ -3,10 +3,10 @@
 import { defineEventHandler } from 'h3'
 import { db } from '../../../utils/db'
 import { routeId } from '../../../utils/ingest'
-import { getUpload, uploadDetail } from '../../../utils/ingest/service'
+import { currentUpload, uploadDetail } from '../../../utils/ingest/service'
 import { requireAdmin } from '../../../utils/session'
 
-export default defineEventHandler((event) => {
+export default defineEventHandler(async (event) => {
   requireAdmin(event)
-  return { upload: uploadDetail(getUpload(db, routeId(event, 'upload'))) }
+  return { upload: uploadDetail(db, await currentUpload(db, routeId(event, 'upload'))) }
 })

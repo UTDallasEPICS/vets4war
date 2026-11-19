@@ -23,6 +23,14 @@ import {
   writeWorkbook,
   type SheetSpec,
 } from './fixtures/workbooks'
+import {
+  DATE_STYLE,
+  TIME_STYLE,
+  callRow,
+  handmadeWorkbook,
+  headerRow,
+  serialDay,
+} from './fixtures/handmade'
 
 const SEP_1 = [
   call('2026-09-01', '00:00:32', 18, 1290, 0, 17, 'N'),
@@ -403,5 +411,151 @@ describe('parseWorkbook: refusals', () => {
       const result = await parseWorkbook(path, { maxRows: 10, onRows: () => {} })
       expect(result.errors.map((e) => e.code)).toEqual(['not_a_workbook'])
     })
+  })
+})
+
+// Markup real files carry that the exceljs writer never produces (fixtures/handmade.ts).
+// Each of these was read differently from the Python parser before the part normaliser.
+describe('parseWorkbook: markup written by Excel and other export tools', () => {
+  const NOV_10 = serialDay('2026-11-10')
+  const AT_0813 = (8 * 3600 + 13 * 60) / 86_400
+  const base = { serialDay: NOV_10, dayFraction: AT_0813, durations: [5, 0, 12, 3], flag: 'Y' }
+  const EXPECTED: ParsedCall = {
+    startTs: '2026-11-10T08:13:00',
+    inQueueSec: 5,
+    agentSec: 0,
+    abandonSec: 12,
+    routingSec: 3,
+    abandoned: true,
+  }
+
+  async function read(book: Buffer) {
+    return withTempDir(async (dir) => {
+      const path = join(dir, 'book.xlsx')
+      await writeFile(path, book)
+      const calls: ParsedCall[] = []
+      const result = await parseWorkbook(path, {
+        maxRows: 1000,
+        onRows: (_sheet, rows) => {
+          calls.push(...rows)
+        },
+      })
+      return { result, calls }
+    })
+  }
+
+  it('reads an ISO 8601 date cell (t="d") as its date, never as a serial number (W3-1)', async () => {
+    const { result, calls } = await read(
+      handmadeWorkbook({
+        rows:
+          headerRow() +
+          callRow(2, base, {
+            B: `<c r="B2" s="${DATE_STYLE}" t="d"><v>2026-11-10T00:00:00Z</v></c>`,
+          }),
+      })
+    )
+    expect(result.errors).toEqual([])
+    expect(calls).toEqual([EXPECTED])
+  })
+
+  it('reads a formula cell by its cached result, also a cached 0 and shared formulas (W3-2)', async () => {
+    const formulas = {
+      D: '<c r="D2"><f t="shared" ref="D2:D3" si="0">5+0*A1</f><v>5</v></c>',
+      E: '<c r="E2"><f>0+0</f><v>0</v></c>',
+      F: '<c r="F2"><f>12+0</f><v>12</v></c>',
+      H: '<c r="H2" t="str"><f>IF(1=1,"Y","N")</f><v>Y</v></c>',
+    }
+    const child = { ...formulas, D: '<c r="D3"><f t="shared" si="0"/><v>5</v></c>' }
+    const rename = (cells: Record<string, string>, r: number) =>
+      Object.fromEntries(
+        Object.entries(cells).map(([k, v]) => [k, v.replace(/r="([A-H])2"/, `r="$1${r}"`)])
+      )
+    const { result, calls } = await read(
+      handmadeWorkbook({
+        rows: headerRow() + callRow(2, base, formulas) + callRow(3, base, rename(child, 3)),
+      })
+    )
+    expect(result.errors).toEqual([])
+    expect(calls).toEqual([EXPECTED, EXPECTED])
+  })
+
+  it('applies the date format to a formula date and time (=DATE(), =TIME())', async () => {
+    const { result, calls } = await read(
+      handmadeWorkbook({
+        rows:
+          headerRow() +
+          callRow(2, base, {
+            B: `<c r="B2" s="${DATE_STYLE}"><f>DATE(2026,11,10)</f><v>${NOV_10}</v></c>`,
+            C: `<c r="C2" s="${TIME_STYLE}"><f>TIME(8,13,0)</f><v>${AT_0813}</v></c>`,
+          }),
+      })
+    )
+    expect(result.errors).toEqual([])
+    expect(calls).toEqual([EXPECTED])
+  })
+
+  it.each(['1', 'true'] as const)(
+    'reads a workbook in the 1904 date system (date1904="%s") (W3-3)',
+    async (flag) => {
+      const { result, calls } = await read(
+        handmadeWorkbook({
+          date1904: flag,
+          rows: headerRow() + callRow(2, { ...base, serialDay: serialDay('2026-11-10', true) }),
+        })
+      )
+      expect(result.errors).toEqual([])
+      expect(calls).toEqual([EXPECTED])
+    }
+  )
+
+  it('says a cell holds an Excel error instead of calling it empty', async () => {
+    const { result, calls } = await read(
+      handmadeWorkbook({
+        rows: headerRow() + callRow(2, base, { E: '<c r="E2" t="e"><f>NA()</f><v>#N/A</v></c>' }),
+      })
+    )
+    expect(calls).toEqual([])
+    expect(result.errors).toEqual([
+      {
+        code: 'bad_rows',
+        message:
+          'Sheet "Calls": Agent_Time holds an Excel error value (such as #N/A) on Excel row 2.',
+      },
+    ])
+  })
+
+  it('reads rows and cells written without r references', async () => {
+    const strip = (xml: string) => xml.replace(/ r="[A-Z]*\d+"/g, '')
+    const { result, calls } = await read(
+      handmadeWorkbook({ rows: strip(headerRow() + callRow(2, base) + callRow(3, base)) })
+    )
+    expect(result.errors).toEqual([])
+    expect(calls).toEqual([EXPECTED, EXPECTED])
+  })
+
+  it('reads parts whose elements carry a namespace prefix (<x:row>)', async () => {
+    const { result, calls } = await read(
+      handmadeWorkbook({ prefix: 'x', rows: headerRow() + callRow(2, base) })
+    )
+    expect(result.errors).toEqual([])
+    expect(calls).toEqual([EXPECTED])
+  })
+
+  it('ignores phonetic guides in shared strings and joins rich-text inline runs', async () => {
+    const header = headerRow()
+      .replace(
+        '<c r="H1" t="inlineStr"><is><t>Abandon</t></is></c>',
+        '<c r="H1" t="s"><v>0</v></c>'
+      )
+      .replace('<is><t>Start_Date</t></is>', '<is><r><t>Start_</t></r><r><t>Date</t></r></is>')
+    const { result, calls } = await read(
+      handmadeWorkbook({
+        sharedStrings:
+          '<si><t>Abandon</t><rPh sb="0" eb="1"><t>アバンドン</t></rPh><phoneticPr fontId="1"/></si>',
+        rows: header + callRow(2, base),
+      })
+    )
+    expect(result.errors).toEqual([])
+    expect(calls).toEqual([EXPECTED])
   })
 })

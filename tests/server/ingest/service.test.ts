@@ -6,10 +6,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { count, eq } from 'drizzle-orm'
+import { addDays } from '../../../shared/utils/dates'
 import { createTestDb, createTestUser } from '../../helpers/db'
 import * as schema from '../../../server/db/schema'
 import type { AppDb } from '../../../server/utils/db'
 import {
+  currentUpload,
   discardUpload,
   getUpload,
   importUpload,
@@ -90,6 +92,11 @@ const stagedCount = (uploadId?: number) =>
     .get()!.n
 const revision = () => db.select().from(schema.dataState).get()?.callsRevision ?? 0
 
+const RETRAIN_GAP_WARNING = (days: string) =>
+  `After this import, 1 day(s) would have no calls at all: ${days}. The forecast cannot be ` +
+  'retrained while a day in the last 350 days of call data has no calls. Load the calls of ' +
+  'these days too (in this file or another one); until then the forecast in use stays as it is.'
+
 const NOV_5 = wholeDay('2026-11-05')
 const NOV_6 = wholeDay('2026-11-06')
 const NOV_7 = wholeDay('2026-11-07')
@@ -113,7 +120,7 @@ describe('receive and read', () => {
     expect(row.totalRows).toBe(48)
     expect([row.firstDay, row.lastDay]).toEqual(['2026-11-05', '2026-11-06'])
     expect(stagedCount(row.id)).toBe(48)
-    const detail = uploadDetail(row)
+    const detail = uploadDetail(db, row)
     expect(detail.report).toEqual({
       ok: true,
       nothing_to_import: false,
@@ -199,13 +206,47 @@ describe('receive and read', () => {
     ])
   })
 
-  it('warns about dates without calls inside the file range', async () => {
+  it('warns about dates without calls inside the file range, and that the retrain will refuse them', async () => {
     const row = await upload(rawLayout([...NOV_5, ...NOV_7]))
     expect(row.status).toBe('ready')
     expect(row.report!.days_without_calls).toEqual(['2026-11-06'])
+    expect(row.report!.warnings).toEqual([RETRAIN_GAP_WARNING('2026-11-06')])
+  })
+
+  it('warns when the file leaves days without calls between the stored calls and the file (W3-4)', async () => {
+    const first = await upload(rawLayout(NOV_5))
+    importUpload(db, deps(), first.id, { total_rows: 24, replace_days: [] }, admin)
+    const row = await upload(rawLayout(NOV_7))
+    expect(row.status).toBe('ready')
+    expect(row.report!.days_without_calls).toEqual([])
+    expect(row.report!.warnings).toEqual([RETRAIN_GAP_WARNING('2026-11-06')])
+    // Once the gap is filled, the next file is quiet.
+    const gap = await upload(rawLayout(NOV_6))
+    expect(gap.report!.warnings).toEqual([])
+  })
+
+  it('keeps the plain warning for a gap older than the retrain looks at', async () => {
+    const old = [...wholeDay('2025-10-01'), ...wholeDay('2025-10-03')]
+    const recent = Array.from({ length: 360 }, (_, i) => addDays('2025-10-04', i)).flatMap((d) =>
+      wholeDay(d, 180)
+    )
+    const row = await upload(rawLayout([...old, ...recent]))
+    expect(row.status).toBe('ready')
     expect(row.report!.warnings).toEqual([
-      '1 date(s) have no calls recorded in this workbook: 2026-11-06. They are left untouched.',
+      '1 date(s) have no calls recorded in this workbook: 2025-10-02. They are left untouched.',
     ])
+  })
+
+  it('refuses days no call of this line can have, whatever misread them (W3-1)', async () => {
+    const row = await upload(rawLayout(wholeDay('1905-07-18')))
+    expect(row.status).toBe('invalid')
+    expect(row.report!.file_errors.map((e) => e.code)).toEqual(['day_out_of_range'])
+    expect(row.report!.file_errors[0]!.message).toBe(
+      'The file has calls dated before 2010-01-01 (1905-07-18). This line has no calls that old, ' +
+        'so the dates were not read as they were meant. Open the file in Excel, check that the ' +
+        'Start_Date column shows the real call dates, and export it again.'
+    )
+    expect(stagedCount()).toBe(0)
   })
 
   it('stops at the row limit with too_many_rows', async () => {
@@ -512,13 +553,104 @@ describe('housekeeping', () => {
       ])
     )
     const text = JSON.stringify([
-      uploadDetail(getUpload(db, row.id)),
-      uploadDetail(bad),
+      uploadDetail(db, getUpload(db, row.id)),
+      uploadDetail(db, bad),
       listUploads(db),
       refusals,
     ])
     expect(refusals.length).toBe(4)
     expect(text).not.toContain('4321')
     expect(text).not.toContain('23:50:05')
+  })
+})
+
+describe('the run that read an import (review X-6)', () => {
+  const runRow = (values: Partial<typeof schema.forecastRuns.$inferInsert>) =>
+    db
+      .insert(schema.forecastRuns)
+      .values({
+        trigger: 'import',
+        mode: 'full',
+        status: 'running',
+        createdAt: new Date(),
+        ...values,
+      })
+      .returning()
+      .get() as RunRow
+
+  it('does not link an import queued behind a running retrain to that run', async () => {
+    const active = runRow({ callsRevision: 0 })
+    const row = await upload(rawLayout([...NOV_5, ...NOV_6]))
+    const {
+      upload: done,
+      run,
+      queued,
+    } = importUpload(
+      db,
+      deps({ onImported: () => ({ run: active, queued: true }) }),
+      row.id,
+      { total_rows: 48, replace_days: [] },
+      admin
+    )
+    expect(queued).toBe(true)
+    expect(run!.id).toBe(active.id)
+    expect(done.runId).toBeNull()
+    expect(listUploads(db)[0]!.runId).toBeNull()
+    // The queued re-run claims the new revision: from then on it is the upload's run.
+    const rerun = runRow({ requestedByLabel: 'queued', callsRevision: done.result!.calls_revision })
+    expect(listUploads(db)[0]!.runId).toBe(rerun.id)
+    expect(uploadDetail(db, getUpload(db, row.id)).run_id).toBe(rerun.id)
+  })
+
+  it('shows the run an import started until a run has read it', async () => {
+    const row = await upload(rawLayout([...NOV_5, ...NOV_6]))
+    const {
+      upload: done,
+      run,
+      queued,
+    } = importUpload(db, deps(), row.id, { total_rows: 48, replace_days: [] }, admin)
+    expect(queued).toBe(false)
+    expect(done.runId).toBe(run!.id)
+    expect(listUploads(db)[0]!.runId).toBe(run!.id)
+  })
+})
+
+describe('a ready upload whose plan another import outdated', () => {
+  it('is planned again before it is shown', async () => {
+    const first = await upload(rawLayout(NOV_5))
+    importUpload(db, deps(), first.id, { total_rows: 24, replace_days: [] }, admin)
+    // Checked now: Nov 5 is already loaded, Nov 6 is new.
+    const waiting = await upload(rawLayout([...NOV_5, ...NOV_6]))
+    expect(waiting.report!.summary).toMatchObject({ new_days: 1, identical_days: 1 })
+    // Another file loads a different Nov 5 and Nov 6 after that check.
+    const changed = [
+      ...wholeDay('2026-11-05', 60, () => 'Y'),
+      ...wholeDay('2026-11-06', 60, () => 'Y'),
+    ]
+    const other = await upload(rawLayout(changed))
+    importUpload(db, deps(), other.id, { total_rows: 48, replace_days: ['2026-11-05'] }, admin)
+
+    const shown = await currentUpload(db, waiting.id)
+    expect(shown.report!.summary).toMatchObject({
+      new_days: 0,
+      identical_days: 0,
+      conflict_days: 2,
+    })
+    expect(shown.report!.nothing_to_import).toBe(false)
+    // and the import accepts the refreshed plan as it is
+    const { upload: done } = importUpload(
+      db,
+      deps(),
+      waiting.id,
+      { total_rows: 48, replace_days: ['2026-11-05', '2026-11-06'] },
+      admin
+    )
+    expect(done.status).toBe('imported')
+  })
+
+  it('is left as it is while nothing changed', async () => {
+    const waiting = await upload(rawLayout(NOV_5))
+    const shown = await currentUpload(db, waiting.id)
+    expect(shown.report).toEqual(waiting.report)
   })
 })
