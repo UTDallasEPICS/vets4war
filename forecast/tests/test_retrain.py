@@ -234,6 +234,23 @@ def test_a_patience_estimate_just_above_the_floor_is_written(trained_db, tmp_pat
     assert stored == pytest.approx(target)
 
 
+def test_a_retrain_on_unchanged_calls_keeps_the_model_row_in_use(trained_db, tmp_path):
+    path = Path(shutil.copy(trained_db, tmp_path / "app.db"))
+    serving = _rows(path, "SELECT model_id FROM forecast_state")[0]["model_id"]
+
+    process = _run(path)
+
+    run = _rows(path, "SELECT * FROM forecast_runs ORDER BY id DESC")[0]
+    assert process.returncode == 0, process.stderr
+    assert (run["status"], run["trained"], run["gate_passed"], run["forecast_written"]) == ("succeeded", 0, 1, 1)
+    assert run["model_id"] == serving == _rows(path, "SELECT model_id FROM forecast_state")[0]["model_id"]
+    assert run["message"] == (f"Retrained on {_count(path, 'calls'):,} calls through {LAST_DAY}. The retrained "
+                              f"model is identical to the one in use (model {serving}), which stays in use; "
+                              f"the forecast was refreshed.")
+    assert _count(path, "model_artifacts") == 1
+    assert _result(process)["model_id"] == serving
+
+
 # ---- forecast-only ------------------------------------------------------------------------
 
 def test_forecast_only_reuses_the_model_and_moves_the_horizon(trained_db, tmp_path):

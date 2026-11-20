@@ -287,6 +287,16 @@ def _run(conn, settings: Settings, run_id: int, snapshot: store.Snapshot) -> Out
             print(f"\nlevel factor {model.factors.level:.4f}")
             print("hour-of-day factors:", " ".join(f"{value:.2f}" for value in model.factors.hour))
 
+    # The same calls give the same model, byte for byte: a retrain on unchanged data keeps
+    # the model row in use instead of storing another copy of it.
+    identical_to = None
+    if new_model is not None:
+        serving = store.serving_model(conn)
+        if serving is not None and \
+                hashlib.sha256(serving.model_text.encode()).hexdigest() == new_model["model_sha256"]:
+            identical_to, new_model = serving.model_id, None
+            print(f"\nthe retrained model is identical to model {identical_to}, which stays in use")
+
     if new_model is not None:
         model_text, metadata, model_id = new_model["model_text"], new_model["metadata_json"], None
     else:
@@ -311,6 +321,10 @@ def _run(conn, settings: Settings, run_id: int, snapshot: store.Snapshot) -> Out
         status, exit_code = "succeeded", EXIT_SUCCEEDED
         message = (f"Retrained on {len(calls):,} calls through {data_end}. The new model beat the simple "
                    f"baseline in the check and is now in use.")
+    elif identical_to is not None:
+        status, exit_code = "succeeded", EXIT_SUCCEEDED
+        message = (f"Retrained on {len(calls):,} calls through {data_end}. The retrained model is identical "
+                   f"to the one in use (model {identical_to}), which stays in use; the forecast was refreshed.")
     elif full:
         status, exit_code = "rejected", EXIT_REJECTED
         message = (f"The retrained model did not beat the simple baseline on daily error ({scores[0]} against "

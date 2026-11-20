@@ -90,10 +90,14 @@ that is no better than "the same as recent weeks" is not put in front of supervi
 message gives both error figures. If it keeps happening after new data arrives, look at the
 check table under Details and at what changed in the data.
 
-The messages of the three good outcomes:
+The messages of the four good outcomes:
 
 - "Retrained on 133,132 calls through 2026-11-15. The new model beat the simple baseline in
   the check and is now in use."
+- "Retrained on 133,132 calls through 2026-11-15. The retrained model is identical to the one
+  in use (model 3), which stays in use; the forecast was refreshed." The same calls give the
+  same model byte for byte, so a retrain on unchanged data stores no second copy of it
+  ("New model: No" under Details).
 - "The retrained model did not beat the simple baseline on daily error (<model>% against
   <baseline>%), so the previous model stays in use. Handle time, caller patience and the
   data range were refreshed."
