@@ -9,7 +9,7 @@ const devApiProxy = process.env.V4W_DEV_API_PROXY
 export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
   devtools: { enabled: true },
-  modules: ['@nuxt/ui', '@nuxt/image', '@nuxt/eslint'],
+  modules: ['@nuxt/ui', '@nuxt/eslint'],
   css: ['~/assets/css/main.css'],
   app: { head: { title: 'Vets4Warriors staffing', htmlAttrs: { lang: 'en' } } },
   // Light unless the person chose dark, as on the old console; same storage key, so the
