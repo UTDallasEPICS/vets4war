@@ -338,9 +338,12 @@ person) and `data.code` (what a program should branch on):
 | 400    | `not_a_workbook`       | The uploaded file is not an `.xlsx` workbook.                                                             |
 | 404    | `not_found`            | Unknown id, or `/api/model` before the first model.                                                       |
 | 409    | `conflict`             | The state does not allow it; the message says why (see the guides).                                       |
-| 413    | `too_large`            | The upload is over `V4W_UPLOAD_MAX_MB`.                                                                   |
+| 413    | `too_large`            | The upload is over `V4W_UPLOAD_MAX_MB`, or another request body is over 64 KB.                            |
 | 429    | `busy`                 | Another file is being read right now. `Retry-After: 5`.                                                   |
 | 500    | `internal`             | The stored forecast is incomplete; run a retrain.                                                         |
+| 500    | `database_read_only`   | The server cannot write to its database file or folder. Nothing was changed.                              |
+| 500    | `database_full`        | The disk that holds the database is full. Nothing was changed.                                            |
+| 503    | `database_busy`        | The database stayed busy with another write (a retrain). Nothing was changed. `Retry-After: 60`.          |
 | 503    | `no_forecast`          | No forecast yet: load call data and run a retrain.                                                        |
 | 503    | `implausible_patience` | The caller patience measured from the calls is under 10 seconds: the waiting times in the data are wrong. |
 
