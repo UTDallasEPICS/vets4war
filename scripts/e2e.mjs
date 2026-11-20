@@ -213,6 +213,21 @@ function expectError(answer, status, code, what) {
   equal(answer.body?.data?.code, code, `${what}: error code`)
 }
 
+// server/utils/security-headers.ts, on every kind of answer; and nothing that names the
+// server's software.
+const SECURITY_HEADERS = {
+  'strict-transport-security': 'max-age=31536000',
+  'x-content-type-options': 'nosniff',
+  'x-frame-options': 'DENY',
+  'referrer-policy': 'same-origin',
+}
+function expectSecurityHeaders(answer, what) {
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    equal(answer.headers.get(name), value, `${what}: ${name}`)
+  }
+  equal(answer.headers.get('x-powered-by'), null, `${what}: x-powered-by`)
+}
+
 // ---------------------------------------------------------------------------------------
 // the run
 // ---------------------------------------------------------------------------------------
@@ -792,6 +807,7 @@ const steps = [
             page.text.includes('<title>'),
           `GET ${path} did not answer an HTML page`
         )
+        expectSecurityHeaders(page, `GET ${path}`)
         const signedOut = await call('GET', path, { redirect: 'manual' })
         expect(
           [301, 302, 303, 307, 308].includes(signedOut.status) &&
@@ -800,7 +816,12 @@ const steps = [
             `location ${signedOut.headers.get('location')}`
         )
       }
-      expectStatus(await call('GET', '/api/status'), 401, '/api/status without a session')
+      const refused = await call('GET', '/api/status')
+      expectStatus(refused, 401, '/api/status without a session')
+      expectSecurityHeaders(refused, '/api/status without a session')
+      const asset = await call('GET', '/favicon.ico')
+      expectStatus(asset, 200, '/favicon.ico')
+      expectSecurityHeaders(asset, '/favicon.ico')
 
       const runsBefore = expectStatus(
         await call('GET', '/api/admin/runs', { cookie: state.admin }),
