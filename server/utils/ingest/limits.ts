@@ -24,6 +24,12 @@ export const MAX_SHEETS = 32
 // are a few kilobytes.
 export const MAX_WORKBOOK_PART_BYTES = 4 * 1024 * 1024
 
+// How long reading one workbook may take: far longer than reading a file within the
+// limits above does. Only one file is read at a time and every other upload waits
+// ("busy") meanwhile, so a read that stalls is stopped at this point and its upload
+// failed, instead of blocking uploads until the server restarts.
+export const MAX_PARSE_MS = 15 * 60_000
+
 // Rows go to the stage, and back to the caller, in batches of this size: one
 // transaction per batch, so no write lock is held for long.
 export const ROW_BATCH = 5000

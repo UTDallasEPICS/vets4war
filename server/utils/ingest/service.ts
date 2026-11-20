@@ -31,7 +31,7 @@ import {
   type DaySummary,
 } from './days'
 import { NOT_A_WORKBOOK } from './archive'
-import { EARLIEST_CALL_DAY, RECENT_GAP_DAYS, STAGED_DAYS } from './limits'
+import { EARLIEST_CALL_DAY, MAX_PARSE_MS, RECENT_GAP_DAYS, STAGED_DAYS } from './limits'
 import { parseWorkbook, type ParsedCall, type ParseResult } from './parser'
 import { makeUploadFolder } from './tempfiles'
 
@@ -46,6 +46,7 @@ export interface IngestDeps {
   maxRows: number
   today(): string // Eastern
   tmpDir?: string
+  parseTimeoutMs?: number // default MAX_PARSE_MS
   onImported?(result: { uploadId: number; userLabel: string }): {
     run: RunRow
     queued: boolean
@@ -72,6 +73,31 @@ export const UNREADABLE =
   'This file could not be read as call records. Check it is the call-records export and try again.'
 const BUSY = 'Another file is being read right now. Try again in a few seconds.'
 const SERVER_RESTARTED = 'The server restarted while this file was being read. Upload it again.'
+const TOOK_TOO_LONG =
+  'Reading this file took too long and was stopped. Upload it again; if this happens ' +
+  'again, split it into smaller files.'
+
+// A read stopped at its time limit (MAX_PARSE_MS).
+class ParseTimeout extends Error {
+  constructor() {
+    super('the read took too long')
+    this.name = 'ParseTimeout'
+  }
+}
+
+// `work`, or a ParseTimeout once `ms` have passed. A failure of `work` after that is
+// left unreported (the upload has been failed already). `onTimeout` runs first.
+function within<T>(work: Promise<T>, ms: number, onTimeout: () => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      onTimeout()
+      reject(new ParseTimeout())
+    }, ms)
+  })
+  work.catch(() => {})
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer))
+}
 const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04])
 const MAX_FILENAME = 200
 const DAY_SECONDS = 86_400
@@ -281,6 +307,9 @@ export async function parseUpload(
   path: string
 ): Promise<void> {
   const batches: StagedBatch[] = []
+  // Set when the read passed its time limit: a stalled read that wakes up later stages
+  // nothing more for the upload that has been failed meanwhile.
+  let stopped = false
   try {
     const insert = sqliteOf(db).prepare(
       `INSERT INTO upload_rows (upload_id, ${CALL_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`
@@ -306,12 +335,16 @@ export async function parseUpload(
       }
       return [first, last]
     })
-    const parse = await parseWorkbook(path, {
+    const reading = parseWorkbook(path, {
       maxRows: deps.maxRows,
       onRows(sheet, rows) {
+        if (stopped) throw new ParseTimeout()
         const [firstId, lastId] = stage.immediate(rows)
         batches.push({ sheet, firstId, lastId })
       },
+    })
+    const parse = await within(reading, deps.parseTimeoutMs ?? MAX_PARSE_MS, () => {
+      stopped = true
     })
     const report: StoredReport = parse.errors.length
       ? unreadableReport(parse)
@@ -332,11 +365,12 @@ export async function parseUpload(
     }, IMMEDIATE)
   } catch (error) {
     console.error(`[uploads] upload ${uploadId} could not be read: ${errorType(error)}`)
+    const message = error instanceof ParseTimeout ? TOOK_TOO_LONG : UNREADABLE
     try {
       db.transaction((tx) => {
         tx.delete(uploadRows).where(eq(uploadRows.uploadId, uploadId)).run()
         tx.update(uploads)
-          .set({ status: 'failed', error: UNREADABLE, parsedAt: new Date() })
+          .set({ status: 'failed', error: message, parsedAt: new Date() })
           .where(and(eq(uploads.id, uploadId), eq(uploads.status, 'parsing')))
           .run()
       }, IMMEDIATE)
