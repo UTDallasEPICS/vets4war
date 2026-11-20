@@ -247,4 +247,11 @@ describe('readBodyWithin', () => {
     expect(await readBodyWithin(endless(), 4096)).toBeNull()
     expect(pulled).toBe(5)
   })
+
+  it('leaves a request it stops reading open, so the refusal can still be sent', async () => {
+    const stream = Readable.from([Buffer.alloc(10), Buffer.alloc(10), Buffer.alloc(10)])
+    expect(await readBodyWithin(stream, 15)).toBeNull()
+    expect(stream.destroyed).toBe(false)
+    stream.destroy()
+  })
 })
