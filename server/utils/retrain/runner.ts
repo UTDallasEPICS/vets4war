@@ -528,6 +528,27 @@ export function createRetrainRunner(
     }
   }
 
+  // Why the script could not be started. Node says ENOENT both for a missing interpreter
+  // and for a missing working folder, so the two are checked to name the setting to fix.
+  function notStarted(error: NodeJS.ErrnoException): string {
+    const prefix = 'The retrain script could not be started:'
+    if (error.code === 'ENOENT') {
+      if (!existsSync(config.forecastDir)) {
+        return `${prefix} the folder ${config.forecastDir} does not exist (V4W_FORECAST_DIR).`
+      }
+      if (!config.pythonPath.includes('/')) {
+        return `${prefix} the Python interpreter ${config.pythonPath} was not found on PATH (V4W_PYTHON).`
+      }
+      if (!existsSync(config.pythonPath)) {
+        return (
+          `${prefix} the Python interpreter ${config.pythonPath} does not exist ` +
+          '(V4W_PYTHON; pnpm forecast:setup makes forecast/.venv).'
+        )
+      }
+    }
+    return `The retrain script could not be started (${error.code ?? error.name}).`
+  }
+
   // Stores exit code and log tail; fills in the outcome only when Python did not.
   function record(
     run: RetrainRun,
@@ -546,7 +567,7 @@ export function createRetrainRunner(
       if (!(ACTIVE as readonly string[]).includes(stored.status)) return stored
       let message: string
       if (startError) {
-        message = `The retrain script could not be started (${startError.code ?? startError.name}).`
+        message = notStarted(startError)
       } else if (stopping) {
         message = STOPPED
       } else if (timedOut) {

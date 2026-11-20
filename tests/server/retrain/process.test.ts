@@ -288,7 +288,9 @@ describe('real child processes', () => {
       expect(run).toMatchObject({
         status: 'failed',
         exitCode: null,
-        message: 'The retrain script could not be started (ENOENT).',
+        message:
+          `The retrain script could not be started: the Python interpreter ${join(folder, 'no-such-python')} ` +
+          'does not exist (V4W_PYTHON; pnpm forecast:setup makes forecast/.venv).',
       })
     },
     SLOW

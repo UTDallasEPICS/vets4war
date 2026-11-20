@@ -3,6 +3,7 @@
 // shutdown, start-up recovery, runs of a shell and every branch of the scheduled tick.
 // process.test.ts runs the same paths with real process trees.
 import { EventEmitter } from 'node:events'
+import { tmpdir } from 'node:os'
 import { PassThrough } from 'node:stream'
 import type { spawn } from 'node:child_process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -551,20 +552,43 @@ describe('how a run ends', () => {
     expect(killed).toEqual([[-5000, 'SIGKILL']])
   })
 
-  it('fails a run whose interpreter could not be started', () => {
+  // Node says ENOENT for a missing interpreter and for a missing working folder alike.
+  it.each([
+    [
+      'the folder is missing',
+      { forecastDir: '/opt/no-such-forecast' },
+      'ENOENT',
+      'The retrain script could not be started: the folder /opt/no-such-forecast does not exist (V4W_FORECAST_DIR).',
+    ],
+    [
+      'the interpreter is missing',
+      { forecastDir: tmpdir(), pythonPath: '/opt/no-such/bin/python' },
+      'ENOENT',
+      'The retrain script could not be started: the Python interpreter /opt/no-such/bin/python does not exist (V4W_PYTHON; pnpm forecast:setup makes forecast/.venv).',
+    ],
+    [
+      'a bare command is not on PATH',
+      { forecastDir: tmpdir(), pythonPath: 'python3-nowhere' },
+      'ENOENT',
+      'The retrain script could not be started: the Python interpreter python3-nowhere was not found on PATH (V4W_PYTHON).',
+    ],
+    [
+      'another start error',
+      { forecastDir: tmpdir() },
+      'EACCES',
+      'The retrain script could not be started (EACCES).',
+    ],
+  ])('fails a run that could not be started, saying why: %s', (_why, config, code, message) => {
     seedCalls()
     nextPid = undefined
-    const { run } = runner().request({ trigger: 'manual', requestedBy: 'a@example.org' })
-    const error = Object.assign(new Error('spawn /opt/forecast/.venv/bin/python ENOENT'), {
-      code: 'ENOENT',
-    })
-    children[0]!.emit('error', error)
+    const { run } = runner(config).request({ trigger: 'manual', requestedBy: 'a@example.org' })
+    children[0]!.emit('error', Object.assign(new Error(`spawn ${code}`), { code }))
     children[0]!.exit(-2)
     expect(getRun(db, run.id)).toMatchObject({
       status: 'failed',
       exitCode: null,
       pid: null,
-      message: 'The retrain script could not be started (ENOENT).',
+      message,
     })
   })
 

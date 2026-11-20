@@ -255,9 +255,10 @@ shows the end of what the script printed.
 - **"Cannot retrain: there are no calls in the database ..."** Load call data.
 - **"Cannot refresh the forecast: no model has been trained yet ..."** A refresh was asked
   for before the first retrain succeeded. Run a full retrain.
-- **"The retrain script could not be started (ENOENT)."** The server did not find the Python
-  interpreter. Run `pnpm forecast:setup`, or set `V4W_PYTHON`. In the image, check
-  `V4W_PYTHON` and `V4W_FORECAST_DIR`.
+- **"The retrain script could not be started: the Python interpreter ... does not exist"**
+  (or "was not found on PATH"). Run `pnpm forecast:setup`, or set `V4W_PYTHON`.
+  **"... the folder ... does not exist (V4W_FORECAST_DIR)"**: set `V4W_FORECAST_DIR` to the
+  `forecast` folder. In the image, check both.
 - **"The retrain script stopped without reporting a result (exit code 1)."** The script
   crashed at its start. Read the output: a `ModuleNotFoundError` means the Python
   environment is incomplete; run `pnpm forecast:setup`.
