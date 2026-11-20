@@ -31,7 +31,7 @@
     "@iconify-json/lucide": "1.2.156",
     "@nuxt/ui": "^4.11.0",
     "@types/nodemailer": "^8.0.1",
-    "better-auth": "1.6.23",
+    "better-auth": "1.7.26",
     "dotenv": "^17.4.2",
     "exceljs": "4.4.0",
     "h3": "1.15.11",
