@@ -1,7 +1,7 @@
 // An .xlsx file is a zip archive. Before any worksheet is parsed, this reads the
 // archive's central directory by hand (no dependency) and refuses what would be
-// expensive or ambiguous to read: too many parts, too much once unpacked, too many
-// sheets, zip64, entries whose local header disagrees with the directory, and sheets
+// expensive or ambiguous to read: too many parts, too much once unpacked (in all, or in
+// the shared strings, which are held in memory), too many sheets, zip64, entries whose local header disagrees with the directory, and sheets
 // that share one worksheet. It also names every sheet and locates every part, so the
 // parser can stream each part straight from the file (openPart) in a fixed order.
 import { createReadStream } from 'node:fs'
@@ -10,6 +10,7 @@ import { Readable, Transform, pipeline } from 'node:stream'
 import { createInflateRaw, inflateRawSync } from 'node:zlib'
 import {
   MAX_ARCHIVE_ENTRIES,
+  MAX_SHARED_STRINGS_BYTES,
   MAX_SHEETS,
   MAX_UNPACKED_BYTES,
   MAX_WORKBOOK_PART_BYTES,
@@ -83,6 +84,8 @@ interface Entry {
   size: number
   localOffset: number
 }
+
+const mb = (bytes: number) => Math.ceil(bytes / (1024 * 1024))
 
 function refuse(message = NOT_A_WORKBOOK): never {
   throw new ArchiveError('not_a_workbook', message)
@@ -336,7 +339,6 @@ export async function inspectArchive(path: string): Promise<ArchiveInfo> {
     const entries = readDirectory(await readAt(file, directoryOffset, directorySize), count)
     const unpackedBytes = entries.reduce((sum, entry) => sum + entry.size, 0)
     if (unpackedBytes > MAX_UNPACKED_BYTES) {
-      const mb = (bytes: number) => Math.ceil(bytes / (1024 * 1024))
       throw new ArchiveError(
         'too_large_unpacked',
         `The workbook unpacks to ${mb(unpackedBytes)} MB; the limit is ${mb(MAX_UNPACKED_BYTES)} MB. ` +
@@ -372,6 +374,16 @@ export async function inspectArchive(path: string): Promise<ArchiveInfo> {
     if (new Set(sheetParts).size !== sheetParts.length) {
       refuse('Two or more sheets of this workbook share one worksheet. Export the file again.')
     }
+    const sharedStrings = partOfType(relationships, '/sharedStrings', parts)
+    const sharedStringsBytes = sharedStrings ? parts.get(sharedStrings)!.size : 0
+    if (sharedStringsBytes > MAX_SHARED_STRINGS_BYTES) {
+      throw new ArchiveError(
+        'too_large_unpacked',
+        `The workbook's text cells unpack to ${mb(sharedStringsBytes)} MB; the limit is ` +
+          `${mb(MAX_SHARED_STRINGS_BYTES)} MB. Export the call records again as a plain .xlsx, ` +
+          'or split them into smaller files.'
+      )
+    }
     return {
       entries: entries.length,
       unpackedBytes,
@@ -379,7 +391,7 @@ export async function inspectArchive(path: string): Promise<ArchiveInfo> {
       parts,
       workbook: WORKBOOK,
       workbookRels: WORKBOOK_RELS,
-      sharedStrings: partOfType(relationships, '/sharedStrings', parts),
+      sharedStrings,
       styles: partOfType(relationships, '/styles', parts),
       date1904: usesDate1904(workbookXml),
     }

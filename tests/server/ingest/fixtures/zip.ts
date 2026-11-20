@@ -1,6 +1,6 @@
 // A minimal zip writer for crafting archives the archive check must refuse. Entries are
-// stored (no compression). `directory` overrides what the central directory claims, so
-// a test can make it lie about sizes or counts.
+// stored (no compression). `directory` overrides what the central directory claims, and
+// `local` what the local header claims, so a test can make them lie about sizes or counts.
 import { posix } from 'node:path'
 import { crc32 } from 'node:zlib'
 
@@ -8,7 +8,7 @@ export interface ZipEntry {
   name: string
   data: Buffer | string
   directory?: { size?: number; compressedSize?: number }
-  local?: { compressedSize?: number }
+  local?: { compressedSize?: number; size?: number }
 }
 
 export function buildZip(entries: ZipEntry[], options: { countOverride?: number } = {}): Buffer {
@@ -26,7 +26,7 @@ export function buildZip(entries: ZipEntry[], options: { countOverride?: number 
     local.writeUInt16LE(0, 8)
     local.writeUInt32LE(crc, 14)
     local.writeUInt32LE(entry.local?.compressedSize ?? data.length, 18)
-    local.writeUInt32LE(data.length, 22)
+    local.writeUInt32LE(entry.local?.size ?? data.length, 22)
     local.writeUInt16LE(name.length, 26)
     local.writeUInt16LE(0, 28)
     locals.push(local, name, data)

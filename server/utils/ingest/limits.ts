@@ -10,6 +10,12 @@ export const MAX_ARCHIVE_ENTRIES = 2000
 // four times that and still bounded by the disk and time one upload may take.
 export const MAX_UNPACKED_BYTES = 600 * 1024 * 1024
 
+// The shared strings are held in memory while the sheets are read, as JavaScript strings
+// (about twice their size in the file), so this part gets a limit of its own: within the
+// total above it could exhaust the server's memory. In the call-records exports the texts
+// are few (skill name, abandon flag; dates and durations are numbers), far below this.
+export const MAX_SHARED_STRINGS_BYTES = 64 * 1024 * 1024
+
 // The partner's layouts have at most a handful of sheets (one per year in the
 // multi-year export).
 export const MAX_SHEETS = 32

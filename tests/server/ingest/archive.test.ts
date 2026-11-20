@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest'
 import { ArchiveError, inspectArchive } from '../../../server/utils/ingest/archive'
 import {
   MAX_ARCHIVE_ENTRIES,
+  MAX_SHARED_STRINGS_BYTES,
   MAX_SHEETS,
   MAX_UNPACKED_BYTES,
 } from '../../../server/utils/ingest/limits'
@@ -136,6 +137,37 @@ describe('inspectArchive', () => {
     const refused = await refusal(buildZip(entries))
     expect(refused.code).toBe('too_large_unpacked')
     expect(refused.message).toMatch(/^The workbook unpacks to \d+ MB; the limit is 600 MB\./)
+  })
+
+  it('refuses shared strings that unpack to more than their own limit', async () => {
+    // Both headers declare the size, as a real archive's do; the data itself is never
+    // inflated by the check.
+    const declared = MAX_SHARED_STRINGS_BYTES + 1
+    const entries: ZipEntry[] = [
+      ...ONE_SHEET.map((e) =>
+        e.name === 'xl/_rels/workbook.xml.rels'
+          ? {
+              ...e,
+              data: String(e.data).replace(
+                '</Relationships>',
+                '<Relationship Id="rIdS" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>'
+              ),
+            }
+          : e
+      ),
+      {
+        name: 'xl/sharedStrings.xml',
+        data: '<sst/>',
+        directory: { size: declared },
+        local: { size: declared },
+      },
+    ]
+    const refused = await refusal(buildZip(entries))
+    expect(refused.code).toBe('too_large_unpacked')
+    expect(refused.message).toBe(
+      "The workbook's text cells unpack to 65 MB; the limit is 64 MB. Export the call " +
+        'records again as a plain .xlsx, or split them into smaller files.'
+    )
   })
 
   it(`refuses more than ${MAX_SHEETS} sheets`, async () => {
