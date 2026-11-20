@@ -251,6 +251,25 @@ export interface RunSummary {
   horizon_end: string | null
   message: string | null
 }
+// The one run waiting behind the active one: a retrain wins over a refresh, and an
+// import always waits for a retrain.
+export interface QueuedRunSummary {
+  mode: RunMode
+  trigger: 'import' | 'manual'
+  requested_by: string | null
+}
+// GET /api/admin/runs
+export interface RunsOverviewResponse {
+  runs: RunSummary[] // the last 30, newest first
+  active_run_id: number | null
+  queued: QueuedRunSummary | null
+  data: {
+    calls_revision: number
+    calls_count: number
+    first_day: string | null
+    last_day: string | null
+  }
+}
 export interface RunDetail extends RunSummary {
   gate: GateResult | null
   log_tail: string | null

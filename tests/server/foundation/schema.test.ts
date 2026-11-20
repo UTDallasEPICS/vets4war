@@ -86,7 +86,15 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
     'abandoned',
   ],
   holidays: ['holiday_date', 'holiday_name'],
-  data_state: ['id', 'calls_revision', 'rerun_requested', 'updated_at'],
+  data_state: [
+    'id',
+    'calls_revision',
+    'rerun_requested',
+    'updated_at',
+    'rerun_mode',
+    'rerun_trigger',
+    'rerun_requested_by',
+  ],
   forecast_runs: [
     'id',
     'trigger',
@@ -185,7 +193,7 @@ describe('database schema', () => {
     const applied = sqlite.prepare('SELECT count(*) AS n FROM __drizzle_migrations').get() as {
       n: number
     }
-    expect(applied.n).toBe(3)
+    expect(applied.n).toBe(4)
   })
 
   it('has exactly the documented tables and column names', () => {

@@ -9,7 +9,13 @@ import { describe, it, expect } from 'vitest'
 import { defineEventHandler } from 'h3'
 import { flushPromises } from '@vue/test-utils'
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
-import type { RunDetail as RunDetailBody, RunSummary, StatusResponse } from '#shared/types/api'
+import type {
+  RunDetail as RunDetailBody,
+  RunSummary,
+  RunsOverviewResponse,
+  StatusResponse,
+} from '#shared/types/api'
+import RunsPanel from '../../app/components/admin/RunsPanel.vue'
 import ForecastState from '../../app/components/admin/runs/ForecastState.vue'
 import RunDetail from '../../app/components/admin/runs/RunDetail.vue'
 import StatusBadge from '../../app/components/admin/runs/StatusBadge.vue'
@@ -206,6 +212,51 @@ describe('run detail', () => {
     expect(rows).toContainEqual(['Week accuracy, spread', '–', '1.00%'])
     expect(rows).toContainEqual(['Daily error, days 1 to 14', '7.50%', '8.50%'])
     expect(document.body.textContent).toContain('not better, and there was no previous model')
+    wrapper.unmount()
+  })
+})
+
+// The tab as loaded from the server: what is queued comes from GET /api/admin/runs, so
+// it shows after a reload and goes once the queue is empty.
+let overview: RunsOverviewResponse
+registerEndpoint(
+  '/api/admin/runs',
+  defineEventHandler(() => overview)
+)
+registerEndpoint(
+  '/api/status',
+  defineEventHandler(() => status(null))
+)
+
+describe('runs panel', () => {
+  const working = run({ id: 3, status: 'running', finished_at: null })
+  const data = {
+    calls_revision: 1,
+    calls_count: 100,
+    first_day: '2026-11-01',
+    last_day: '2026-11-15',
+  }
+
+  it('says a run is queued, what kind and who asked, after a reload', async () => {
+    overview = {
+      runs: [working],
+      active_run_id: 3,
+      queued: { mode: 'forecast-only', trigger: 'manual', requested_by: 'b@example.org' },
+      data,
+    }
+    const wrapper = await mountSuspended(RunsPanel)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="queued-run"]').text()).toBe(
+      'One more forecast refresh is queued (asked by b@example.org). It starts when run 3 ends.'
+    )
+    wrapper.unmount()
+  })
+
+  it('says nothing about a queue when it is empty', async () => {
+    overview = { runs: [working], active_run_id: 3, queued: null, data }
+    const wrapper = await mountSuspended(RunsPanel)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="queued-run"]').exists()).toBe(false)
     wrapper.unmount()
   })
 })

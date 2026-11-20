@@ -197,6 +197,11 @@ export const dataState = sqliteTable('data_state', {
   id: integer('id').primaryKey(),
   callsRevision: integer('calls_revision').notNull().default(0), // +1 on every import that changed `calls`
   rerunRequested: integer('rerun_requested', { mode: 'boolean' }).notNull().default(false),
+  // The run queued behind the active one, as asked for: null while nothing is queued
+  // (or for a flag set before these columns existed: a full run after an import).
+  rerunMode: text('rerun_mode', { enum: ['full', 'forecast-only'] }),
+  rerunTrigger: text('rerun_trigger', { enum: ['import', 'manual'] }),
+  rerunRequestedBy: text('rerun_requested_by'),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
 

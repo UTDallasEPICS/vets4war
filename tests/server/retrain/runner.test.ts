@@ -294,7 +294,7 @@ describe('request', () => {
     expect(env.BETTER_AUTH_SECRET).toBeUndefined()
   })
 
-  it('runs one at a time: later requests queue exactly one more full run', async () => {
+  it('runs one at a time: imports during a run queue exactly one more retrain', async () => {
     seedCalls()
     const r = runner()
     const first = r.request({ trigger: 'manual', requestedBy: 'a@example.org' })
@@ -314,11 +314,12 @@ describe('request', () => {
     expect(spawned).toHaveLength(2)
     expect(rerunFlag()).toBe(false)
     const rerun = runs()[1]!
+    // An import always waits for a retrain, which learns its calls.
     expect(rerun).toMatchObject({
       trigger: 'import',
       mode: 'full',
       status: 'queued',
-      requestedByLabel: 'queued',
+      requestedByLabel: 'b@example.org',
     })
 
     pythonWrites(rerun.id, 'succeeded')
@@ -326,6 +327,96 @@ describe('request', () => {
     await r.idle()
     expect(spawned).toHaveLength(2)
     expect(runs()).toHaveLength(2)
+  })
+})
+
+describe('the run queued behind the active one', () => {
+  const ask = (r: ReturnType<typeof runner>, mode: RetrainRun['mode'], who: string) =>
+    r.request({ trigger: 'manual', mode, requestedBy: who })
+  const queuedNow = () => runsOverview(db).queued
+
+  // Starts a run, asks for `asked` while it works, ends it; returns the run that follows.
+  function followUp(asked: [RetrainRun['mode'], string][]) {
+    seedCalls()
+    const r = runner()
+    const first = ask(r, 'full', 'first@example.org')
+    for (const [mode, who] of asked) expect(ask(r, mode, who).queued).toBe(true)
+    const queued = queuedNow()
+    pythonWrites(first.run.id, 'succeeded')
+    children[0]!.exit(0)
+    return { queued, next: runs()[1]!, r }
+  }
+
+  it('a refresh asked for during a run stays a refresh, by who asked', () => {
+    const { queued, next } = followUp([['forecast-only', 'b@example.org']])
+    expect(queued).toEqual({
+      mode: 'forecast-only',
+      trigger: 'manual',
+      requestedBy: 'b@example.org',
+    })
+    expect(next).toMatchObject({
+      trigger: 'manual',
+      mode: 'forecast-only',
+      requestedByLabel: 'b@example.org',
+    })
+    expect(spawned[1]!.args).toContain('forecast-only')
+    expect(queuedNow()).toBeNull()
+  })
+
+  it('a retrain asked for later wins over a queued refresh', () => {
+    const { next } = followUp([
+      ['forecast-only', 'b@example.org'],
+      ['full', 'c@example.org'],
+      ['forecast-only', 'd@example.org'],
+    ])
+    expect(next).toMatchObject({
+      trigger: 'manual',
+      mode: 'full',
+      requestedByLabel: 'c@example.org',
+    })
+  })
+
+  it('a queued retrain keeps its place and who asked for it', () => {
+    const { next } = followUp([
+      ['full', 'b@example.org'],
+      ['forecast-only', 'c@example.org'],
+      ['full', 'd@example.org'],
+    ])
+    expect(next).toMatchObject({
+      trigger: 'manual',
+      mode: 'full',
+      requestedByLabel: 'b@example.org',
+    })
+  })
+
+  it('an import turns a queued refresh into a retrain after the import', () => {
+    seedCalls()
+    const r = runner()
+    const first = ask(r, 'full', 'first@example.org')
+    ask(r, 'forecast-only', 'b@example.org')
+    r.request({ trigger: 'import', mode: 'full', requestedBy: 'uploader@example.org' })
+    ask(r, 'full', 'c@example.org')
+    expect(queuedNow()).toEqual({
+      mode: 'full',
+      trigger: 'import',
+      requestedBy: 'uploader@example.org',
+    })
+    pythonWrites(first.run.id, 'succeeded')
+    children[0]!.exit(0)
+    expect(runs()[1]).toMatchObject({
+      trigger: 'import',
+      mode: 'full',
+      requestedByLabel: 'uploader@example.org',
+    })
+  })
+
+  it('a flag set before the request was remembered is a retrain after an import', () => {
+    seedCalls()
+    setRevision(1, true)
+    expect(queuedNow()).toEqual({ mode: 'full', trigger: 'import', requestedBy: 'queued' })
+    runner().reconcile()
+    expect(runs()[0]).toMatchObject({ trigger: 'import', mode: 'full', requestedByLabel: 'queued' })
+    expect(rerunFlag()).toBe(false)
   })
 })
 
@@ -619,7 +710,7 @@ describe('runs started from a shell', () => {
     locks.delete(shell.id)
     vi.advanceTimersByTime(WATCH_MS)
     expect(spawned).toHaveLength(1)
-    expect(runs().at(-1)).toMatchObject({ trigger: 'import', requestedByLabel: 'queued' })
+    expect(runs().at(-1)).toMatchObject({ trigger: 'manual', requestedByLabel: 'a@example.org' })
     expect(getRun(db, shell.id).status).toBe('succeeded')
   })
 
@@ -682,7 +773,7 @@ describe('runs started from a shell', () => {
     // Closed: the request queued behind it starts, and this one queues behind that.
     expect(r.request({ trigger: 'manual', requestedBy: 'a@example.org' }).queued).toBe(true)
     expect(spawned).toHaveLength(1)
-    expect(runs().at(-1)).toMatchObject({ requestedByLabel: 'queued', status: 'queued' })
+    expect(runs().at(-1)).toMatchObject({ requestedByLabel: 'a@example.org', status: 'queued' })
     expect(getRun(db, young.id)).toMatchObject({
       status: 'failed',
       message:
@@ -820,6 +911,7 @@ describe('runsOverview', () => {
     expect(runsOverview(db)).toEqual({
       runs: [],
       activeRunId: null,
+      queued: null,
       data: { calls_revision: 0, calls_count: 0, first_day: null, last_day: null },
     })
     seedCalls(5)

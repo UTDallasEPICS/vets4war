@@ -125,7 +125,7 @@ The tables and who writes them:
 | `upload_rows`                                | the calls of a file that was read but not imported yet               | yes                                              | never                                       |
 | `calls`                                      | the call history the model learns from                               | on import only (insert, delete on a replacement) | never (reads it)                            |
 | `replaced_calls`                             | what a day replacement removed from `calls`                          | on import                                        | never                                       |
-| `data_state`                                 | one row: the data revision and the "run again" flag                  | yes                                              | never (reads it)                            |
+| `data_state`                                 | one row: the data revision and the run queued behind the active one  | yes                                              | never (reads it)                            |
 | `holidays`                                   | the official holidays by date                                        | the copy from Postgres only                      | adds missing official holidays at each run  |
 | `forecast_runs`                              | one row per retrain or refresh                                       | creates rows, records how a run ended            | its own row; creates the row of a shell run |
 | `model_artifacts`                            | trained models (the model text and its description)                  | never                                            | yes                                         |
@@ -181,8 +181,9 @@ Rules both sides keep:
 3. **The server fills in only what the script could not.** If the script never started, was
    stopped, or died, the server records `failed` (or `interrupted` when the server itself was
    stopping) with a sentence that says which.
-4. **One run at a time.** A request during a run sets a flag instead of starting a second
-   process; one more retrain starts when the current run ends.
+4. **One run at a time.** A request during a run is queued in `data_state` (its mode,
+   trigger and requester) instead of starting a second process; that one run starts when
+   the current run ends.
 5. **Nothing the script prints contains a call record.** It prints counts, dates and the
    check table. An unexpected error is reported by its type and the place it happened, not
    by its text, because the text could quote a stored value.

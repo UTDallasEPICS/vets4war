@@ -292,7 +292,8 @@ What the write routes take:
   `exceeds capacity`) and the service level and hang-ups at the planned number.
 - `POST /api/admin/runs`: `{ "mode": "full" }` (the default) or `{ "mode": "forecast-only" }`.
   While a run is active nothing new starts: the answer is that run with `queued: true`, and
-  one more retrain follows it.
+  one more run follows it: a retrain if any request (or an import) asked for one, else a
+  refresh. `GET /api/admin/runs` shows it as `queued` (`mode`, `trigger`, `requested_by`).
 - `POST /api/admin/uploads`: a multipart form with one part named `file`. The same file
   sent again while it is still being read, or while it waits for a decision, answers 200
   with the earlier upload.

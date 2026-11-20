@@ -24,10 +24,18 @@ and timeouts, what to do when a run fails, and how to run the script by hand.
 
 **Only one run works at a time.** When a run is asked for while another is working (a second
 import, a second click), nothing new starts. The answer names the run in progress, and one
-more retrain is queued: it starts by itself when the current run ends, and it reads
-everything that was imported in the meantime. However many requests arrive during a run,
-exactly one extra run follows. That extra run is always a full retrain and shows as "After
-an import (queued)".
+more run is queued: it starts by itself when the current run ends, and it reads everything
+that was imported in the meantime. However many requests arrive during a run, exactly one
+extra run follows. It is the run that was asked for, with who asked for it:
+
+- a retrain wins over a refresh: a refresh asked for first becomes a retrain if a retrain
+  is asked for later;
+- an import always queues a retrain (after an import), so the new calls are learned;
+- otherwise the first request keeps its place, and later ones are covered by it.
+
+The queued run is kept in `data_state` (`rerun_mode`, `rerun_trigger`,
+`rerun_requested_by`) and shown on the Forecast runs tab ("One more retrain is queued"),
+also after a reload, until it starts. `GET /api/admin/runs` returns it as `queued`.
 
 ## What a run does
 

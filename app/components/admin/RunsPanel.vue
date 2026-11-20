@@ -2,18 +2,12 @@
   // Forecast runs: what the call data holds, the run in progress, buttons to retrain or
   // refresh by hand, and every recent run with its gate table and output. No props, no
   // emits (the admin page's contract).
-  import type { RunMode, RunSummary, StatusResponse } from '#shared/types/api'
-
-  interface Overview {
-    runs: RunSummary[]
-    active_run_id: number | null
-    data: {
-      calls_revision: number
-      calls_count: number
-      first_day: string | null
-      last_day: string | null
-    }
-  }
+  import type {
+    RunMode,
+    RunSummary,
+    RunsOverviewResponse as Overview,
+    StatusResponse,
+  } from '#shared/types/api'
 
   const ACTIVE_POLL_MS = 3000
   const IDLE_POLL_MS = 30_000
@@ -32,6 +26,16 @@
     () => overview.value?.runs.find((run) => run.id === overview.value?.active_run_id) ?? null
   )
   const hasCalls = computed(() => (overview.value?.data.calls_count ?? 0) > 0)
+  // From the server, so it survives a reload and goes once the queued run has started.
+  const queuedNotice = computed(() => {
+    const queued = overview.value?.queued
+    if (!queued) return null
+    const kind = queued.mode === 'full' ? 'retrain' : 'forecast refresh'
+    const reason = queued.trigger === 'import' ? ' after an import' : ''
+    const by = queued.requested_by ? ` (asked by ${queued.requested_by})` : ''
+    const after = active.value ? `when run ${active.value.id} ends` : 'shortly'
+    return `One more ${kind}${reason} is queued${by}. It starts ${after}.`
+  })
 
   function elapsed(since: string): string {
     const seconds = Math.max(0, Math.floor((now.value - new Date(since).getTime()) / 1000))
@@ -50,7 +54,8 @@
     } catch (error) {
       problem.value = error instanceof Error ? error.message : 'The runs could not be loaded.'
     }
-    poll = setTimeout(load, overview.value?.active_run_id ? ACTIVE_POLL_MS : IDLE_POLL_MS)
+    const busy = overview.value?.active_run_id || overview.value?.queued
+    poll = setTimeout(load, busy ? ACTIVE_POLL_MS : IDLE_POLL_MS)
   }
 
   async function start(mode: RunMode) {
@@ -62,9 +67,8 @@
         '/api/admin/runs',
         { method: 'POST', body: { mode } }
       )
-      notice.value = queued
-        ? `Run ${run.id} is still in progress. One more retrain is queued and starts when it ends.`
-        : `Run ${run.id} started.`
+      // A queued request is shown by queuedNotice once the overview is loaded again.
+      notice.value = queued ? null : `Run ${run.id} started.`
     } catch (error) {
       problem.value = error instanceof Error ? error.message : 'The run could not be started.'
     } finally {
@@ -170,6 +174,14 @@
           </div>
         </div>
 
+        <UAlert
+          v-if="queuedNotice"
+          color="info"
+          variant="subtle"
+          icon="i-heroicons-clock-20-solid"
+          :title="queuedNotice"
+          data-testid="queued-run"
+        />
         <UAlert
           v-if="notice"
           color="info"

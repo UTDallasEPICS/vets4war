@@ -129,6 +129,25 @@ const ACTIVE = ['queued', 'running'] as const
 const DECIDED = ['succeeded', 'rejected', 'failed'] as const
 const QUEUED_LABEL = 'queued'
 
+// The run waiting behind the active one (data_state.rerun_*).
+export interface QueuedRun {
+  mode: RunMode
+  trigger: 'import' | 'manual'
+  requestedBy: string | null
+}
+
+// Null when nothing is queued. A flag set before the request was remembered stands for
+// what it always meant: a retrain after an import, by nobody in particular.
+export function queuedRunOf(row: typeof dataState.$inferSelect | undefined): QueuedRun | null {
+  if (!row?.rerunRequested) return null
+  if (!row.rerunMode) return { mode: 'full', trigger: 'import', requestedBy: QUEUED_LABEL }
+  return {
+    mode: row.rerunMode,
+    trigger: row.rerunTrigger ?? 'manual',
+    requestedBy: row.rerunRequestedBy,
+  }
+}
+
 const NO_CALLS = 'There is no call data yet. Load a call-records file first.'
 const RESTARTED = 'The server restarted during this run.'
 const STOPPED = 'The server stopped during this run.'
@@ -265,12 +284,34 @@ export function createRetrainRunner(
       )
       .orderBy(desc(forecastRuns.id))
       .get()
-  const setRerun = (tx: Tx, value: boolean) =>
-    tx
-      .insert(dataState)
-      .values({ id: 1, callsRevision: 0, rerunRequested: value, updatedAt: now() })
-      .onConflictDoUpdate({ target: dataState.id, set: { rerunRequested: value } })
+  const queuedRun = (tx: Tx) => queuedRunOf(tx.select().from(dataState).get())
+  const setQueued = (tx: Tx, queued: QueuedRun | null) => {
+    const set = {
+      rerunRequested: queued !== null,
+      rerunMode: queued?.mode ?? null,
+      rerunTrigger: queued?.trigger ?? null,
+      rerunRequestedBy: queued?.requestedBy ?? null,
+    }
+    tx.insert(dataState)
+      .values({ id: 1, callsRevision: 0, ...set, updatedAt: now() })
+      .onConflictDoUpdate({ target: dataState.id, set })
       .run()
+  }
+  // One run waits behind the active one, whatever is asked meanwhile. A retrain wins
+  // over a refresh, and an import always queues a retrain, which reads its calls.
+  // Otherwise the first request keeps the place, with who asked for it.
+  const queueBehind = (
+    tx: Tx,
+    input: { trigger: RunTrigger; mode: RunMode; requestedBy: string | null }
+  ) => {
+    const asked: QueuedRun =
+      input.trigger === 'import'
+        ? { mode: 'full', trigger: 'import', requestedBy: input.requestedBy }
+        : { mode: input.mode, trigger: 'manual', requestedBy: input.requestedBy }
+    const queued = queuedRun(tx)
+    if (queued && !(asked.mode === 'full' && queued.mode === 'forecast-only')) return
+    setQueued(tx, asked)
+  }
   const insertRun = (
     tx: Tx,
     input: {
@@ -558,10 +599,11 @@ export function createRetrainRunner(
 
   function rerunIfRequested() {
     const next = write((tx) => {
-      if (!tx.select().from(dataState).get()?.rerunRequested) return null
+      const queued = queuedRun(tx)
+      if (!queued) return null
       if (activeRun(tx) || !hasCalls(tx)) return null
-      setRerun(tx, false)
-      return insertRun(tx, { trigger: 'import', mode: 'full', requestedBy: QUEUED_LABEL })
+      setQueued(tx, null)
+      return insertRun(tx, queued)
     })
     if (next) start(next)
   }
@@ -586,7 +628,7 @@ export function createRetrainRunner(
           ? tx.select().from(forecastRuns).where(eq(forecastRuns.id, current.run.id)).get()
           : undefined)
       if (active) {
-        setRerun(tx, true)
+        queueBehind(tx, { ...input, mode: input.mode ?? 'full' })
         return { run: active, queued: true }
       }
       return {
@@ -683,7 +725,7 @@ export function createRetrainRunner(
           .run()
       }
       if (activeRun(tx)) return null // a shell's run is still going: watched below
-      if (tx.select().from(dataState).get()?.rerunRequested) setRerun(tx, false)
+      if (queuedRun(tx)) setQueued(tx, null)
       if (!hasCalls(tx)) return null
       const revision = revisionOf(tx)
       const state = tx.select().from(forecastState).get()
@@ -744,11 +786,13 @@ export function runsOverview(db: AppDb) {
       })
       .from(calls)
       .get()!
+    const state = tx.select().from(dataState).get()
     return {
       runs,
       activeRunId: active?.id ?? null,
+      queued: queuedRunOf(state),
       data: {
-        calls_revision: tx.select().from(dataState).get()?.callsRevision ?? 0,
+        calls_revision: state?.callsRevision ?? 0,
         calls_count: totals.count,
         first_day: totals.first,
         last_day: totals.last,
