@@ -10,6 +10,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
+import { finished } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 import { createApp, eventHandler, toNodeListener } from 'h3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
@@ -24,7 +25,7 @@ vi.hoisted(() => {
 const { db } = await import('../../../server/utils/db')
 const { default: handler } = await import('../../../server/api/admin/uploads/index.post')
 const schema = await import('../../../server/db/schema')
-const { readBodyWithin } = await import('../../../server/utils/ingest/body')
+const { DISCARD_BYTES, readBodyWithin } = await import('../../../server/utils/ingest/body')
 const { rawLayout, wholeDay, withTempDir, writeWorkbook } = await import('./fixtures/workbooks')
 const { handmadeWorkbook, headerRow } = await import('./fixtures/handmade')
 
@@ -248,10 +249,25 @@ describe('readBodyWithin', () => {
     expect(pulled).toBe(5)
   })
 
-  it('leaves a request it stops reading open, so the refusal can still be sent', async () => {
+  it('reads and drops the rest of a refused request, so the client can read the refusal', async () => {
     const stream = Readable.from([Buffer.alloc(10), Buffer.alloc(10), Buffer.alloc(10)])
     expect(await readBodyWithin(stream, 15)).toBeNull()
-    expect(stream.destroyed).toBe(false)
-    stream.destroy()
+    // ends as sent, never cut off (a cut-off request resets the client's connection)
+    await expect(finished(stream)).resolves.toBeUndefined()
+  })
+
+  it(`drops the connection after all past ${DISCARD_BYTES / (1024 * 1024)} MB more`, async () => {
+    const MB = Buffer.alloc(1024 * 1024)
+    async function* endless() {
+      for (;;) yield MB
+    }
+    let pulled = 0
+    const stream = Readable.from(endless())
+    stream.on('data', () => pulled++)
+    // answers once the stream is gone
+    expect(await readBodyWithin(stream, 1024)).toBeNull()
+    // the chunk past the limit, then 64 MB dropped, then one more: the stream is destroyed
+    expect(pulled).toBe(1 + 64 + 1)
+    expect(stream.destroyed).toBe(true)
   })
 })

@@ -31,11 +31,10 @@ export default defineEventHandler(async (event) => {
   if (declared !== undefined && Number(declared) > deps.maxBytes + MULTIPART_OVERHEAD) {
     throw tooLarge()
   }
+  // The rest of a body past the limit is read and dropped while the refusal goes out
+  // (readBodyWithin), so the client receives the 413 instead of a reset connection.
   const body = await readBodyWithin(event.node.req, deps.maxBytes + MULTIPART_OVERHEAD)
-  if (body === null) {
-    setResponseHeader(event, 'Connection', 'close')
-    throw tooLarge()
-  }
+  if (body === null) throw tooLarge()
   const file = filePart(body, getRequestHeader(event, 'content-type') ?? '', 'file')
   if (!file) {
     throw validationError([{ path: 'file', message: 'Choose a .xlsx file to upload.' }])

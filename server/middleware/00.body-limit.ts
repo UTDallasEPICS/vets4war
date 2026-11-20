@@ -1,5 +1,5 @@
 import type { IncomingMessage } from 'node:http'
-import { defineEventHandler, getRequestHeader, setResponseHeader } from 'h3'
+import { defineEventHandler, getRequestHeader } from 'h3'
 import { apiError } from '../utils/http'
 import { readBodyWithin } from '../utils/ingest/body'
 
@@ -37,10 +37,8 @@ export default defineEventHandler(async (event) => {
     return
   }
   if (getRequestHeader(event, 'transfer-encoding') === undefined) return
+  // Past the limit the rest is read and dropped while the refusal goes out.
   const body = await readBodyWithin(event.node.req, MAX_BODY_BYTES)
-  if (body === null) {
-    setResponseHeader(event, 'Connection', 'close')
-    throw tooLarge()
-  }
+  if (body === null) throw tooLarge()
   ;(event.node.req as IncomingMessage & { rawBody?: Buffer }).rawBody = body
 })
