@@ -1,7 +1,12 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, it, expect } from 'vitest'
-import { EXAMPLE_AUTH_SECRET, isVitestRun, parseEnv } from '../../../server/utils/env'
+import {
+  EXAMPLE_AUTH_SECRET,
+  MAX_RETRAIN_TIMEOUT_MIN,
+  isVitestRun,
+  parseEnv,
+} from '../../../server/utils/env'
 
 const CWD = '/srv/app'
 const BASE = {
@@ -149,6 +154,15 @@ describe('parseEnv', () => {
     ])
     parseEnv({ ...BASE, BETTER_AUTH_SECRET: 'x'.repeat(32) }, { dev: false, cwd: CWD, warn })
     expect(warnings).toHaveLength(1)
+  })
+
+  it('refuses a retrain timeout longer than a day, which the timer could not hold', () => {
+    expect(prod({ ...BASE, V4W_RETRAIN_TIMEOUT_MIN: '1440' }).V4W_RETRAIN_TIMEOUT_MIN).toBe(1440)
+    expect(() => prod({ ...BASE, V4W_RETRAIN_TIMEOUT_MIN: '100000' })).toThrow(
+      /V4W_RETRAIN_TIMEOUT_MIN: must be a number 1\.\.1440, got "100000"/
+    )
+    // what the run's timer gets, at the cap: within Node's 32-bit limit
+    expect(MAX_RETRAIN_TIMEOUT_MIN * 60_000).toBeLessThan(2 ** 31)
   })
 
   it('parses the admin list', () => {

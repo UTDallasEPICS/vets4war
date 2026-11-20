@@ -164,8 +164,9 @@ finished on, a retrain starts ("Server start").
 
 ## Stopping, timeouts and restarts
 
-- **Timeout.** A run that is still going after `V4W_RETRAIN_TIMEOUT_MIN` minutes (default 60)
-  is stopped: first asked to stop, and killed 10 seconds later if it has not. It ends as
+- **Timeout.** A run that is still going after `V4W_RETRAIN_TIMEOUT_MIN` minutes (default 60,
+  at most 1440: the server refuses to start with more, which its timer could not hold) is
+  stopped: first asked to stop, and killed 10 seconds later if it has not. It ends as
   Failed, "Stopped after 60 minutes (V4W_RETRAIN_TIMEOUT_MIN). The forecast in use did not
   change."
 - **The server stops** (a redeploy, for example). The run is stopped with it and recorded as

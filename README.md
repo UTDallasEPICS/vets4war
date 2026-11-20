@@ -354,34 +354,34 @@ build does not: give it real environment variables, or start it with `pnpm start
 passes `.env` to it. (With the `.env` of the quick start `pnpm start` refuses to run,
 because printing sign-in codes to the log is allowed under `pnpm dev` only.)
 
-| Name                        | Default                | Meaning                                                    |
-| --------------------------- | ---------------------- | ---------------------------------------------------------- |
-| `DATABASE_URL`              | `file:./dev.db`        | The SQLite file.                                           |
-| `BETTER_AUTH_SECRET`        | required               | Signs session cookies. Long random text.                   |
-| `BETTER_AUTH_URL`           | required               | The address people type in the browser, exactly.           |
-| `EMAIL_TRANSPORT`           | `smtp`                 | `smtp` mails the sign-in code; `console` logs it.          |
-| `EMAIL_HOST`                | required with `smtp`   | The mail server.                                           |
-| `EMAIL_USER`, `EMAIL_PASS`  | required with `smtp`   | Its login.                                                 |
-| `EMAIL_FROM`                | required with `smtp`   | The sender address.                                        |
-| `EMAIL_PORT`                | `587`                  | Its port.                                                  |
-| `EMAIL_SECURE`              | `false`                | `true` = TLS from the first byte.                          |
-| `V4W_ADMIN_EMAILS`          | empty                  | Addresses made admins on every server start.               |
-| `V4W_DATA_SOURCE`           | not set                | `partner` or `synthetic`: what the badge says the data is. |
-| `V4W_FORECAST_DIR`          | `./forecast`           | Where the Python project is.                               |
-| `V4W_PYTHON`                | see below              | The Python that runs the retrain script.                   |
-| `V4W_RETRAIN_MODULE`        | `db.retrain`           | The module the server starts. Leave it alone.              |
-| `V4W_RETRAIN_ON_IMPORT`     | `true`                 | Start a retrain after every import.                        |
-| `V4W_RETRAIN_SCHEDULE`      | `on`                   | `off`: the scheduled check does nothing.                   |
-| `V4W_RETRAIN_CRON`          | `30 8 * * *`           | When the scheduled check runs. Read at build time.         |
-| `V4W_RETRAIN_TIMEOUT_MIN`   | `60`                   | Minutes after which a run is stopped and marked failed.    |
-| `V4W_GATE_WORKERS`          | see below              | Worker processes of the check against the baseline.        |
-| `V4W_HORIZON_DAYS`          | `800`                  | How many days ahead the forecast is written.               |
-| `V4W_HOLIDAYS_THROUGH_YEAR` | see below              | Last year of official holidays kept in the database.       |
-| `V4W_UPLOAD_MAX_MB`         | `40`                   | Largest upload, in MB.                                     |
-| `V4W_UPLOAD_MAX_ROWS`       | `750000`               | Most calls in one file.                                    |
-| `PORT`, `HOST`              | `3000`, all interfaces | Where the server listens.                                  |
-| `V4W_DATABASE_URL`          | none                   | The old Postgres database, for the one-time copy.          |
-| `V4W_DEV_API_PROXY`         | not set                | `pnpm dev` only. Leave it unset.                           |
+| Name                        | Default                | Meaning                                                     |
+| --------------------------- | ---------------------- | ----------------------------------------------------------- |
+| `DATABASE_URL`              | `file:./dev.db`        | The SQLite file.                                            |
+| `BETTER_AUTH_SECRET`        | required               | Signs session cookies. Long random text.                    |
+| `BETTER_AUTH_URL`           | required               | The address people type in the browser, exactly.            |
+| `EMAIL_TRANSPORT`           | `smtp`                 | `smtp` mails the sign-in code; `console` logs it.           |
+| `EMAIL_HOST`                | required with `smtp`   | The mail server.                                            |
+| `EMAIL_USER`, `EMAIL_PASS`  | required with `smtp`   | Its login.                                                  |
+| `EMAIL_FROM`                | required with `smtp`   | The sender address.                                         |
+| `EMAIL_PORT`                | `587`                  | Its port.                                                   |
+| `EMAIL_SECURE`              | `false`                | `true` = TLS from the first byte.                           |
+| `V4W_ADMIN_EMAILS`          | empty                  | Addresses made admins on every server start.                |
+| `V4W_DATA_SOURCE`           | not set                | `partner` or `synthetic`: what the badge says the data is.  |
+| `V4W_FORECAST_DIR`          | `./forecast`           | Where the Python project is.                                |
+| `V4W_PYTHON`                | see below              | The Python that runs the retrain script.                    |
+| `V4W_RETRAIN_MODULE`        | `db.retrain`           | The module the server starts. Leave it alone.               |
+| `V4W_RETRAIN_ON_IMPORT`     | `true`                 | Start a retrain after every import.                         |
+| `V4W_RETRAIN_SCHEDULE`      | `on`                   | `off`: the scheduled check does nothing.                    |
+| `V4W_RETRAIN_CRON`          | `30 8 * * *`           | When the scheduled check runs. Read at build time.          |
+| `V4W_RETRAIN_TIMEOUT_MIN`   | `60`                   | Minutes (1 to 1440) after which a run is stopped as failed. |
+| `V4W_GATE_WORKERS`          | see below              | Worker processes of the check against the baseline.         |
+| `V4W_HORIZON_DAYS`          | `800`                  | How many days ahead the forecast is written.                |
+| `V4W_HOLIDAYS_THROUGH_YEAR` | see below              | Last year of official holidays kept in the database.        |
+| `V4W_UPLOAD_MAX_MB`         | `40`                   | Largest upload, in MB.                                      |
+| `V4W_UPLOAD_MAX_ROWS`       | `750000`               | Most calls in one file.                                     |
+| `PORT`, `HOST`              | `3000`, all interfaces | Where the server listens.                                   |
+| `V4W_DATABASE_URL`          | none                   | The old Postgres database, for the one-time copy.           |
+| `V4W_DEV_API_PROXY`         | not set                | `pnpm dev` only. Leave it unset.                            |
 
 - `DATABASE_URL`: a relative path starts at the folder the server starts in.
 - `BETTER_AUTH_URL`: when the browser's address is another one, people can still sign in

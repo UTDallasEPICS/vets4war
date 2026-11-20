@@ -43,6 +43,9 @@ type Source = Record<string, string | undefined>
 export const EXAMPLE_AUTH_SECRET = 'replace-this-with-the-output-of-openssl-rand-hex-32'
 // Better Auth's own minimum; `openssl rand -hex 32` gives 64 characters.
 const MIN_AUTH_SECRET_LENGTH = 32
+// A day. Node's timers hold at most 2^31-1 ms (about 24.8 days); a longer timeout would
+// fire at once and stop every run the moment it starts.
+export const MAX_RETRAIN_TIMEOUT_MIN = 1440
 
 export function parseEnv(
   source: Source,
@@ -173,7 +176,10 @@ export function parseEnv(
     V4W_RETRAIN_MODULE: read('V4W_RETRAIN_MODULE') ?? 'db.retrain',
     V4W_RETRAIN_ON_IMPORT: bool('V4W_RETRAIN_ON_IMPORT', true),
     V4W_RETRAIN_SCHEDULE: oneOf('V4W_RETRAIN_SCHEDULE', ['on', 'off'] as const, 'on'),
-    V4W_RETRAIN_TIMEOUT_MIN: number('V4W_RETRAIN_TIMEOUT_MIN', 60, { min: 1 }),
+    V4W_RETRAIN_TIMEOUT_MIN: number('V4W_RETRAIN_TIMEOUT_MIN', 60, {
+      min: 1,
+      max: MAX_RETRAIN_TIMEOUT_MIN,
+    }),
     V4W_UPLOAD_MAX_MB: number('V4W_UPLOAD_MAX_MB', 40, { min: 1 }),
     V4W_UPLOAD_MAX_ROWS: number('V4W_UPLOAD_MAX_ROWS', 750000, { integer: true, min: 1 }),
   }
