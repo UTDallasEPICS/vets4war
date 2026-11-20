@@ -2,7 +2,7 @@
 // are exactly the basic set: no Content-Security-Policy yet. `pnpm e2e` checks them on a
 // page, an API refusal and a static file of the production build.
 import { describe, expect, it, vi } from 'vitest'
-import { SECURITY_HEADERS } from '../../../server/utils/security-headers'
+import { API_HEADERS, SECURITY_HEADERS } from '../../../server/utils/security-headers'
 
 vi.hoisted(() => {
   // nuxt.config.ts uses Nuxt's global helper; outside Nuxt it only has to hand back the
@@ -29,5 +29,12 @@ describe('security headers', () => {
     const rules = (config as { nitro: { routeRules: Record<string, { headers?: unknown }> } }).nitro
       .routeRules
     expect(rules['/**']).toEqual({ headers: SECURITY_HEADERS })
+  })
+
+  it('keep API answers out of every cache', () => {
+    expect(API_HEADERS).toEqual({ 'Cache-Control': 'no-store' })
+    const rules = (config as { nitro: { routeRules: Record<string, { headers?: unknown }> } }).nitro
+      .routeRules
+    expect(rules['/api/**']).toEqual({ headers: API_HEADERS })
   })
 })

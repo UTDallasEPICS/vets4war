@@ -14,3 +14,8 @@ export const SECURITY_HEADERS: Record<string, string> = {
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'same-origin',
 }
+
+// API answers carry a signed-in person's data: no browser or proxy keeps a copy.
+export const API_HEADERS: Record<string, string> = {
+  'Cache-Control': 'no-store',
+}

@@ -827,11 +827,10 @@ const steps = [
       expectStatus(asset, 200, '/favicon.ico')
       expectSecurityHeaders(asset, '/favicon.ico')
 
-      const runsBefore = expectStatus(
-        await call('GET', '/api/admin/runs', { cookie: state.admin }),
-        200,
-        '/api/admin/runs'
-      ).runs.length
+      const runsAnswer = await call('GET', '/api/admin/runs', { cookie: state.admin })
+      const runsBefore = expectStatus(runsAnswer, 200, '/api/admin/runs').runs.length
+      expectSecurityHeaders(runsAnswer, '/api/admin/runs')
+      equal(runsAnswer.headers.get('cache-control'), 'no-store', '/api/admin/runs: cache-control')
       expectError(
         await call('POST', '/api/admin/runs', {
           cookie: state.admin,

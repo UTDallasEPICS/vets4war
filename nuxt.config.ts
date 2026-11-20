@@ -1,5 +1,5 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
-import { SECURITY_HEADERS } from './server/utils/security-headers'
+import { API_HEADERS, SECURITY_HEADERS } from './server/utils/security-headers'
 
 // The four routes that keep final-main's response shapes. In development they can be
 // proxied to the legacy API (V4W_DEV_API_PROXY) so the console is compared on equal data.
@@ -32,8 +32,12 @@ export default defineNuxtConfig({
   typescript: { typeCheck: process.env.NODE_ENV !== 'production' },
   nitro: {
     experimental: { tasks: true },
-    // On every response: pages, API, static files and errors (server/utils/security-headers.ts).
-    routeRules: { '/**': { headers: SECURITY_HEADERS } },
+    // On every response: pages, API, static files and errors; API answers are also never
+    // cached (server/utils/security-headers.ts). Nitro merges the two rules for /api/.
+    routeRules: {
+      '/**': { headers: SECURITY_HEADERS },
+      '/api/**': { headers: API_HEADERS },
+    },
     // Build-time setting, server local time (UTC in the image). The task itself checks
     // V4W_RETRAIN_SCHEDULE at run time.
     scheduledTasks: { [process.env.V4W_RETRAIN_CRON || '30 8 * * *']: ['retrain:tick'] },
