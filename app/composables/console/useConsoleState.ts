@@ -21,6 +21,7 @@ import type {
   WindowSummary,
 } from '#shared/types/api'
 import { MAX_TARGET_PCT, MAX_TARGET_SEC } from '#shared/utils/constants'
+import { DEFAULT_EFFICIENCY } from '#shared/utils/staffing'
 import {
   SHIFTS,
   SECONDS_PER_HOUR,
@@ -419,7 +420,9 @@ export function createConsoleState() {
   }
   function rawControls(): Controls {
     return {
-      efficiency: Number(ctl.effNum) / 100,
+      // The default is shown as 65.6 but is exactly 65.625%: use (and send) the exact one.
+      efficiency:
+        ctl.effNum === String(DEFAULT_EFF_PCT) ? DEFAULT_EFFICIENCY : Number(ctl.effNum) / 100,
       targetPct: Number(ctl.slNum) / 100,
       targetSec: targetSec(),
       patienceSec: patienceSec(),

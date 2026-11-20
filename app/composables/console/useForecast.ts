@@ -24,7 +24,8 @@ export function useForecast() {
         queue_model: QUEUE_MODEL,
         recency: RECENCY,
         include_holidays: String(q.includeHolidays),
-        efficiency: q.efficiency.toFixed(2),
+        // Exact: rounding sent 0.66 for the default 0.65625.
+        efficiency: String(q.efficiency),
         target_pct: q.targetPct.toFixed(2),
         target_sec: String(q.targetSec),
       },

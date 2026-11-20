@@ -46,7 +46,8 @@ mockNuxtImport('useSessionUser', () => {
 })
 
 const PATIENCE = 251
-const EFF = 0.656
+// The default efficiency the console computes with: exactly 65.625%, shown as 65.6.
+const EFF = 0.65625
 // Calls per hour: quiet nights, a busier day, a heavy evening (over the cap of 6).
 const callsAt = (hour: number) => (hour < 8 ? 3 : hour < 16 ? 10 : 22)
 
@@ -186,7 +187,7 @@ describe('console', () => {
       queue_model: 'erlang_a',
       recency: 'weighted',
       include_holidays: 'true',
-      efficiency: '0.66',
+      efficiency: '0.65625', // the exact default, shown as 65.6%
       target_pct: '0.80',
       target_sec: '30',
     })
