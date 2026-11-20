@@ -1,8 +1,11 @@
 name: CI
 
-# Runs lint, type-check, and the Vitest suite on every pull request and on
-# pushes to the deploy branches. Deploys themselves live in deploy.yml; this is
-# the correctness gate.
+# The correctness gate: runs on every pull request and on pushes to the deploy branches.
+# Deploys themselves live in deploy.yml. Three jobs, so a failure says which side broke:
+#   test    the web app alone: lint, type checks, the Vitest suite, the build (no Python)
+#   python  the forecast tree alone: its pytest suite (no Node)
+#   parity  both together: the cross-language tests, the tests that start the real
+#           retrain script, and the end-to-end script on the production build
 on:
   pull_request:
   push:
@@ -41,5 +44,76 @@ jobs:
       - name: Type check
         run: pnpm typecheck
 
+      # The folders `pnpm typecheck` does not reach: the node-environment tests, the
+      # parity tests, the test helpers and scripts/.
+      - name: Type check the tests and scripts
+        run: pnpm typecheck:tests
+
       - name: Run tests
         run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      # forecast/.venv with the pinned requirements (the same script as pnpm forecast:setup).
+      - name: Create the forecast environment
+        run: bash scripts/forecast-setup.sh
+
+      - name: Run the forecast tests
+        run: cd forecast && .venv/bin/python -m pytest tests -q
+
+  parity:
+    runs-on: ubuntu-latest
+    # The end-to-end script retrains the model twice on generated data.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Create the forecast environment
+        run: pnpm forecast:setup
+
+      # TypeScript against Python: the staffing arithmetic and the workbook reader.
+      - name: Cross-language tests
+        run: pnpm test:parity
+
+      # These start the real retrain script, so the test job (no Python) skips them.
+      - name: Retrain runner tests with the real script
+        run: pnpm exec vitest run --project unit tests/server/retrain
+
+      - name: Build
+        run: pnpm build
+
+      # Upload, import, retrain and forecast through the production build, on generated data.
+      - name: End to end on the production build
+        run: node scripts/e2e.mjs --no-build

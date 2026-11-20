@@ -1,0 +1,7 @@
+# What the retrain script needs at run time, and exactly what the Docker
+# image installs (Python 3.12). Pinned to the versions the model was built
+# and backtested with: the same data gives the same model only with these.
+# macOS also needs:  brew install libomp   (LightGBM runtime dependency)
+pandas==3.0.5
+numpy==2.5.3
+lightgbm==4.7.0

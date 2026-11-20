@@ -1,0 +1,9 @@
+{
+  // Type-checks the tests that load nuxt.config.ts the way `pnpm typecheck` checks the
+  // config itself: Nuxt's generated node config (where defineNuxtConfig is declared),
+  // widened to tests/unit/shell.
+  // Run through `pnpm typecheck:tests`; needs .nuxt/ (pnpm install creates it).
+  "extends": "../.nuxt/tsconfig.node.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["../.nuxt/nuxt.node.d.ts", "../nuxt.config.*", "./unit/shell/**/*.ts"]
+}

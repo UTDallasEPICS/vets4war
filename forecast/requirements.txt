@@ -1,0 +1,6 @@
+# Development and tests: the runtime pins plus the test tools.
+# Install:  pnpm forecast:setup   (or: pip install -r requirements.txt)
+-r requirements-runtime.txt
+pytest==9.1.1
+# Reads call-records workbooks in tests and the research tools (db/client_files.py).
+openpyxl==3.1.5
