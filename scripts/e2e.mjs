@@ -214,16 +214,20 @@ function expectError(answer, status, code, what) {
 }
 
 // server/utils/security-headers.ts, on every kind of answer; and nothing that names the
-// server's software.
+// server's software. Nitro's error answers set a stricter Referrer-Policy of their own.
 const SECURITY_HEADERS = {
-  'strict-transport-security': 'max-age=31536000',
-  'x-content-type-options': 'nosniff',
-  'x-frame-options': 'DENY',
-  'referrer-policy': 'same-origin',
+  'strict-transport-security': ['max-age=31536000'],
+  'x-content-type-options': ['nosniff'],
+  'x-frame-options': ['DENY'],
+  'referrer-policy': ['same-origin', 'no-referrer'],
 }
 function expectSecurityHeaders(answer, what) {
-  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
-    equal(answer.headers.get(name), value, `${what}: ${name}`)
+  for (const [name, values] of Object.entries(SECURITY_HEADERS)) {
+    const value = answer.headers.get(name)
+    expect(
+      values.includes(value),
+      `${what}: ${name}: expected ${values.join(' or ')}, got ${value}`
+    )
   }
   equal(answer.headers.get('x-powered-by'), null, `${what}: x-powered-by`)
 }
