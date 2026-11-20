@@ -4,8 +4,7 @@ import { emailOTP } from 'better-auth/plugins/email-otp'
 import nodemailer from 'nodemailer'
 import { db } from './db'
 import { env } from './env'
-
-const SUBJECT = 'Vets4Warriors staffing: your sign-in code'
+import { createSignInMailer } from './sign-in-mail'
 
 // Built only when mail is really sent: under EMAIL_TRANSPORT=console (nuxt dev only,
 // enforced in env.ts) the code goes to the server log instead.
@@ -22,20 +21,7 @@ const transporter =
       })
     : null
 
-async function sendVerificationOTP({ email, otp }: { email: string; otp: string }) {
-  if (!transporter) {
-    console.log(`[auth] sign-in code for ${email}: ${otp}`)
-    return
-  }
-  const text = `Your sign-in code is ${otp}. It works for 5 minutes.`
-  await transporter.sendMail({
-    from: env.EMAIL_FROM,
-    to: email,
-    subject: SUBJECT,
-    text,
-    html: text,
-  })
-}
+const sendVerificationOTP = createSignInMailer(transporter, env.EMAIL_FROM)
 
 // Better Auth limits how often one client may ask for or try a sign-in code (3 a minute
 // on those routes). That limit is what keeps someone who knows an address from guessing
