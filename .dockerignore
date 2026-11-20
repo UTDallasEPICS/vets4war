@@ -2,14 +2,19 @@
 # at the top of the build context only, so data files and data folders carry **/ to match
 # at any depth, as they do in .gitignore.
 
-# Version control, editor and CI files
+# Version control, editor, CI and coding-assistant files (.claude/ holds local settings
+# and whole worktrees of the repository)
 .git/
 .github/
 .vscode/
+**/.claude/
 
-# Secrets and local settings (.env.example is not a secret, but the build does not read it)
+# Secrets and local settings, at any depth (.env.example is not a secret, but the build
+# does not read it)
 .env
 .env.*
+**/.env
+**/.env.*
 
 # Installed and built output: the build makes its own
 node_modules/
