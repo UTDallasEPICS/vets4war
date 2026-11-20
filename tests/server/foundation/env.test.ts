@@ -1,6 +1,7 @@
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, it, expect } from 'vitest'
-import { parseEnv } from '../../../server/utils/env'
+import { EXAMPLE_AUTH_SECRET, parseEnv } from '../../../server/utils/env'
 
 const CWD = '/srv/app'
 const BASE = {
@@ -115,6 +116,39 @@ describe('parseEnv', () => {
     expect(() => prod({ ...BASE, BETTER_AUTH_URL: 'localhost' })).toThrow(
       /BETTER_AUTH_URL: must be a URL/
     )
+  })
+
+  it('refuses the example auth secret outside nuxt dev', () => {
+    expect(EXAMPLE_AUTH_SECRET).toBe(
+      readFileSync(join(process.cwd(), '.env.example'), 'utf8').match(
+        /^BETTER_AUTH_SECRET=(.*)$/m
+      )![1]
+    )
+    expect(() => prod({ ...BASE, BETTER_AUTH_SECRET: EXAMPLE_AUTH_SECRET })).toThrow(
+      /BETTER_AUTH_SECRET: is the example value from \.env\.example; set your own/
+    )
+    expect(() =>
+      parseEnv(
+        { ...BASE, BETTER_AUTH_SECRET: EXAMPLE_AUTH_SECRET, EMAIL_TRANSPORT: 'console' },
+        { dev: true, cwd: CWD }
+      )
+    ).not.toThrow()
+  })
+
+  it('warns about a short auth secret but still starts', () => {
+    const warnings: string[] = []
+    const warn = (message: string) => warnings.push(message)
+    const env = parseEnv(
+      { ...BASE, BETTER_AUTH_SECRET: 'short-secret' },
+      { dev: false, cwd: CWD, warn }
+    )
+    expect(env.BETTER_AUTH_SECRET).toBe('short-secret')
+    expect(warnings).toEqual([
+      'BETTER_AUTH_SECRET is 12 characters long; use at least 32 (openssl rand -hex 32). ' +
+        'Changing it signs everyone out.',
+    ])
+    parseEnv({ ...BASE, BETTER_AUTH_SECRET: 'x'.repeat(32) }, { dev: false, cwd: CWD, warn })
+    expect(warnings).toHaveLength(1)
   })
 
   it('parses the admin list', () => {

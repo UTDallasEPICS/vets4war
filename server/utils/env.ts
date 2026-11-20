@@ -39,8 +39,17 @@ export interface Env {
 
 type Source = Record<string, string | undefined>
 
-export function parseEnv(source: Source, options: { dev: boolean; cwd: string }): Env {
+// The placeholder .env.example ships: anyone can read it, so nothing may be signed with it.
+export const EXAMPLE_AUTH_SECRET = 'replace-this-with-the-output-of-openssl-rand-hex-32'
+// Better Auth's own minimum; `openssl rand -hex 32` gives 64 characters.
+const MIN_AUTH_SECRET_LENGTH = 32
+
+export function parseEnv(
+  source: Source,
+  options: { dev: boolean; cwd: string; warn?: (message: string) => void }
+): Env {
   const issues: string[] = []
+  const warnings: string[] = []
   const fail = (name: string, message: string) => issues.push(`  - ${name}: ${message}`)
 
   // An empty value counts as not set.
@@ -90,6 +99,15 @@ export function parseEnv(source: Source, options: { dev: boolean; cwd: string })
 
   const DATABASE_URL = read('DATABASE_URL') ?? 'file:./dev.db'
   const BETTER_AUTH_SECRET = required('BETTER_AUTH_SECRET')
+  // A short secret only warns: refusing it would stop a server that runs today.
+  if (!options.dev && BETTER_AUTH_SECRET === EXAMPLE_AUTH_SECRET) {
+    fail('BETTER_AUTH_SECRET', 'is the example value from .env.example; set your own')
+  } else if (!options.dev && BETTER_AUTH_SECRET.length < MIN_AUTH_SECRET_LENGTH) {
+    warnings.push(
+      `BETTER_AUTH_SECRET is ${BETTER_AUTH_SECRET.length} characters long; use at least ` +
+        `${MIN_AUTH_SECRET_LENGTH} (openssl rand -hex 32). Changing it signs everyone out.`
+    )
+  }
   const BETTER_AUTH_URL = required('BETTER_AUTH_URL')
   if (BETTER_AUTH_URL && !z.url().safeParse(BETTER_AUTH_URL).success) {
     fail('BETTER_AUTH_URL', `must be a URL, got "${BETTER_AUTH_URL}"`)
@@ -166,6 +184,8 @@ export function parseEnv(source: Source, options: { dev: boolean; cwd: string })
         `Copy .env.example to .env and set the required values before starting the app.`
     )
   }
+  const warn = options.warn ?? ((message: string) => console.warn(`[env] ${message}`))
+  for (const message of warnings) warn(message)
   return result
 }
 

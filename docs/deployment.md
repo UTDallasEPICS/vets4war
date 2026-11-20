@@ -172,7 +172,9 @@ Everything else has a usable default; the full list is in the README and in `.en
 - A relative `DATABASE_URL` would put the database in `/app` inside the container, where it
   is lost at the next deploy. Always use an absolute path on the volume.
 - Without `V4W_ADMIN_EMAILS` nobody can sign in to a new database, because sign-up is off.
-- Changing `BETTER_AUTH_SECRET` later signs everyone out.
+- Changing `BETTER_AUTH_SECRET` later signs everyone out. The server refuses to start with
+  the placeholder from `.env.example`, and logs a warning at start for a secret shorter than
+  32 characters.
 - If `BETTER_AUTH_URL` is not the address in the browser, people can still sign in and
   read, but every change (an upload, a retrain, adding a person) and signing out are refused
   with 403.
