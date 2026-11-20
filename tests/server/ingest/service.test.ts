@@ -1,7 +1,7 @@
 // Uploads end to end at the service level, on an in-memory database: receive, read,
 // the per-day plan, import, refusals and housekeeping. Workbooks are SYNTHETIC and
 // written at test time with the exceljs writer.
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -16,6 +16,7 @@ import {
   getUpload,
   importUpload,
   listUploads,
+  notStored,
   receiveUpload,
   recoverUploads,
   uploadDetail,
@@ -534,6 +535,32 @@ describe('housekeeping', () => {
       'This upload is imported. Only an upload that is ready, invalid or failed can be discarded.'
     )
   })
+
+  // root writes into a read-only folder anyway: the case cannot be made there.
+  it.skipIf(process.getuid?.() === 0)(
+    'says the server cannot write its temporary files, not that the file is unreadable',
+    async () => {
+      const locked = join(folder, 'locked')
+      await mkdir(locked, { mode: 0o555 })
+      try {
+        const row = await upload(rawLayout(NOV_5), { tmpDir: locked })
+        expect(row.status).toBe('failed')
+        expect(row.error).toBe(
+          'The server cannot write its temporary files, so it cannot keep the file to read it. ' +
+            'Nothing was read: ask whoever runs the server to check its temporary folder (TMPDIR).'
+        )
+      } finally {
+        await chmod(locked, 0o755)
+      }
+      expect(notStored(Object.assign(new Error('x'), { code: 'ENOSPC' }))).toMatch(
+        /^The server's disk is full/
+      )
+      expect(notStored(new Error('x'))).toBe(
+        'The server could not keep the file to read it. Upload it again; if this happens again, ' +
+          'ask whoever runs the server to check its temporary folder (TMPDIR).'
+      )
+    }
+  )
 
   it('recoverUploads fails what a stopped process was reading', async () => {
     const row = db

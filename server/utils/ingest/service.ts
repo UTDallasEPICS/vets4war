@@ -140,6 +140,22 @@ function errorType(error: unknown): string {
   return typeof code === 'string' ? `${error.name} (${code})` : error.name
 }
 
+// Why a received file could not be written to the server's temporary folder (TMPDIR) to
+// be read: the server's problem, not the file's, so it is never "could not be read as
+// call records".
+export function notStored(error: unknown): string {
+  const code = (error as { code?: unknown }).code
+  const check = 'ask whoever runs the server to check its temporary folder (TMPDIR).'
+  if (code === 'ENOSPC') {
+    return `The server's disk is full, so it cannot keep the file to read it. Nothing was read: ${check}`
+  }
+  if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
+    return `The server cannot write its temporary files, so it cannot keep the file to read it. Nothing was read: ${check}`
+  }
+  const why = typeof code === 'string' ? ` (${code})` : ''
+  return `The server could not keep the file to read it${why}. Upload it again; if this happens again, ${check}`
+}
+
 // The client's file name, for display only: no folders, no control characters.
 function cleanFilename(name: string): string {
   const base = name.split(/[\\/]/).pop() ?? ''
@@ -288,7 +304,7 @@ export async function receiveUpload(
     if (folder) await rm(folder, { recursive: true, force: true })
     const failed = db
       .update(uploads)
-      .set({ status: 'failed', error: UNREADABLE, parsedAt: new Date() })
+      .set({ status: 'failed', error: notStored(error), parsedAt: new Date() })
       .where(eq(uploads.id, received.upload.id))
       .returning()
       .get()
