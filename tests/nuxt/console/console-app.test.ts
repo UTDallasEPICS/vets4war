@@ -17,6 +17,7 @@ import type {
   StatusResponse,
 } from '#shared/types/api'
 import { capForHour, staffForHour } from '#shared/utils/staffing'
+import { MAX_TARGET_SEC } from '#shared/utils/constants'
 import ConsoleApp from '../../../app/components/console/ConsoleApp.vue'
 import { computeHours, summarize } from '../../../app/utils/console/logic'
 import { isoDate, shortDate } from '../../../app/utils/console/format'
@@ -410,6 +411,9 @@ describe('console', () => {
     const cellText = () => wrapper.findAll('td.h[data-k] .n').map((n) => n.text())
     const atDefault = cellText()
     expect(wrapper.get('#controlError').attributes('hidden')).toBeDefined()
+
+    // The answer-time field offers no more than the read API accepts.
+    expect(wrapper.get('#tsec').attributes('max')).toBe(String(MAX_TARGET_SEC))
 
     for (const [field, value, words] of [
       ['#effNum', '150', 'Staff efficiency must be a number from 0 to 100%.'],

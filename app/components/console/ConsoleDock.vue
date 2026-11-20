@@ -1,6 +1,7 @@
 <script setup lang="ts">
   // The settings dock (dates, efficiency, service level, hours shown, holidays) and the
   // "hours changed" toast under it.
+  import { MAX_TARGET_SEC } from '#shared/utils/constants'
   import { useConsole } from '~/composables/console/useConsoleState'
 
   const {
@@ -169,15 +170,15 @@
           %</span
         >
         <label class="muted" for="tsec">within</label>
-        <!-- max="3600" is the old page's markup, kept so both pages compare equal. The
-             read API takes at most MAX_TARGET_SEC (shared/utils/constants.ts): a larger
-             value is refused with a message by controlProblem() in useConsoleState.ts. -->
+        <!-- At most what the read API takes, MAX_TARGET_SEC (shared/utils/constants.ts):
+             a larger typed value is refused with a message by controlProblem() in
+             useConsoleState.ts. -->
         <input
           class="field-in"
           type="number"
           id="tsec"
           min="0"
-          max="3600"
+          :max="MAX_TARGET_SEC"
           step="5"
           inputmode="numeric"
           autocomplete="off"

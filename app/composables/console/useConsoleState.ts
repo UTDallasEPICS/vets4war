@@ -107,11 +107,9 @@ export const DEFAULT_EFF_PCT = 65.6
 export const CURRENT_ROSTER: Roster = { Overnight: 4, Day: 4, Evening: 6 }
 // Staff-per-shift sliders go to this, above the shift caps, so what-ifs are not cut off.
 export const ROSTER_SLIDER_MAX = 10
-// The answer-time field's own cap, as on the old page (its markup keeps max="3600" so
-// the page compares equal to the old one). It is not what the read API accepts: that
-// bound, and the one on the service level, are MAX_TARGET_SEC and MAX_TARGET_PCT of
-// shared/utils/constants.ts, and controlProblem() below refuses a setting past them.
-const TSEC_MAX = 3600
+// The answer-time field goes up to what the read API accepts, MAX_TARGET_SEC of
+// shared/utils/constants.ts (its markup uses it too); controlProblem() below refuses a
+// typed value past it, and past MAX_TARGET_PCT on the service level, with a message.
 const TSEC_DEFAULT = 30
 
 export interface Cache {
@@ -413,7 +411,7 @@ export function createConsoleState() {
   // ---- helpers ----
   function targetSec(): number {
     const v = Number(ctl.tsec)
-    return Number.isFinite(v) && v >= 0 ? Math.min(v, TSEC_MAX) : TSEC_DEFAULT
+    return Number.isFinite(v) && v >= 0 ? v : TSEC_DEFAULT
   }
   function patienceSec(): number | null {
     return cache ? cache.params.patience_sec : null
