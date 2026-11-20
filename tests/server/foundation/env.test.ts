@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, it, expect } from 'vitest'
-import { EXAMPLE_AUTH_SECRET, parseEnv } from '../../../server/utils/env'
+import { EXAMPLE_AUTH_SECRET, isVitestRun, parseEnv } from '../../../server/utils/env'
 
 const CWD = '/srv/app'
 const BASE = {
@@ -175,5 +175,20 @@ describe('parseEnv', () => {
     expect(() => prod({})).toThrow(
       /^Invalid environment configuration:\n {2}- BETTER_AUTH_SECRET: is required\n {2}- BETTER_AUTH_URL: is required[\s\S]*Copy \.env\.example to \.env/
     )
+  })
+})
+
+describe('isVitestRun', () => {
+  it('takes the test settings only when Vitest runs the code', () => {
+    expect(isVitestRun('true', 'test')).toBe(true)
+    expect(process.env.VITEST && process.env.NODE_ENV).toBe('test') // this very run
+  })
+
+  it('ignores a stray VITEST in a built server, where NODE_ENV is production', () => {
+    expect(isVitestRun('true', 'production')).toBe(false)
+    expect(isVitestRun('1', 'development')).toBe(false)
+    expect(isVitestRun('true', undefined)).toBe(false)
+    expect(isVitestRun(undefined, 'test')).toBe(false)
+    expect(isVitestRun('', 'test')).toBe(false)
   })
 })

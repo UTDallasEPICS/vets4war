@@ -199,6 +199,14 @@ const VITEST_DEFAULTS: Source = {
   EMAIL_TRANSPORT: 'console',
 }
 
-export const env: Env = process.env.VITEST
+// Vitest sets VITEST and NODE_ENV=test. A built server reads NODE_ENV as "production"
+// whatever its environment says (Nitro writes the value of `process.env.NODE_ENV` into the
+// build), so a stray VITEST in a deployment cannot switch it to the stand-ins above, the
+// console transport (sign-in codes in the log) or the relaxed checks of `nuxt dev`.
+export function isVitestRun(vitest: string | undefined, nodeEnv: string | undefined): boolean {
+  return Boolean(vitest) && nodeEnv === 'test'
+}
+
+export const env: Env = isVitestRun(process.env.VITEST, process.env.NODE_ENV)
   ? parseEnv({ ...VITEST_DEFAULTS, ...process.env }, { dev: true, cwd: process.cwd() })
   : parseEnv(process.env, { dev: import.meta.dev === true, cwd: process.cwd() })
