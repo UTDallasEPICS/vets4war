@@ -3,7 +3,8 @@
 // - a day is compared with the forecast kept when its calls were imported (snapshot),
 //   else with the forecast in use now (replay);
 // - like monitor.py, only days the predicting model was NOT trained on count in the
-//   numbers ("held out"); the others are listed and marked;
+//   numbers ("held out"); the others are listed and marked. For a kept forecast that is
+//   the model that made it (forecast_snapshots.model_id), not the model in use;
 // - only days with stored calls are compared. Imports bring whole days, so an hour
 //   without calls on such a day is a real zero; a day without calls is never assumed
 //   to be one.
@@ -93,17 +94,35 @@ function byDay(rows: readonly HourValue[], fill?: number): Map<string, number[] 
   )
 }
 
+// The last day a model was trained on: one trained through 2026-11-15T23:00 has seen all
+// of 2026-11-15. Null when the model is not known.
+const lastTrainedDay = (trainEnd: string | null | undefined) => trainEnd?.slice(0, 10) ?? null
+
+// A day counts only when the model that predicted it had not been trained on it. A day
+// whose model is not known cannot be checked, so it does not count.
+const heldOutFrom = (date: string, trainEndDay: string | null) =>
+  trainEndDay !== null && date > trainEndDay
+
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 function describe(days: readonly DayInput[], unmatched: number, trainEndDay: string | null) {
   const warnings: string[] = []
-  const inSample = days.filter((d) => !d.heldOut).length
+  const inSample = days.filter((d) => !d.heldOut && d.source === 'replay').length
+  const keptInSample = days.filter((d) => !d.heldOut && d.source === 'snapshot').length
   const replayed = days.filter((d) => d.heldOut && d.source === 'replay').length
   if (inSample) {
     warnings.push(
       `${plural(inSample, 'day')} ${inSample === 1 ? 'is' : 'are'} in the training data of the ` +
         `model in use (calls through ${trainEndDay}) and no forecast was kept from before ` +
         `their calls were imported. They are shown but left out of the numbers.`
+    )
+  }
+  if (keptInSample) {
+    warnings.push(
+      `${plural(keptInSample, 'day')} ${keptInSample === 1 ? 'is' : 'are'} compared with the ` +
+        `forecast kept when ${keptInSample === 1 ? 'its' : 'their'} calls were imported, but ` +
+        `the model that made that forecast had already been trained on ` +
+        `${keptInSample === 1 ? 'it' : 'them'}. They are shown but left out of the numbers.`
     )
   }
   if (replayed) {
@@ -179,6 +198,22 @@ export function readAccuracy(db: AppDb, query: AccuracyQuery): AccuracyResponse 
         .where(between(forecastSnapshots.date, period.start, period.end))
         .all()
     )
+    // date -> the last day the model behind its kept forecast was trained on; null when
+    // that model is not known for every hour of the day.
+    const keptTrainEnd = new Map(
+      tx
+        .select({
+          date: forecastSnapshots.date,
+          trainEnd: sql<string | null>`case when count(${modelArtifacts.id}) = count(*)
+            then max(${modelArtifacts.trainEnd}) end`,
+        })
+        .from(forecastSnapshots)
+        .leftJoin(modelArtifacts, eq(modelArtifacts.id, forecastSnapshots.modelId))
+        .where(between(forecastSnapshots.date, period.start, period.end))
+        .groupBy(forecastSnapshots.date)
+        .all()
+        .map((row) => [row.date, lastTrainedDay(row.trainEnd)])
+    )
     const served = state
       ? byDay(
           tx
@@ -193,8 +228,7 @@ export function readAccuracy(db: AppDb, query: AccuracyQuery): AccuracyResponse 
         )
       : new Map<string, number[] | null>()
 
-    // A model trained through 2026-11-15T23:00 has seen all of 2026-11-15.
-    const trainEndDay = model?.trainEnd.slice(0, 10) ?? null
+    const trainEndDay = lastTrainedDay(model?.trainEnd)
     const days: DayInput[] = []
     let unmatched = 0
     for (const [date, hours] of [...actual].sort(([a], [b]) => a.localeCompare(b))) {
@@ -202,9 +236,12 @@ export function readAccuracy(db: AppDb, query: AccuracyQuery): AccuracyResponse 
       const snapshot = kept.get(date)
       const replay = served.get(date)
       if (snapshot) {
-        days.push({ date, predicted: snapshot, actual: counts, source: 'snapshot', heldOut: true })
+        // Kept when the day's calls were imported, but an import that fills an older gap
+        // keeps what a model trained past that day said about it: not a test of it.
+        const heldOut = heldOutFrom(date, keptTrainEnd.get(date) ?? null)
+        days.push({ date, predicted: snapshot, actual: counts, source: 'snapshot', heldOut })
       } else if (replay) {
-        const heldOut = trainEndDay !== null && date > trainEndDay
+        const heldOut = heldOutFrom(date, trainEndDay)
         days.push({ date, predicted: replay, actual: counts, source: 'replay', heldOut })
       } else {
         unmatched += 1

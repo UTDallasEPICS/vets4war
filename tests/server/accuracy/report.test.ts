@@ -52,6 +52,41 @@ function addCalls(date: string, perHour: number | Record<number, number>) {
   db.insert(schema.calls).values(rows).run()
 }
 
+// Another model artifact, trained through `trainEnd`; returns its id.
+function addModel(trainEnd: string): number {
+  return db
+    .insert(schema.modelArtifacts)
+    .values({
+      runId: 1,
+      createdAt: new Date('2026-11-15T00:00:00Z'),
+      modelSha256: 'cd'.repeat(32),
+      modelText: 'tree',
+      metadata: {} as never,
+      trainStart: '2021-01-01T00:00:00',
+      trainEnd,
+      trainRows: 1,
+    })
+    .returning({ id: schema.modelArtifacts.id })
+    .get().id
+}
+
+// A forecast kept at import for every hour of `date` (12 calls an hour), made by `modelId`.
+function keepForecast(date: string, modelId: number) {
+  db.insert(schema.forecastSnapshots)
+    .values(
+      Array.from({ length: 24 }, (_, hour) => ({
+        date,
+        hour,
+        predictedCalls: 12,
+        modelId,
+        runId: 1,
+        uploadId,
+        capturedAt: new Date('2026-11-16T00:00:00Z'),
+      }))
+    )
+    .run()
+}
+
 const report = (query: Record<string, unknown> = {}) => readAccuracy(db, parseAccuracyQuery(query))
 
 beforeEach(() => {
@@ -98,19 +133,8 @@ describe('accuracy report', () => {
   it('prefers the forecast kept at import, which counts even after a retrain learned the day', () => {
     seedForecast(db)
     addCalls('2026-11-15', 10)
-    db.insert(schema.forecastSnapshots)
-      .values(
-        Array.from({ length: 24 }, (_, hour) => ({
-          date: '2026-11-15',
-          hour,
-          predictedCalls: 12,
-          modelId: 1,
-          runId: 1,
-          uploadId,
-          capturedAt: new Date('2026-11-16T00:00:00Z'),
-        }))
-      )
-      .run()
+    // Served before the day's calls came: a model trained through the day before.
+    keepForecast('2026-11-15', addModel('2026-11-14T23:00:00'))
 
     const answer = report({ start: '2026-11-15', end: '2026-11-15' })
 
@@ -124,6 +148,37 @@ describe('accuracy report', () => {
       }),
     ])
     expect(answer.warnings).toEqual([])
+  })
+
+  it('does not count a kept forecast whose model had been trained on the day (a gap filled later)', () => {
+    seedForecast(db) // model 1, trained through 2026-11-15
+    addCalls('2026-11-10', 10)
+    addCalls('2026-11-15', 10)
+    // An import that filled older gaps kept what model 1 said about days it had seen.
+    keepForecast('2026-11-10', 1)
+    keepForecast('2026-11-15', 1)
+
+    const answer = report({ start: '2026-11-10', end: '2026-11-15' })
+
+    expect(answer.status).toBe('not_held_out')
+    expect(answer.metrics).toBeNull()
+    expect(answer.days.map((d) => [d.date, d.source, d.held_out])).toEqual([
+      ['2026-11-10', 'snapshot', false],
+      ['2026-11-15', 'snapshot', false],
+    ])
+    expect(answer.warnings).toEqual([
+      '2 days are compared with the forecast kept when their calls were imported, but the ' +
+        'model that made that forecast had already been trained on them. They are shown but ' +
+        'left out of the numbers.',
+    ])
+  })
+
+  it('does not count a kept forecast whose model is no longer known', () => {
+    seedForecast(db)
+    addCalls('2026-11-16', 10)
+    keepForecast('2026-11-16', 99)
+    const [day] = report({ start: '2026-11-16', end: '2026-11-16' }).days
+    expect(day).toMatchObject({ source: 'snapshot', held_out: false })
   })
 
   it('counts calls per hour and takes an hour without calls on a loaded day as zero', () => {
