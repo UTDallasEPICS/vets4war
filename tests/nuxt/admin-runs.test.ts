@@ -18,6 +18,7 @@ import type {
 import RunsPanel from '../../app/components/admin/RunsPanel.vue'
 import ForecastState from '../../app/components/admin/runs/ForecastState.vue'
 import RunDetail from '../../app/components/admin/runs/RunDetail.vue'
+import RunList from '../../app/components/admin/runs/RunList.vue'
 import StatusBadge from '../../app/components/admin/runs/StatusBadge.vue'
 
 function run(values: Partial<RunSummary>): RunSummary {
@@ -258,6 +259,17 @@ describe('runs panel', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="queued-run"]').exists()).toBe(false)
     wrapper.unmount()
+  })
+})
+
+describe('run list', () => {
+  it('says it is loading until the runs arrive, and "No runs yet." only after', async () => {
+    const loading = await mountSuspended(RunList, { props: { runs: [], loading: true } })
+    expect(loading.find('[data-testid="runs-loading"]').text()).toBe('Loading…')
+    expect(loading.text()).not.toContain('No runs yet.')
+    const empty = await mountSuspended(RunList, { props: { runs: [], loading: false } })
+    expect(empty.text()).toContain('No runs yet.')
+    expect(empty.find('[data-testid="runs-loading"]').exists()).toBe(false)
   })
 })
 

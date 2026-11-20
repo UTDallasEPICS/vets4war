@@ -2,7 +2,8 @@
   // Recent runs: when, what started them, what they did, how they ended.
   import type { RunSummary, RunTrigger } from '#shared/types/api'
 
-  defineProps<{ runs: RunSummary[] }>()
+  // loading: the runs have not arrived yet, so "no runs" would not be true.
+  defineProps<{ runs: RunSummary[]; loading?: boolean }>()
   defineEmits<{ open: [id: number] }>()
 
   const TRIGGER: Record<RunTrigger, string> = {
@@ -27,7 +28,8 @@
 <template>
   <section class="tile space-y-4" aria-labelledby="runs-title">
     <h2 id="runs-title" class="tile-title">Recent runs</h2>
-    <p v-if="!runs.length" class="text-muted text-sm">
+    <p v-if="loading" class="text-muted text-sm" data-testid="runs-loading">Loading…</p>
+    <p v-else-if="!runs.length" class="text-muted text-sm">
       No runs yet. A retrain starts by itself after an import, or with Retrain now.
     </p>
     <div v-else class="relative overflow-x-auto">

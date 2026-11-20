@@ -200,7 +200,7 @@
       </section>
     </div>
 
-    <AdminRunsRunList :runs="overview?.runs ?? []" @open="detailId = $event" />
+    <AdminRunsRunList :runs="overview?.runs ?? []" :loading="!overview" @open="detailId = $event" />
     <AdminRunsRunDetail :run-id="detailId" @close="detailId = null" />
   </div>
 </template>
