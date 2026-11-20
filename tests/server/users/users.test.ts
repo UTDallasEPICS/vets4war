@@ -172,9 +172,9 @@ describe('updatePerson', () => {
   })
 
   it('rejects an email change and a bad role with 422', () => {
-    expect(failure(() => parsePersonPatch({ email: 'b@x.org' })).issues.map((i) => i.path)).toEqual(
-      ['']
-    )
+    expect(failure(() => parsePersonPatch({ email: 'b@x.org' })).issues).toEqual([
+      { path: 'email', message: 'is not a field of this request' },
+    ])
     expect(failure(() => parsePersonPatch({ role: 'root' })).issues.map((i) => i.path)).toEqual([
       'role',
     ])

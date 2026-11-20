@@ -931,9 +931,17 @@ export function recoverUploads(db: AppDb): number {
   }, IMMEDIATE)
 }
 
+const ROW_COUNT = 'must be the number of rows in the file, a whole number'
 export const importRequestSchema = z.object({
-  total_rows: z.number().int().min(0),
+  total_rows: z.number({ message: ROW_COUNT }).int({ message: ROW_COUNT }).min(0, ROW_COUNT),
   replace_days: z
-    .array(z.string().refine((day) => isIsoDate(day), 'must be a YYYY-MM-DD date'))
-    .max(10_000),
+    .array(
+      z
+        .string({ message: 'must be a YYYY-MM-DD date' })
+        .refine(isIsoDate, 'must be a YYYY-MM-DD date'),
+      {
+        message: 'must be a list of days (YYYY-MM-DD), empty when no day is replaced',
+      }
+    )
+    .max(10_000, 'must list at most 10,000 days'),
 })

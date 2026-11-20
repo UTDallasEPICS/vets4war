@@ -19,12 +19,12 @@ const MAX_NAME = 100
 const LAST_ADMIN = 'There must be at least one admin.'
 
 const email = z
-  .string()
+  .string({ message: 'must be an email address' })
   .trim()
   .toLowerCase()
   .pipe(z.email({ message: 'must be an email address' }))
 const name = z
-  .string()
+  .string({ message: 'must be text' })
   .trim()
   .min(1, { message: 'must not be empty' })
   .max(MAX_NAME, { message: `must be at most ${MAX_NAME} characters` })

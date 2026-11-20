@@ -68,20 +68,60 @@ describe('validationError', () => {
 
 describe('readJsonBody', () => {
   // A real request through h3, so the body is parsed exactly as in a route.
-  async function answer(body: string): Promise<{ status: number; json: Record<string, unknown> }> {
+  async function answer(
+    body: string | undefined,
+    type: string | null = 'application/json',
+    read: 'body' | 'object' = 'body'
+  ): Promise<{ status: number; json: Record<string, unknown> }> {
     const { createApp, eventHandler, toWebHandler } = await import('h3')
-    const { readJsonBody } = await import('../../../server/utils/http')
+    const { readJsonBody, readJsonObject } = await import('../../../server/utils/http')
     const app = createApp()
-    app.use(eventHandler(async (event) => ({ body: await readJsonBody(event) })))
+    app.use(
+      eventHandler(async (event) => ({
+        body:
+          read === 'body' ? ((await readJsonBody(event)) ?? 'none') : await readJsonObject(event),
+      }))
+    )
     const response = await toWebHandler(app)(
       new Request('http://localhost/', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: type ? { 'content-type': type } : {},
         body,
       })
     )
     return { status: response.status, json: (await response.json()) as Record<string, unknown> }
   }
+
+  const refusal = (message: string) => ({
+    status: 422,
+    json: expect.objectContaining({
+      data: { code: 'validation', issues: [{ path: '', message }] },
+    }),
+  })
+
+  it('refuses a body that is not JSON, a form included, before reading it as one', async () => {
+    const notJson = 'The request body must be JSON, sent with Content-Type: application/json.'
+    expect(await answer('mode=full', 'application/x-www-form-urlencoded')).toEqual(refusal(notJson))
+    expect(await answer('{"mode":"full"}', 'text/plain')).toEqual(refusal(notJson))
+    expect(await answer('{"mode":"full"}', null)).toEqual(refusal(notJson))
+  })
+
+  it('takes JSON with a charset, and no body as none', async () => {
+    expect(await answer('{"a":1}', 'application/json; charset=utf-8')).toEqual({
+      status: 200,
+      json: { body: { a: 1 } },
+    })
+    expect(await answer(undefined, null)).toEqual({ status: 200, json: { body: 'none' } })
+  })
+
+  it('readJsonObject: no body is {}, anything but an object is refused', async () => {
+    expect(await answer(undefined, null, 'object')).toEqual({ status: 200, json: { body: {} } })
+    for (const body of ['[]', 'null', '"full"', '3']) {
+      expect(await answer(body, 'application/json', 'object')).toEqual(
+        refusal('The request body must be a JSON object.')
+      )
+    }
+  })
 
   it('returns the parsed body', async () => {
     expect(await answer('{"name":"Vee"}')).toEqual({ status: 200, json: { body: { name: 'Vee' } } })
