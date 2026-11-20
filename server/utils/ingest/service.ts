@@ -354,6 +354,7 @@ export async function parseUpload(
       tx.update(uploads)
         .set({
           status: report.ok ? 'ready' : 'invalid',
+          error: report.ok ? null : invalidReason(report),
           report,
           totalRows: report.summary.total_rows,
           firstDay: report.summary.first_day,
@@ -382,6 +383,16 @@ export async function parseUpload(
     // Removes the private folder receiveUpload made; leaves any other folder alone.
     await rmdir(dirname(path)).catch(() => {})
   }
+}
+
+// Why an invalid upload cannot be imported, in one sentence for its `error`: the first
+// problem of the report, which lists them all.
+function invalidReason(report: StoredReport): string {
+  const [first, ...more] = report.file_errors
+  if (!first) return UNREADABLE
+  if (!more.length) return first.message
+  const count = more.length === 1 ? '1 more problem is' : `${more.length} more problems are`
+  return `${first.message} ${count} listed in the report.`
 }
 
 function unreadableReport(parse: ParseResult): StoredReport {

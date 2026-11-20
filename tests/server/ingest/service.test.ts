@@ -23,6 +23,8 @@ import {
 } from '../../../server/utils/ingest/service'
 import type { RetrainRun } from '../../../server/utils/retrain/runner'
 import { seedForecast } from '../forecast/helpers'
+import { NOT_A_WORKBOOK } from '../../../server/utils/ingest/archive'
+import { buildZip } from './fixtures/zip'
 import {
   HEADER,
   call,
@@ -155,12 +157,28 @@ describe('receive and read', () => {
     expect(stagedCount(row.id)).toBe(0)
     expect(row.report!.ok).toBe(false)
     expect(row.report!.file_errors.map((e) => e.code)).toEqual(['bad_rows'])
+    expect(row.error).toBe(row.report!.file_errors[0]!.message)
   })
 
   it('marks a workbook without call records invalid with no_call_sheet', async () => {
     const row = await upload([{ name: 'Staffing', rows: [['SATURDAY 8/1']] }])
     expect(row.status).toBe('invalid')
     expect(row.report!.file_errors.map((e) => e.code)).toEqual(['no_call_sheet'])
+    expect(row.error).toBe(row.report!.file_errors[0]!.message)
+  })
+
+  it('says why a zip that is not a workbook is invalid', async () => {
+    const received = await receiveUpload(db, deps(), {
+      filename: 'archive.xlsx',
+      data: buildZip([{ name: 'notes.txt', data: 'not a workbook' }]),
+      user: admin,
+    })
+    await received.parsing
+    const row = getUpload(db, received.upload.id)
+    expect(row.status).toBe('invalid')
+    expect(row.report!.file_errors.map((e) => e.code)).toEqual(['not_a_workbook'])
+    expect(row.error).toBe(NOT_A_WORKBOOK)
+    expect(uploadDetail(db, row).error).toBe(NOT_A_WORKBOOK)
   })
 
   it('refuses days that are not finished yet', async () => {
