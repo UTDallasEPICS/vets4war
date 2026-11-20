@@ -1,7 +1,7 @@
 // The console's /api/status handling: the shape check, the note, and the polling while a
 // run is active, driven with fake timers.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { RunStatus, StatusResponse } from '#shared/types/api'
+import type { RunStatus, RunTrigger, StatusResponse } from '#shared/types/api'
 import {
   MAX_POLL_FAILURES,
   POLL_MS,
@@ -70,6 +70,28 @@ describe('isStatusResponse and statusNote', () => {
     expect(isStatusResponse(status('running'))).toBe(true)
     expect(isStatusResponse({ ...status(null), forecast: null })).toBe(true)
     for (const m of MALFORMED) expect(isStatusResponse(m)).toBe(false)
+  })
+
+  it('says new call data only when the calls are newer than the forecast or an import ran', () => {
+    const through = 'The forecast below still uses calls through Nov 15 2026.'
+    const withRun = (runStatus: RunStatus, stale: boolean, trigger: RunTrigger) => {
+      const s = status(runStatus, stale)
+      return { ...s, run: { ...s.run!, trigger } } as StatusResponse
+    }
+    for (const runStatus of ['queued', 'running'] as const) {
+      expect(statusNote(withRun(runStatus, true, 'schedule'))?.text).toBe(
+        `New call data is being processed. ${through}`
+      )
+      expect(statusNote(withRun(runStatus, false, 'import'))?.text).toBe(
+        `New call data is being processed. ${through}`
+      )
+      for (const trigger of ['manual', 'schedule', 'startup', 'cli'] as const) {
+        expect(statusNote(withRun(runStatus, false, trigger))).toEqual({
+          kind: 'processing',
+          text: `The forecast is being updated. ${through}`,
+        })
+      }
+    }
   })
 
   it('never throws on what it is given after the check', () => {

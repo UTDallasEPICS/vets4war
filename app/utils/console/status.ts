@@ -57,7 +57,11 @@ export function statusNote(status: StatusResponse | null): StatusNote {
   if (!forecast || !run) return null
   const through = `The forecast below still uses calls through ${dayText(forecast.data_end)}.`
   if (run.status === 'queued' || run.status === 'running') {
-    return { kind: 'processing', text: `New call data is being processed. ${through}` }
+    // New calls only when the stored calls are newer than the forecast, or an import
+    // started the run; a retrain by hand or a refresh on the same calls just updates it.
+    const newCalls = forecast.stale || run.trigger === 'import'
+    const what = newCalls ? 'New call data is being processed.' : 'The forecast is being updated.'
+    return { kind: 'processing', text: `${what} ${through}` }
   }
   if (forecast.stale && (run.status === 'failed' || run.status === 'interrupted')) {
     return {
