@@ -34,6 +34,11 @@ WORKERS = 2
 APPEAR_SEC = 120
 GONE_SEC = 15
 
+# These find the gate's workers and check they are gone through /proc, as the server does
+# on Linux (the image). Without it (macOS) they would wait APPEAR_SEC each and fail.
+needs_proc = pytest.mark.skipif(not Path("/proc").is_dir(),
+                                reason="needs /proc to see the gate's worker processes (Linux)")
+
 
 @pytest.fixture(scope="module")
 def history_db(tmp_path_factory) -> Path:
@@ -68,6 +73,7 @@ def _locked(path: Path) -> bool:
         probe.close()
 
 
+@needs_proc
 def test_a_shell_run_holds_its_lock_while_it_works_and_removes_it_at_the_end(db):
     process = _start(db)
     try:
@@ -113,6 +119,7 @@ def _start(path: Path, *extra: str) -> subprocess.Popen:
                             cwd=FORECAST_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
+@needs_proc
 @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGKILL, signal.SIGINT, signal.SIGHUP])
 def test_a_run_stopped_mid_gate_leaves_no_process_and_closes_its_output(db, signum):
     process = _start(db)
@@ -156,6 +163,7 @@ def _node_run(path: Path) -> int:
         conn.close()
 
 
+@needs_proc
 def test_a_run_of_the_web_app_leaves_its_row_to_the_web_app_when_stopped(db):
     run_id = _node_run(db)
     process = _start(db, "--run-id", str(run_id))
@@ -177,6 +185,7 @@ def test_a_run_of_the_web_app_leaves_its_row_to_the_web_app_when_stopped(db):
 PARENT = "import subprocess, sys, time\nsubprocess.Popen(sys.argv[1:])\ntime.sleep(600)"
 
 
+@needs_proc
 def test_a_run_of_the_web_app_ends_when_the_web_app_dies(db):
     run_id = _node_run(db)
     command = [sys.executable, "-m", "db.retrain", "--db", str(db), *BUSY, "--run-id", str(run_id)]
