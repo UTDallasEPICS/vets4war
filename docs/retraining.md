@@ -187,9 +187,12 @@ about the processes.
   <V4W_PYTHON> -m <V4W_RETRAIN_MODULE> --db <absolute path> --run-id <id> --mode <full|forecast-only>
   ```
 
-  in the folder `V4W_FORECAST_DIR`, with the server's own environment, no input, and its
-  output captured. It passes no other option: workers, range and holidays come from the
-  environment. The script runs in a process group of its own, together with the worker
+  in the folder `V4W_FORECAST_DIR`, with part of the server's environment, no input, and
+  its output captured. It passes no other option: workers, range and holidays come from the
+  environment. The script gets only `PATH`, `HOME`, the temp folder (`TMPDIR`, `TMP`,
+  `TEMP`), `LANG`, `LC_*`, `TZ`, `PYTHON*`, `OMP_*`, `OPENBLAS_*`, `MKL_*`,
+  `V4W_GATE_WORKERS`, `V4W_HORIZON_DAYS` and `V4W_HOLIDAYS_THROUGH_YEAR`
+  (`retrainEnv` in `server/utils/retrain/runner.ts`); the server's secrets never reach it. The script runs in a process group of its own, together with the worker
   processes of the check.
 
 - **End.** A run is over when the script **exits**. The runner then gives the output one

@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as schema from '../../../server/db/schema'
 import type { AppDb } from '../../../server/utils/db'
 import {
@@ -20,11 +20,23 @@ import {
   SHUTDOWN_GRACE_MS,
   createRetrainRunner,
   getRun,
+  retrainEnv,
   type RetrainConfig,
+  type RetrainDeps,
   type RetrainRunner,
 } from '../../../server/utils/retrain/runner'
 
 const FAKE = fileURLToPath(new URL('./fixtures/fake-python.mjs', import.meta.url))
+// The stand-in is steered by FAKE_RETRAIN* variables, which the runner's allow-list
+// (retrainEnv) leaves out: these runs pass them on next to what the list lets through.
+const STEERED: RetrainDeps = {
+  env: () => ({
+    ...retrainEnv(process.env),
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => name.startsWith('FAKE_RETRAIN'))
+    ),
+  }),
+}
 const MIGRATIONS = fileURLToPath(new URL('../../../drizzle', import.meta.url))
 // Real processes on a shared, busy machine: generous, but far below the test timeout.
 const SLOW = 30_000
@@ -154,7 +166,7 @@ async function runWithWorkers(runner: RetrainRunner, count = 2) {
 
 async function runWith(behaviour: string, overrides: Partial<RetrainConfig> = {}) {
   process.env.FAKE_RETRAIN = behaviour
-  const runner = createRetrainRunner(db, { ...config, ...overrides })
+  const runner = createRetrainRunner(db, { ...config, ...overrides }, STEERED)
   const { run } = runner.request({ trigger: 'manual', requestedBy: 'admin@example.org' })
   await runner.idle()
   return getRun(db, run.id)
@@ -248,6 +260,28 @@ describe('real child processes', () => {
   )
 
   it(
+    "the script never sees the server's secrets",
+    async () => {
+      const secrets = ['BETTER_AUTH_SECRET', 'EMAIL_PASS', 'V4W_DATABASE_URL', 'DATABASE_URL']
+      for (const name of secrets) vi.stubEnv(name, 'SECRET')
+      vi.stubEnv('V4W_GATE_WORKERS', '2')
+      vi.stubEnv('FAKE_RETRAIN_PRINT_ENV', '1')
+      try {
+        const run = await runWith('succeed')
+        expect(run.status).toBe('succeeded')
+        const names = /^FAKE env: (.*)$/m.exec(run.logTail!)![1]!.split(' ')
+        for (const name of secrets) expect(names).not.toContain(name)
+        expect(names).toEqual(
+          expect.arrayContaining(['PATH', 'PYTHONUNBUFFERED', 'V4W_GATE_WORKERS'])
+        )
+      } finally {
+        vi.unstubAllEnvs()
+      }
+    },
+    SLOW
+  )
+
+  it(
     'an interpreter that does not exist fails the run with the reason',
     async () => {
       const run = await runWith('succeed', { pythonPath: join(folder, 'no-such-python') })
@@ -265,7 +299,7 @@ describe('a run whose workers outlive the script and hold its pipes', () => {
   it.each(['SIGKILL', 'SIGTERM'] as const)(
     '%s of the script: the run fails within seconds, nothing is left, the next request starts',
     async (signal) => {
-      const runner = createRetrainRunner(db, config)
+      const runner = createRetrainRunner(db, config, STEERED)
       const { run, pid, tree } = await runWithWorkers(runner)
       const started = Date.now()
       process.kill(pid, signal)
@@ -291,7 +325,7 @@ describe('a run whose workers outlive the script and hold its pipes', () => {
   it(
     'the timeout stops the whole tree and fails the run',
     async () => {
-      const runner = createRetrainRunner(db, { ...config, timeoutMs: 1500 })
+      const runner = createRetrainRunner(db, { ...config, timeoutMs: 1500 }, STEERED)
       const { run, tree } = await runWithWorkers(runner)
       await runner.idle()
       expect(getRun(db, run.id)).toMatchObject({
@@ -311,7 +345,7 @@ describe('a run whose workers outlive the script and hold its pipes', () => {
     'shutdown with %s: prompt, interrupted, nothing left',
     async (_name, stubborn) => {
       if (stubborn) process.env.FAKE_RETRAIN_IGNORE_TERM = '1'
-      const runner = createRetrainRunner(db, config)
+      const runner = createRetrainRunner(db, config, STEERED)
       const { run, tree } = await runWithWorkers(runner)
       const started = Date.now()
       await runner.shutdown()
@@ -361,7 +395,7 @@ describe('a run whose workers outlive the script and hold its pipes', () => {
       }
 
       process.env.FAKE_RETRAIN = 'succeed'
-      const runner = createRetrainRunner(db, config)
+      const runner = createRetrainRunner(db, config, STEERED)
       const { interrupted, started } = runner.recover()
       expect(interrupted).toEqual([row.id])
       expect(getRun(db, row.id)).toMatchObject({
@@ -397,7 +431,7 @@ describe('while Python holds the write lock', () => {
       leftovers.push(holder.pid!)
       await new Promise((resolve) => holder.stdout!.once('data', resolve))
       process.env.FAKE_RETRAIN = 'succeed'
-      const runner = createRetrainRunner(db, config)
+      const runner = createRetrainRunner(db, config, STEERED)
       const started = Date.now()
       const { run, queued } = runner.request({
         trigger: 'manual',

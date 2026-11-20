@@ -72,6 +72,38 @@ export interface RetrainDeps {
   // and its removal once the run is closed.
   cliLock?: (runId: number) => CliLock
   removeCliLock?: (runId: number) => void
+  // The environment of the script; read at each start (default: retrainEnv(process.env)).
+  env?: () => NodeJS.ProcessEnv
+}
+
+// What the retrain script gets of the server's environment: what any process needs to
+// run (PATH, HOME, temp folder, locale, time zone), Python's and the numeric libraries'
+// own settings, and the V4W_* settings forecast/db/retrain.py reads. The server's
+// secrets (BETTER_AUTH_SECRET, EMAIL_*, a database URL) never reach it: the script gets
+// the database as an argument, and its output is shown to admins.
+const RETRAIN_ENV_NAMES = new Set([
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'LANG',
+  'TZ',
+  'V4W_GATE_WORKERS',
+  'V4W_HORIZON_DAYS',
+  'V4W_HOLIDAYS_THROUGH_YEAR',
+])
+const RETRAIN_ENV_PREFIXES = ['LC_', 'PYTHON', 'OMP_', 'OPENBLAS_', 'MKL_']
+
+export function retrainEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(source).filter(
+      ([name, value]) =>
+        value !== undefined &&
+        (RETRAIN_ENV_NAMES.has(name) ||
+          RETRAIN_ENV_PREFIXES.some((prefix) => name.startsWith(prefix)))
+    )
+  )
 }
 
 // held: the shell's run is alive; free: it ended (however); missing: no lock file to
@@ -203,6 +235,7 @@ export function createRetrainRunner(
   const removeCliLock =
     deps.removeCliLock ??
     ((runId: number) => defaultRemoveCliLock(cliLockPath(config.dbPath, runId)))
+  const childEnv = deps.env ?? (() => retrainEnv(process.env))
 
   let current: Current | null = null
   let stopping = false
@@ -318,7 +351,7 @@ export function createRetrainRunner(
     try {
       child = spawn(config.pythonPath, args, {
         cwd: config.forecastDir,
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        env: { ...childEnv(), PYTHONUNBUFFERED: '1' },
         stdio: ['ignore', 'pipe', 'pipe'],
         // Its own process group, so a stop reaches the gate workers too.
         detached: true,

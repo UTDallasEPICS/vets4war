@@ -22,6 +22,7 @@
 //
 // FAKE_RETRAIN_NOISE=<bytes> prints that much filler output first (log tail tests).
 // FAKE_RETRAIN_IGNORE_TERM=1 makes the script itself ignore SIGTERM (only SIGKILL ends it).
+// FAKE_RETRAIN_PRINT_ENV=1 prints the NAMES of the variables it was started with.
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import Database from 'better-sqlite3'
@@ -66,6 +67,9 @@ async function main() {
     process.stdout.write(line.repeat(Math.ceil(noise / line.length)))
   }
   console.log(`FAKE retrain: run ${runId}, mode ${mode}, behaviour ${behaviour}`)
+  if (process.env.FAKE_RETRAIN_PRINT_ENV) {
+    console.log(`FAKE env: ${Object.keys(process.env).sort().join(' ')}`)
+  }
 
   if (behaviour === 'crash') {
     console.error('Traceback (most recent call last):\nRuntimeError: FAKE crash')

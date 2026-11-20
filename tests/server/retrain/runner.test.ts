@@ -18,6 +18,7 @@ import {
   WATCH_MS,
   createRetrainRunner,
   getRun,
+  retrainEnv,
   runsOverview,
   type RetrainConfig,
   type CliLock,
@@ -236,6 +237,61 @@ describe('request', () => {
     expect((options.env as Record<string, string>).PYTHONUNBUFFERED).toBe('1')
     expect((options.env as Record<string, string>).PATH).toBe(process.env.PATH)
     expect(getRun(db, run.id).pid).toBe(5000)
+  })
+
+  it("passes the script an allow-list of the server's environment, never its secrets", () => {
+    seedCalls()
+    const server = {
+      PATH: '/usr/bin',
+      HOME: '/home/app',
+      TMPDIR: '/tmp/x',
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
+      TZ: 'UTC',
+      PYTHONDONTWRITEBYTECODE: '1',
+      OMP_NUM_THREADS: '2',
+      V4W_GATE_WORKERS: '2',
+      V4W_HORIZON_DAYS: '400',
+      V4W_HOLIDAYS_THROUGH_YEAR: '2028',
+      BETTER_AUTH_SECRET: 'secret',
+      BETTER_AUTH_URL: 'https://example.org',
+      EMAIL_PASS: 'secret',
+      EMAIL_USER: 'mailer',
+      DATABASE_URL: 'file:/data/v4w.db',
+      V4W_DATABASE_URL: 'postgres://user:secret@db/v4w',
+      V4W_ADMIN_EMAILS: 'admin@example.org',
+      NODE_OPTIONS: '--require /tmp/x.js',
+    }
+    expect(retrainEnv(server)).toEqual({
+      PATH: '/usr/bin',
+      HOME: '/home/app',
+      TMPDIR: '/tmp/x',
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
+      TZ: 'UTC',
+      PYTHONDONTWRITEBYTECODE: '1',
+      OMP_NUM_THREADS: '2',
+      V4W_GATE_WORKERS: '2',
+      V4W_HORIZON_DAYS: '400',
+      V4W_HOLIDAYS_THROUGH_YEAR: '2028',
+    })
+
+    // By default the runner reads the server's own environment at each start.
+    process.env.BETTER_AUTH_SECRET = 'secret'
+    process.env.V4W_GATE_WORKERS = '3'
+    try {
+      runner().request({ trigger: 'manual', requestedBy: 'admin@example.org' })
+    } finally {
+      delete process.env.BETTER_AUTH_SECRET
+      delete process.env.V4W_GATE_WORKERS
+    }
+    const env = spawned[0]!.options.env as Record<string, string>
+    expect(env).toEqual({
+      ...retrainEnv(process.env),
+      V4W_GATE_WORKERS: '3',
+      PYTHONUNBUFFERED: '1',
+    })
+    expect(env.BETTER_AUTH_SECRET).toBeUndefined()
   })
 
   it('runs one at a time: later requests queue exactly one more full run', async () => {
