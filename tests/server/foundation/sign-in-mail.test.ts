@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SIGN_IN_SUBJECT, createSignInMailer } from '../../../server/utils/sign-in-mail'
 
 const FROM = 'Vets4Warriors staffing <no-reply@example.org>'
-const CODE = { email: 'admin@example.org', otp: '123456' }
+const CODE = { email: 'admin@example.org', otp: '123456', type: 'sign-in' }
 
 // A transport whose send stays pending until the test settles it.
 function slowTransport() {
@@ -76,6 +76,17 @@ describe('sign-in code mail', () => {
     await expect(createSignInMailer(transport, FROM)(CODE)).resolves.toBeUndefined()
     await flush()
     expect(logged).toHaveBeenCalledWith('[auth] a sign-in code mail could not be sent: TypeError')
+  })
+
+  it('sends no mail for a code that is not for signing in', async () => {
+    const { transport, sent } = slowTransport()
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {})
+    for (const type of ['forget-password', 'email-verification', 'change-email']) {
+      await createSignInMailer(transport, FROM)({ ...CODE, type })
+      await createSignInMailer(null, FROM)({ ...CODE, type })
+    }
+    expect(sent).toEqual([])
+    expect(logged).not.toHaveBeenCalled()
   })
 
   it('writes the code to the server log without a transport (nuxt dev)', async () => {

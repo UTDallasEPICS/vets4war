@@ -31,10 +31,51 @@ const sendVerificationOTP = createSignInMailer(transporter, env.EMAIL_FROM)
 // So it is switched on here, for every build; only `nuxt dev` runs without it.
 const RATE_LIMIT_ENABLED = import.meta.dev !== true
 
+// People here only ask for a code, sign in with it, read their session and sign out
+// (/email-otp/send-verification-otp, /sign-in/email-otp, /get-session, /sign-out).
+// Every other endpoint Better Auth and its email-OTP plugin serve answers 404, so
+// nobody can set a password, change an address, verify an email or manage sessions
+// through them. The two with a path parameter (/reset-password/:token, /callback/:id)
+// cannot be listed here; without passwords or social providers they do nothing.
+export const DISABLED_AUTH_PATHS = [
+  '/account-info',
+  '/change-email',
+  '/change-password',
+  '/delete-user',
+  '/delete-user/callback',
+  '/email-otp/change-email',
+  '/email-otp/check-verification-otp',
+  '/email-otp/request-email-change',
+  '/email-otp/request-password-reset',
+  '/email-otp/reset-password',
+  '/email-otp/verify-email',
+  '/forget-password/email-otp',
+  '/get-access-token',
+  '/link-social',
+  '/list-accounts',
+  '/list-sessions',
+  '/refresh-token',
+  '/request-password-reset',
+  '/reset-password',
+  '/revoke-other-sessions',
+  '/revoke-session',
+  '/revoke-sessions',
+  '/send-verification-email',
+  '/sign-in/email',
+  '/sign-in/social',
+  '/sign-up/email',
+  '/unlink-account',
+  '/update-session',
+  '/update-user',
+  '/verify-email',
+  '/verify-password',
+]
+
 export const auth = betterAuth({
   baseURL: env.BETTER_AUTH_URL,
   secret: env.BETTER_AUTH_SECRET,
   rateLimit: { enabled: RATE_LIMIT_ENABLED },
+  disabledPaths: DISABLED_AUTH_PATHS,
   database: drizzleAdapter(db, {
     provider: 'sqlite',
   }),
