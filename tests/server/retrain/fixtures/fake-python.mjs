@@ -27,6 +27,18 @@ import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import Database from 'better-sqlite3'
 
+// Exits once everything written to stdout and stderr has left the process. Writes to a
+// pipe are asynchronous on macOS, and process.exit() right after a large write drops
+// what is still queued (the log tail then lacks the last lines).
+function exitWhenFlushed(code) {
+  let open = 2
+  const done = () => {
+    if (--open === 0) process.exit(code)
+  }
+  process.stdout.write('', done)
+  process.stderr.write('', done)
+}
+
 if (process.env.FAKE_RETRAIN_ROLE === 'worker') {
   process.on('SIGTERM', () => {})
   setInterval(() => {}, 1 << 30)
@@ -53,7 +65,7 @@ async function main() {
     console.error(
       'usage: fake-python -m <module> --db <path> --run-id <id> --mode <full|forecast-only>'
     )
-    process.exit(1)
+    return exitWhenFlushed(1)
   }
 
   const behaviour = process.env.FAKE_RETRAIN || 'succeed'
@@ -73,7 +85,7 @@ async function main() {
 
   if (behaviour === 'crash') {
     console.error('Traceback (most recent call last):\nRuntimeError: FAKE crash')
-    process.exit(1)
+    return exitWhenFlushed(1)
   }
 
   // Step 1 and 2 of section 7.2: read the data, claim the row.
@@ -167,7 +179,7 @@ async function main() {
     console.log(
       `V4W_RESULT ${JSON.stringify({ run_id: runId, status: 'succeeded', model_id: modelId, model_sha256: sha })}`
     )
-    process.exit(0)
+    exitWhenFlushed(0)
   }
 
   switch (behaviour) {
@@ -187,13 +199,13 @@ async function main() {
       console.log(
         `V4W_RESULT ${JSON.stringify({ run_id: runId, status: 'rejected', model_id: null, model_sha256: null })}`
       )
-      process.exit(3)
+      exitWhenFlushed(3)
       break
     case 'refuse':
       finishRow('failed', {
         message: 'Cannot retrain: FAKE refusal for tests. Load the missing days.',
       })
-      process.exit(2)
+      exitWhenFlushed(2)
       break
     case 'hang':
       setInterval(() => {}, 1 << 30)
@@ -210,6 +222,6 @@ async function main() {
       break
     default:
       console.error(`unknown FAKE_RETRAIN ${behaviour}`)
-      process.exit(1)
+      exitWhenFlushed(1)
   }
 }
