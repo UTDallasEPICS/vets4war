@@ -481,6 +481,38 @@ describe('how a run ends', () => {
     })
   })
 
+  it('keeps the exit code and output of a run that ended while the database was busy', () => {
+    vi.useFakeTimers()
+    seedCalls()
+    const r = runner()
+    const { run } = r.request({ trigger: 'manual', requestedBy: 'a@example.org' })
+    db.update(schema.forecastRuns)
+      .set({ status: 'running' })
+      .where(eq(schema.forecastRuns.id, run.id))
+      .run()
+    children[0]!.stderr.write('sqlite3.OperationalError: database is locked\n')
+    // The database stays busy past the wait when the run ends: storing its outcome fails.
+    const busy = vi.spyOn(db, 'transaction').mockImplementationOnce(() => {
+      throw Object.assign(new Error('database is locked'), { name: 'SqliteError' })
+    })
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    children[0]!.exit(1)
+    expect(getRun(db, run.id)).toMatchObject({ status: 'running', exitCode: null })
+    expect(logged).toHaveBeenCalledWith(
+      `[retrain] run ${run.id}: the outcome could not be stored: SqliteError`
+    )
+    busy.mockRestore()
+
+    // Once the database answers, the watcher stores what the run left, not "gone".
+    vi.advanceTimersByTime(WATCH_MS)
+    expect(getRun(db, run.id)).toMatchObject({
+      status: 'failed',
+      exitCode: 1,
+      logTail: 'sqlite3.OperationalError: database is locked\n',
+      message: 'The retrain script stopped without reporting a result (exit code 1).',
+    })
+  })
+
   it('says why the script refused before it could claim the row (exit code 2)', () => {
     seedCalls()
     const r = runner()

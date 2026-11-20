@@ -255,6 +255,15 @@ interface Current {
   timers: ReturnType<typeof setTimeout>[]
 }
 
+// How a run's process ended, as stored on its row (record()).
+interface Outcome {
+  exitCode: number | null
+  signal: NodeJS.Signals | null
+  tail: string
+  startError: NodeJS.ErrnoException | null
+  timedOut: boolean
+}
+
 export function createRetrainRunner(
   db: AppDb,
   config: RetrainConfig,
@@ -272,6 +281,8 @@ export function createRetrainRunner(
   const childEnv = deps.env ?? (() => retrainEnv(process.env))
 
   let current: Current | null = null
+  // Runs that ended but whose outcome could not be stored yet (database busy).
+  const unstored = new Map<number, Outcome>()
   let stopping = false
   let waiters: (() => void)[] = []
   let watcher: ReturnType<typeof setInterval> | null = null
@@ -485,16 +496,36 @@ export function createRetrainRunner(
     // A child that never started has no exit code of its own (Node reports -errno).
     const startError = state.spawnError && !state.child.pid ? state.spawnError : null
     const code = startError ? null : (state.exit?.code ?? null)
-    try {
-      record(state.run, code, state.exit?.signal ?? null, tail, startError, state.timedOut)
-    } catch (error) {
-      console.error(
-        `[retrain] run ${state.run.id}: the outcome could not be stored: ${(error as Error).name}`
-      )
+    const outcome: Outcome = {
+      exitCode: code,
+      signal: state.exit?.signal ?? null,
+      tail,
+      startError,
+      timedOut: state.timedOut,
     }
     current = null
+    if (!storeOutcome(state.run, outcome)) {
+      // The database stayed busy past the wait (Python's write lock, say): keep what is
+      // known, and let the watcher store it once it can (closeIfGone), so the row ends
+      // with the exit code and output that say what happened.
+      unstored.set(state.run.id, outcome)
+      watch()
+    }
     startQueued()
     settleWaiters()
+  }
+
+  function storeOutcome(run: RetrainRun, o: Outcome): boolean {
+    try {
+      record(run, o.exitCode, o.signal, o.tail, o.startError, o.timedOut)
+      unstored.delete(run.id)
+      return true
+    } catch (error) {
+      console.error(
+        `[retrain] run ${run.id}: the outcome could not be stored: ${(error as Error).name}`
+      )
+      return false
+    }
   }
 
   // Stores exit code and log tail; fills in the outcome only when Python did not.
@@ -546,6 +577,9 @@ export function createRetrainRunner(
   // by a run that could not be stopped cleanly. Closed once it has surely ended.
   function closeIfGone(row: RetrainRun, table: ProcessInfo[]): boolean {
     if (current?.run.id === row.id) return false
+    // A run of ours that ended while the database was busy: what it left is stored now.
+    const kept = unstored.get(row.id)
+    if (kept) return storeOutcome(row, kept)
     let message: string
     let lock: CliLock | null = null
     if (row.trigger === 'cli') {
