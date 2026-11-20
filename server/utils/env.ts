@@ -33,6 +33,11 @@ export interface Env {
   V4W_RETRAIN_ON_IMPORT: boolean
   V4W_RETRAIN_SCHEDULE: 'on' | 'off'
   V4W_RETRAIN_TIMEOUT_MIN: number
+  // Read by the retrain script itself (forecast/db/retrain.py); checked here so a bad
+  // value stops the start instead of failing every run. null: the script's default.
+  V4W_GATE_WORKERS: number | null
+  V4W_HORIZON_DAYS: number | null
+  V4W_HOLIDAYS_THROUGH_YEAR: number | null
   V4W_UPLOAD_MAX_MB: number
   V4W_UPLOAD_MAX_ROWS: number
 }
@@ -98,6 +103,17 @@ export function parseEnv(
     const range = check.max === undefined ? `>= ${check.min}` : `${check.min}..${check.max}`
     fail(name, `must be ${kind} ${range}, got "${value}"`)
     return fallback
+  }
+
+  // A setting of the retrain script: a whole number of at least 1, in digits, as the
+  // script reads it (_env_positive_int in forecast/db/retrain.py).
+  const scriptNumber = (name: string): number | null => {
+    const value = read(name)
+    if (value === undefined) return null
+    const n = /^\d+$/.test(value) ? Number(value) : Number.NaN
+    if (n >= 1) return n
+    fail(name, `must be a whole number of at least 1, got "${value}"`)
+    return null
   }
 
   const DATABASE_URL = read('DATABASE_URL') ?? 'file:./dev.db'
@@ -180,6 +196,9 @@ export function parseEnv(
       min: 1,
       max: MAX_RETRAIN_TIMEOUT_MIN,
     }),
+    V4W_GATE_WORKERS: scriptNumber('V4W_GATE_WORKERS'),
+    V4W_HORIZON_DAYS: scriptNumber('V4W_HORIZON_DAYS'),
+    V4W_HOLIDAYS_THROUGH_YEAR: scriptNumber('V4W_HOLIDAYS_THROUGH_YEAR'),
     V4W_UPLOAD_MAX_MB: number('V4W_UPLOAD_MAX_MB', 40, { min: 1 }),
     V4W_UPLOAD_MAX_ROWS: number('V4W_UPLOAD_MAX_ROWS', 750000, { integer: true, min: 1 }),
   }

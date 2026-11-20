@@ -402,8 +402,9 @@ because printing sign-in codes to the log is allowed under `pnpm dev` only.)
   argument.
 - `V4W_GATE_WORKERS`: by default 4, or the number of CPUs when there are fewer.
   `V4W_HOLIDAYS_THROUGH_YEAR`: by default the year after the one the forecast ends in.
-  These two and `V4W_HORIZON_DAYS` are read by the Python script. The server hands its own
-  environment to the script; a run started from a shell needs them in that shell.
+  These two and `V4W_HORIZON_DAYS` are read by the Python script. The server hands them on
+  to the script (with an allow-list of its environment) and checks them at start: each must
+  be a whole number of at least 1. A run started from a shell needs them in that shell.
 
 A value the server cannot use (a missing required one, a wrong choice, a number out of
 range) stops the start with a message that names the variable.

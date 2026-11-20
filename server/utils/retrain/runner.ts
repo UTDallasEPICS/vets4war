@@ -128,6 +128,21 @@ const ACTIVE = ['queued', 'running'] as const
 // Outcomes that would repeat if retried on the same data: a person decides what next.
 const DECIDED = ['succeeded', 'rejected', 'failed'] as const
 const QUEUED_LABEL = 'queued'
+// The script's exit code for a refusal it explains (forecast/db/retrain.py).
+const REFUSED_EXIT = 2
+// At most this much of the script's own words goes into a run's message.
+const REASON_CHARS = 300
+
+// The last line the script printed, for a message; null when it printed nothing.
+export function lastLine(output: string): string | null {
+  const line = output
+    .split('\n')
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .at(-1)
+  if (!line) return null
+  return line.length > REASON_CHARS ? `${line.slice(0, REASON_CHARS - 1)}…` : line
+}
 
 // The run waiting behind the active one (data_state.rerun_*).
 export interface QueuedRun {
@@ -510,6 +525,10 @@ export function createRetrainRunner(
         message = `The retrain script was stopped by ${signal} before it reported a result. ${UNCHANGED}`
       } else {
         message = `The retrain script stopped without reporting a result (exit code ${exitCode}).`
+        // Exit code 2 is a refusal the script explains (a bad argument or setting, before
+        // it could claim the row): its last line says why.
+        const reason = exitCode === REFUSED_EXIT ? lastLine(tail) : null
+        if (reason) message = `${message} It said: ${reason}`
       }
       return tx
         .update(forecastRuns)

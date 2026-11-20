@@ -18,6 +18,7 @@ import {
   WATCH_MS,
   createRetrainRunner,
   getRun,
+  lastLine,
   retrainEnv,
   runsOverview,
   type RetrainConfig,
@@ -478,6 +479,30 @@ describe('how a run ends', () => {
       finishedAt: NOW,
       message: 'The retrain script stopped without reporting a result (exit code 1).',
     })
+  })
+
+  it('says why the script refused before it could claim the row (exit code 2)', () => {
+    seedCalls()
+    const r = runner()
+    const { run } = r.request({ trigger: 'manual', requestedBy: 'a@example.org' })
+    children[0]!.stderr.write(
+      'usage: python -m db.retrain [-h] ...\n' +
+        'python -m db.retrain: error: $V4W_GATE_WORKERS: must be at least 1, got 0\n\n'
+    )
+    children[0]!.exit(2)
+    expect(getRun(db, run.id)).toMatchObject({
+      status: 'failed',
+      exitCode: 2,
+      message:
+        'The retrain script stopped without reporting a result (exit code 2). It said: ' +
+        'python -m db.retrain: error: $V4W_GATE_WORKERS: must be at least 1, got 0',
+    })
+  })
+
+  it('keeps at most 300 characters of the last line, and nothing when there is none', () => {
+    expect(lastLine('')).toBeNull()
+    expect(lastLine('\n  \n')).toBeNull()
+    expect(lastLine(`a\n${'x'.repeat(400)}\n`)).toBe(`${'x'.repeat(299)}…`)
   })
 
   it('names the signal that killed the process', () => {

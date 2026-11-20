@@ -165,6 +165,29 @@ describe('parseEnv', () => {
     expect(MAX_RETRAIN_TIMEOUT_MIN * 60_000).toBeLessThan(2 ** 31)
   })
 
+  it("checks the retrain script's own settings at start, as the script reads them", () => {
+    expect(prod(BASE)).toMatchObject({
+      V4W_GATE_WORKERS: null,
+      V4W_HORIZON_DAYS: null,
+      V4W_HOLIDAYS_THROUGH_YEAR: null,
+    })
+    expect(
+      prod({
+        ...BASE,
+        V4W_GATE_WORKERS: '2',
+        V4W_HORIZON_DAYS: ' 400 ',
+        V4W_HOLIDAYS_THROUGH_YEAR: '2030',
+      })
+    ).toMatchObject({ V4W_GATE_WORKERS: 2, V4W_HORIZON_DAYS: 400, V4W_HOLIDAYS_THROUGH_YEAR: 2030 })
+    for (const name of ['V4W_GATE_WORKERS', 'V4W_HORIZON_DAYS', 'V4W_HOLIDAYS_THROUGH_YEAR']) {
+      for (const bad of ['0', '-1', 'abc', '1.5']) {
+        expect(() => prod({ ...BASE, [name]: bad })).toThrow(
+          `${name}: must be a whole number of at least 1, got "${bad}"`
+        )
+      }
+    }
+  })
+
   it('parses the admin list', () => {
     expect(
       prod({ ...BASE, V4W_ADMIN_EMAILS: 'Admin@Example.org, b@example.org,admin@example.org' })
