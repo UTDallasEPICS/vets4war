@@ -8,7 +8,7 @@
       --workers N              gate worker processes ($V4W_GATE_WORKERS, else min(4, cpus))
       --gate-origins N         weekly origins of the accuracy check (default 26)
       --horizon-days N         forecast reach past max(today, last data day)
-                               ($V4W_HORIZON_DAYS, else 800)
+                               ($V4W_HORIZON_DAYS, else 800; at most 3650)
       --holidays-through YEAR  last year of official holidays kept in `holidays`
                                ($V4W_HOLIDAYS_THROUGH_YEAR, else the year after the horizon ends)
       --today YYYY-MM-DD       default: today in America/New_York
@@ -96,6 +96,9 @@ FULL = "full"
 FORECAST_ONLY = "forecast-only"
 MODES = (FULL, FORECAST_ONLY)
 DEFAULT_HORIZON_DAYS = 800
+# Ten years: far past any staffing plan, and still a forecast of minutes to write. Without
+# a cap a typo (80000) writes hourly rows for centuries and runs until the timeout.
+MAX_HORIZON_DAYS = 3650
 MAX_GATE_WORKERS = 4
 EASTERN = ZoneInfo("America/New_York")
 RESULT_PREFIX = "V4W_RESULT"
@@ -146,12 +149,19 @@ def _positive_int(text: str) -> int:
     return value
 
 
-def _env_positive_int(parser: argparse.ArgumentParser, name: str) -> int | None:
+def _horizon_days(text: str) -> int:
+    value = _positive_int(text)
+    if value > MAX_HORIZON_DAYS:
+        raise ValueError(f"must be at most {MAX_HORIZON_DAYS}, got {value}")
+    return value
+
+
+def _env_positive_int(parser: argparse.ArgumentParser, name: str, read=_positive_int) -> int | None:
     text = os.environ.get(name, "").strip()
     if not text:
         return None
     try:
-        return _positive_int(text)
+        return read(text)
     except ValueError as error:
         parser.error(f"${name}: {error}")
 
@@ -164,7 +174,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=MODES, default=FULL)
     parser.add_argument("--workers", type=_positive_int, default=None)
     parser.add_argument("--gate-origins", type=_positive_int, default=GATE_ORIGINS)
-    parser.add_argument("--horizon-days", type=_positive_int, default=None)
+    parser.add_argument("--horizon-days", type=_horizon_days, default=None)
     parser.add_argument("--holidays-through", type=_positive_int, default=None)
     parser.add_argument("--today", type=date.fromisoformat, default=None)
     parser.add_argument("--verify-reference", action="store_true")
@@ -173,7 +183,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def _settings(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Settings:
     workers = args.workers or _env_positive_int(parser, "V4W_GATE_WORKERS") or min(MAX_GATE_WORKERS, os.cpu_count() or 1)
-    horizon = args.horizon_days or _env_positive_int(parser, "V4W_HORIZON_DAYS") or DEFAULT_HORIZON_DAYS
+    horizon = (args.horizon_days or _env_positive_int(parser, "V4W_HORIZON_DAYS", _horizon_days)
+               or DEFAULT_HORIZON_DAYS)
     through = args.holidays_through or _env_positive_int(parser, "V4W_HOLIDAYS_THROUGH_YEAR")
     return Settings(db=Path(args.db), run_id=args.run_id, mode=args.mode, workers=workers,
                     gate_origins=args.gate_origins, horizon_days=horizon, holidays_through=through,

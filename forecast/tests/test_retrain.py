@@ -251,6 +251,31 @@ def test_a_retrain_on_unchanged_calls_keeps_the_model_row_in_use(trained_db, tmp
     assert _result(process)["model_id"] == serving
 
 
+# ---- settings -----------------------------------------------------------------------------
+
+def _settings_of(argv: list[str]) -> retrain.Settings:
+    parser = retrain._parser()
+    return retrain._settings(parser, parser.parse_args(argv))
+
+
+def test_the_horizon_is_capped_at_ten_years(monkeypatch, capsys):
+    base = ["--db", "/tmp/app.db"]
+    assert _settings_of([*base, "--horizon-days", str(retrain.MAX_HORIZON_DAYS)]).horizon_days == 3650
+    monkeypatch.setenv("V4W_HORIZON_DAYS", "3650")
+    assert _settings_of(base).horizon_days == 3650
+
+    monkeypatch.setenv("V4W_HORIZON_DAYS", "1000000")
+    with pytest.raises(SystemExit) as refused:
+        _settings_of(base)
+    assert refused.value.code == 2
+    assert "$V4W_HORIZON_DAYS: must be at most 3650, got 1000000" in capsys.readouterr().err
+
+    monkeypatch.delenv("V4W_HORIZON_DAYS")
+    with pytest.raises(SystemExit) as refused:
+        _settings_of([*base, "--horizon-days", "3651"])
+    assert refused.value.code == 2
+
+
 # ---- forecast-only ------------------------------------------------------------------------
 
 def test_forecast_only_reuses_the_model_and_moves_the_horizon(trained_db, tmp_path):

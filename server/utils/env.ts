@@ -51,6 +51,8 @@ const MIN_AUTH_SECRET_LENGTH = 32
 // A day. Node's timers hold at most 2^31-1 ms (about 24.8 days); a longer timeout would
 // fire at once and stop every run the moment it starts.
 export const MAX_RETRAIN_TIMEOUT_MIN = 1440
+// Ten years ahead; the script refuses more too (MAX_HORIZON_DAYS in forecast/db/retrain.py).
+export const MAX_HORIZON_DAYS = 3650
 
 export function parseEnv(
   source: Source,
@@ -107,12 +109,13 @@ export function parseEnv(
 
   // A setting of the retrain script: a whole number of at least 1, in digits, as the
   // script reads it (_env_positive_int in forecast/db/retrain.py).
-  const scriptNumber = (name: string): number | null => {
+  const scriptNumber = (name: string, max?: number): number | null => {
     const value = read(name)
     if (value === undefined) return null
     const n = /^\d+$/.test(value) ? Number(value) : Number.NaN
-    if (n >= 1) return n
-    fail(name, `must be a whole number of at least 1, got "${value}"`)
+    if (n >= 1 && (max === undefined || n <= max)) return n
+    const range = max === undefined ? 'of at least 1' : `from 1 to ${max}`
+    fail(name, `must be a whole number ${range}, got "${value}"`)
     return null
   }
 
@@ -197,7 +200,7 @@ export function parseEnv(
       max: MAX_RETRAIN_TIMEOUT_MIN,
     }),
     V4W_GATE_WORKERS: scriptNumber('V4W_GATE_WORKERS'),
-    V4W_HORIZON_DAYS: scriptNumber('V4W_HORIZON_DAYS'),
+    V4W_HORIZON_DAYS: scriptNumber('V4W_HORIZON_DAYS', MAX_HORIZON_DAYS),
     V4W_HOLIDAYS_THROUGH_YEAR: scriptNumber('V4W_HOLIDAYS_THROUGH_YEAR'),
     V4W_UPLOAD_MAX_MB: number('V4W_UPLOAD_MAX_MB', 40, { min: 1 }),
     V4W_UPLOAD_MAX_ROWS: number('V4W_UPLOAD_MAX_ROWS', 750000, { integer: true, min: 1 }),

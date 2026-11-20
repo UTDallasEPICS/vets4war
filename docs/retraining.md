@@ -61,8 +61,9 @@ A retrain:
 6. **Measures** handle time and real-call share per weekday and hour, caller patience and
    quick hang-ups from the same calls.
 7. **Forecasts** every hour from the first day of data through 800 days past the later of
-   today and the last call day (`V4W_HORIZON_DAYS`), once with and once without holiday
-   effects.
+   today and the last call day (`V4W_HORIZON_DAYS`, at most 3650: ten years, far past any
+   staffing plan; the server refuses to start with more, and so does the script), once with
+   and once without holiday effects.
 8. **Writes everything in one transaction**: the new model (if there is one), the forecast,
    the measured numbers, and the outcome on its run row. Until that moment the old forecast
    is served, unchanged; after it, the new one. There is no in-between.
@@ -362,7 +363,7 @@ The options:
 | `--db PATH`               | required                                                           | The SQLite file, absolute path.                         |
 | `--mode`                  | `full`                                                             | `full` or `forecast-only`.                              |
 | `--workers N`             | `V4W_GATE_WORKERS`, else 4 or the CPU count if lower               | Worker processes of the check.                          |
-| `--horizon-days N`        | `V4W_HORIZON_DAYS`, else 800                                       | How far ahead the forecast is written.                  |
+| `--horizon-days N`        | `V4W_HORIZON_DAYS`, else 800 (at most 3650)                        | How far ahead the forecast is written.                  |
 | `--holidays-through YEAR` | `V4W_HOLIDAYS_THROUGH_YEAR`, else the year after the forecast ends | Last year of official holidays to add.                  |
 | `--today YYYY-MM-DD`      | today in New York                                                  | For tests.                                              |
 | `--gate-origins N`        | 26                                                                 | Weeks replayed by the check. For tests; leave it alone. |
